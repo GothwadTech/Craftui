@@ -1,0 +1,61 @@
+export component CanvasToolbar {
+    in-out property <float> brush_width: 4.0;
+    in-out property <bool> eraser_mode: false;
+    in-out property <string> status_text: "Ready — drag on canvas to draw";
+    callback on_clear();
+
+    Row {
+        width: 100%;
+        background: Theme.surface;
+        border_width: 1;
+        border_color: Theme.border;
+        padding_x: 16dp;
+        padding_y: 10dp;
+        gap: 14dp;
+        align: Center;
+        justify: SpaceBetween;
+
+        Row {
+            gap: 10dp;
+            align: Center;
+            Icon {
+                svg: "edit";
+                size: 20;
+                color: Theme.primary;
+            }
+            Text {
+                text: "CraftUI Vector Sketchpad";
+                font_size: 18;
+                font_weight: Bold;
+                color: Theme.text_primary;
+            }
+            Text {
+                text: status_text;
+                font_size: 13;
+                color: Theme.text_secondary;
+            }
+        }
+
+        Row {
+            gap: 12dp;
+            align: Center;
+            Switch {
+                checked <=> eraser_mode;
+                label: "Eraser";
+            }
+            Slider {
+                width: 160dp;
+                value <=> brush_width;
+                min: 1.0;
+                max: 16.0;
+                label: "Width";
+            }
+            Button {
+                text: "Clear Canvas";
+                background: Theme.danger;
+                foreground: Theme.on_primary;
+                on_tap => { on_clear(); }
+            }
+        }
+    }
+}

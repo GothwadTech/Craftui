@@ -293,9 +293,21 @@ impl VelloCpuBackend {
                 }
                 PaintCommand::PlatformViewHole { rect, .. } => {
                     // Punch a transparent cutout when compositing over an OS-native view
+                    let r = rect.to_kurbo();
+                    let clip_path = r.to_path(0.1);
                     self.ctx.set_transform(base_transform);
-                    self.ctx.set_paint(Color::TRANSPARENT.to_peniko());
-                    self.ctx.fill_rect(&rect.to_kurbo());
+                    self.ctx.push_layer(
+                        Some(&clip_path),
+                        Some(vello_cpu::peniko::BlendMode::from(
+                            vello_cpu::peniko::Compose::Clear,
+                        )),
+                        None,
+                        None,
+                        None,
+                    );
+                    self.ctx.set_paint(Color::BLACK.to_peniko());
+                    self.ctx.fill_rect(&r);
+                    self.ctx.pop_layer();
                 }
             }
         }
@@ -497,6 +509,20 @@ impl TinySkiaBackend {
                                 );
                             }
                         }
+                    }
+                }
+                PaintCommand::PlatformViewHole { rect, .. } => {
+                    if let Some(path) = rounded_rect_to_tiny_path(*rect, CornerRadii::ZERO) {
+                        let mut paint = tiny_skia::Paint::default();
+                        paint.set_color_rgba8(0, 0, 0, 255);
+                        paint.blend_mode = tiny_skia::BlendMode::Clear;
+                        pixmap.fill_path(
+                            &path,
+                            &paint,
+                            tiny_skia::FillRule::Winding,
+                            transform,
+                            None,
+                        );
                     }
                 }
                 _ => {}

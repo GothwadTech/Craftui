@@ -1,21 +1,51 @@
-//! Android platform adapter (`android-activity` `GameActivity` + Vulkan/GLES `wgpu` + JNI/Surface bridges).
+//! Android platform adapter (`android-activity` `GameActivity` + Vulkan/GLES `wgpu` + JNI/IME/Surface bridges).
 
 use craftui_core::{
-    ImeEvent, Insets, Modifiers, PlatformViewId, Point, PointerButton, PointerEvent, PointerId,
-    PointerPhase, Size, UiDispatcher, UiEvent, WindowMetrics,
+    ImeEvent, Insets, KeyCode, KeyEvent, Modifiers, PlatformViewId, Point, PointerButton,
+    PointerEvent, PointerId, PointerPhase, Size, TextureId, UiDispatcher, UiEvent, WindowMetrics,
 };
 use craftui_reactive::Scope;
-use craftui_render::{PaintScene, TextureRegistry};
-use craftui_widgets::{WidgetKind, WidgetTree};
+use craftui_render::{PaintScene, TextureHandle, TextureRegistry};
+use craftui_widgets::{Router, WidgetKind, WidgetTree};
 
 /// Embedding strategy for native Android Views (e.g., CameraX / ExoPlayer / WebView)
 /// hosted inside CraftUI [`WidgetKind::PlatformView`](craftui_widgets::WidgetKind::PlatformView).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AndroidPlatformViewMode {
-    /// Zero-overlay Vulkan/GLES `HardwareBuffer` / `SurfaceTexture` external texture composited directly inside Vello.
+    /// Zero-copy Vulkan/GLES `HardwareBuffer` / `SurfaceTexture` external texture composited directly inside Vello.
     ExternalSurfaceTexture { surface_id: u64 },
     /// Transparent `PaintCommand::PlatformViewHole` punch composited over an Android `SurfaceView`.
     HolePunch { view_id: PlatformViewId },
+}
+
+/// Bridge trait for importing Android `AHardwareBuffer` / `SurfaceTexture` RGBA frames into CraftUI textures.
+pub trait ExternalSurfaceTextureBridge: Send + Sync {
+    fn surface_id(&self) -> u64;
+    /// Copy or acquire the latest frame dimensions and straight RGBA8 bytes when dirty.
+    fn acquire_latest_rgba(&mut self) -> Option<(u32, u32, Vec<u8>)>;
+}
+
+/// Platform-neutral Android keycodes translated by [`AndroidHost::handle_android_key_event`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidKeyCode {
+    Back,
+    Enter,
+    NumpadEnter,
+    Tab,
+    Del,
+    ForwardDel,
+    Escape,
+    DpadLeft,
+    DpadRight,
+    DpadUp,
+    DpadDown,
+    Home,
+    MoveEnd,
+    PageUp,
+    PageDown,
+    Space,
+    Character(char),
+    Other,
 }
 
 /// Commands emitted toward Android `InputMethodManager` via `GameActivity`.
@@ -30,16 +60,18 @@ pub enum AndroidImeCommand {
     },
 }
 
-/// Platform-neutral Android lifecycle, safe-area/IME inset, and event translator host.
+/// Platform-neutral Android lifecycle, safe-area/IME inset, back navigation, and event translator host.
 ///
-/// Used both on-device inside [`run_android_app`] and in deterministic desktop/CI integration tests.
+/// Used both on-device inside [`android_runtime::run_android_app`] and in deterministic desktop/CI integration tests.
 pub struct AndroidHost {
     pub scope: Scope,
     pub tree: WidgetTree,
     pub scene: PaintScene,
     pub textures: TextureRegistry,
     pub dispatcher: UiDispatcher,
+    back_handler: Option<Box<dyn FnMut() -> bool>>,
     last_ime_visible: bool,
+    last_synced_ime_state: Option<(String, usize, usize)>,
 }
 
 impl AndroidHost {
@@ -59,8 +91,20 @@ impl AndroidHost {
             scene: PaintScene::new(),
             textures: TextureRegistry::new(),
             dispatcher,
+            back_handler: None,
             last_ime_visible: false,
+            last_synced_ime_state: None,
         }
+    }
+
+    /// Register a hardware Back button handler (e.g. `move || router.pop()`).
+    pub fn set_back_handler(&mut self, handler: impl FnMut() -> bool + 'static) {
+        self.back_handler = Some(Box::new(handler));
+    }
+
+    /// Convenience helper binding a [`Router<R>`] to Android's hardware/gesture Back key.
+    pub fn bind_back_router<R: Clone + PartialEq + 'static>(&mut self, router: Router<R>) {
+        self.set_back_handler(move || router.pop());
     }
 
     pub fn update_safe_area_and_ime(
@@ -103,12 +147,105 @@ impl AndroidHost {
         }))
     }
 
+    /// Translate and dispatch Android key events, including `Back`, `Enter`, directional D-pad keys, and text input keys.
+    pub fn handle_android_key_event(
+        &mut self,
+        code: AndroidKeyCode,
+        pressed: bool,
+        repeat: bool,
+        modifiers: Modifiers,
+    ) -> bool {
+        if code == AndroidKeyCode::Back {
+            if !pressed {
+                return false;
+            }
+            // 1. Dismiss open overlay / modal / popup menu if active.
+            let esc = KeyEvent {
+                code: KeyCode::Escape,
+                text: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            };
+            if self.tree.handle_event(&UiEvent::Key(esc)) {
+                return true;
+            }
+            // 2. Pop custom registered Back handler / Router.
+            if let Some(ref mut cb) = self.back_handler
+                && cb()
+            {
+                return true;
+            }
+            // 3. Fallback to Router<String> in root context if present.
+            if let Some(router) = self.scope.use_context::<Router<String>>()
+                && router.pop()
+            {
+                return true;
+            }
+            return false;
+        }
+
+        let (craft_code, text) = match code {
+            AndroidKeyCode::Enter | AndroidKeyCode::NumpadEnter => {
+                (KeyCode::Enter, Some("\n".to_string()))
+            }
+            AndroidKeyCode::Tab => (KeyCode::Tab, None),
+            AndroidKeyCode::Del => (KeyCode::Backspace, None),
+            AndroidKeyCode::ForwardDel => (KeyCode::Delete, None),
+            AndroidKeyCode::Escape => (KeyCode::Escape, None),
+            AndroidKeyCode::DpadLeft => (KeyCode::ArrowLeft, None),
+            AndroidKeyCode::DpadRight => (KeyCode::ArrowRight, None),
+            AndroidKeyCode::DpadUp => (KeyCode::ArrowUp, None),
+            AndroidKeyCode::DpadDown => (KeyCode::ArrowDown, None),
+            AndroidKeyCode::Home => (KeyCode::Home, None),
+            AndroidKeyCode::MoveEnd => (KeyCode::End, None),
+            AndroidKeyCode::PageUp => (KeyCode::PageUp, None),
+            AndroidKeyCode::PageDown => (KeyCode::PageDown, None),
+            AndroidKeyCode::Space => (KeyCode::Space, Some(" ".to_string())),
+            AndroidKeyCode::Character(ch) => {
+                let s = ch.to_string();
+                (KeyCode::Character(s.clone()), Some(s))
+            }
+            AndroidKeyCode::Back | AndroidKeyCode::Other => (KeyCode::Unknown, None),
+        };
+
+        self.tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: craft_code,
+            text,
+            pressed,
+            repeat,
+            modifiers,
+        }))
+    }
+
     pub fn push_ime_commit(&mut self, text: impl Into<String>) -> bool {
         self.tree
             .handle_event(&UiEvent::Ime(ImeEvent::Commit(text.into())))
     }
 
+    /// Update or allocate a CraftUI [`TextureHandle`] from an external Android [`ExternalSurfaceTextureBridge`].
+    pub fn sync_external_texture(
+        &mut self,
+        bridge: &mut dyn ExternalSurfaceTextureBridge,
+        slot: &mut Option<TextureHandle>,
+    ) -> Option<TextureId> {
+        let (w, h, rgba) = bridge.acquire_latest_rgba()?;
+        if w == 0 || h == 0 || rgba.len() != (w as usize) * (h as usize) * 4 {
+            return None;
+        }
+        if let Some(existing) = slot.as_ref() {
+            existing.buffer.replace_rgba(w, h, rgba);
+            Some(existing.id)
+        } else {
+            let handle = self.textures.create_from_rgba(w, h, rgba);
+            let id = handle.id;
+            *slot = Some(handle);
+            Some(id)
+        }
+    }
+
     pub fn step_frame(&mut self, dt_sec: f32) -> (bool, Vec<AndroidImeCommand>) {
+        let _ = craftui_reactive::tick_timers();
         let _ = self.dispatcher.drain();
         let animating = self.tree.tick_animations(dt_sec);
         let _dirty = self.tree.layout(self.tree.metrics);
@@ -133,15 +270,20 @@ impl AndroidHost {
             cmds.push(if ime_needed {
                 AndroidImeCommand::ShowSoftInput
             } else {
+                self.last_synced_ime_state = None;
                 AndroidImeCommand::HideSoftInput
             });
         }
         if let Some((text, selection_start, selection_end)) = focused_input {
-            cmds.push(AndroidImeCommand::SyncTextState {
-                text,
-                selection_start,
-                selection_end,
-            });
+            let next_state = (text.clone(), selection_start, selection_end);
+            if self.last_synced_ime_state.as_ref() != Some(&next_state) {
+                self.last_synced_ime_state = Some(next_state);
+                cmds.push(AndroidImeCommand::SyncTextState {
+                    text,
+                    selection_start,
+                    selection_end,
+                });
+            }
         }
 
         (animating, cmds)
@@ -151,7 +293,9 @@ impl AndroidHost {
 #[cfg(target_os = "android")]
 pub mod android_runtime {
     use super::*;
-    use android_activity::input::{InputEvent, KeyAction, MotionAction, TextSpan};
+    use android_activity::input::{
+        InputEvent, KeyAction, Keycode, MotionAction, TextInputState, TextSpan,
+    };
     use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
     use craftui_core::NodeId;
     use craftui_render::GpuSurfacePipeline;
@@ -172,6 +316,67 @@ pub mod android_runtime {
                 window: RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(ptr)),
                 display: RawDisplayHandle::Android(AndroidDisplayHandle::new()),
             }
+        }
+    }
+
+    fn map_activity_keycode(
+        kc: Keycode,
+        meta: android_activity::input::MetaState,
+    ) -> AndroidKeyCode {
+        match kc {
+            Keycode::Back => AndroidKeyCode::Back,
+            Keycode::Enter => AndroidKeyCode::Enter,
+            Keycode::NumpadEnter => AndroidKeyCode::NumpadEnter,
+            Keycode::Tab => AndroidKeyCode::Tab,
+            Keycode::Del => AndroidKeyCode::Del,
+            Keycode::ForwardDel => AndroidKeyCode::ForwardDel,
+            Keycode::Escape => AndroidKeyCode::Escape,
+            Keycode::DpadLeft => AndroidKeyCode::DpadLeft,
+            Keycode::DpadRight => AndroidKeyCode::DpadRight,
+            Keycode::DpadUp => AndroidKeyCode::DpadUp,
+            Keycode::DpadDown => AndroidKeyCode::DpadDown,
+            Keycode::MoveHome | Keycode::Home => AndroidKeyCode::Home,
+            Keycode::MoveEnd => AndroidKeyCode::MoveEnd,
+            Keycode::PageUp => AndroidKeyCode::PageUp,
+            Keycode::PageDown => AndroidKeyCode::PageDown,
+            Keycode::Space => AndroidKeyCode::Space,
+            Keycode::A => AndroidKeyCode::Character(if meta.shift_on() { 'A' } else { 'a' }),
+            Keycode::B => AndroidKeyCode::Character(if meta.shift_on() { 'B' } else { 'b' }),
+            Keycode::C => AndroidKeyCode::Character(if meta.shift_on() { 'C' } else { 'c' }),
+            Keycode::D => AndroidKeyCode::Character(if meta.shift_on() { 'D' } else { 'd' }),
+            Keycode::E => AndroidKeyCode::Character(if meta.shift_on() { 'E' } else { 'e' }),
+            Keycode::F => AndroidKeyCode::Character(if meta.shift_on() { 'F' } else { 'f' }),
+            Keycode::G => AndroidKeyCode::Character(if meta.shift_on() { 'G' } else { 'g' }),
+            Keycode::H => AndroidKeyCode::Character(if meta.shift_on() { 'H' } else { 'h' }),
+            Keycode::I => AndroidKeyCode::Character(if meta.shift_on() { 'I' } else { 'i' }),
+            Keycode::J => AndroidKeyCode::Character(if meta.shift_on() { 'J' } else { 'j' }),
+            Keycode::K => AndroidKeyCode::Character(if meta.shift_on() { 'K' } else { 'k' }),
+            Keycode::L => AndroidKeyCode::Character(if meta.shift_on() { 'L' } else { 'l' }),
+            Keycode::M => AndroidKeyCode::Character(if meta.shift_on() { 'M' } else { 'm' }),
+            Keycode::N => AndroidKeyCode::Character(if meta.shift_on() { 'N' } else { 'n' }),
+            Keycode::O => AndroidKeyCode::Character(if meta.shift_on() { 'O' } else { 'o' }),
+            Keycode::P => AndroidKeyCode::Character(if meta.shift_on() { 'P' } else { 'p' }),
+            Keycode::Q => AndroidKeyCode::Character(if meta.shift_on() { 'Q' } else { 'q' }),
+            Keycode::R => AndroidKeyCode::Character(if meta.shift_on() { 'R' } else { 'r' }),
+            Keycode::S => AndroidKeyCode::Character(if meta.shift_on() { 'S' } else { 's' }),
+            Keycode::T => AndroidKeyCode::Character(if meta.shift_on() { 'T' } else { 't' }),
+            Keycode::U => AndroidKeyCode::Character(if meta.shift_on() { 'U' } else { 'u' }),
+            Keycode::V => AndroidKeyCode::Character(if meta.shift_on() { 'V' } else { 'v' }),
+            Keycode::W => AndroidKeyCode::Character(if meta.shift_on() { 'W' } else { 'w' }),
+            Keycode::X => AndroidKeyCode::Character(if meta.shift_on() { 'X' } else { 'x' }),
+            Keycode::Y => AndroidKeyCode::Character(if meta.shift_on() { 'Y' } else { 'y' }),
+            Keycode::Z => AndroidKeyCode::Character(if meta.shift_on() { 'Z' } else { 'z' }),
+            Keycode::Keycode0 => AndroidKeyCode::Character('0'),
+            Keycode::Keycode1 => AndroidKeyCode::Character('1'),
+            Keycode::Keycode2 => AndroidKeyCode::Character('2'),
+            Keycode::Keycode3 => AndroidKeyCode::Character('3'),
+            Keycode::Keycode4 => AndroidKeyCode::Character('4'),
+            Keycode::Keycode5 => AndroidKeyCode::Character('5'),
+            Keycode::Keycode6 => AndroidKeyCode::Character('6'),
+            Keycode::Keycode7 => AndroidKeyCode::Character('7'),
+            Keycode::Keycode8 => AndroidKeyCode::Character('8'),
+            Keycode::Keycode9 => AndroidKeyCode::Character('9'),
+            _ => AndroidKeyCode::Other,
         }
     }
 
@@ -202,8 +407,7 @@ pub mod android_runtime {
         while running {
             let timeout = Some(Duration::from_millis(16));
             app.poll_events(timeout, |event| match event {
-                PollEvent::Wake => {}
-                PollEvent::Timeout => {}
+                PollEvent::Wake | PollEvent::Timeout => {}
                 PollEvent::Main(main_ev) => match main_ev {
                     MainEvent::InitWindow { .. } => {
                         if let Some(nw) = app.native_window() {
@@ -279,27 +483,25 @@ pub mod android_runtime {
                                 }
                                 InputEvent::KeyEvent(ke) => {
                                     let pressed = ke.action() == KeyAction::Down;
-                                    if pressed
-                                        && ke.key_code() == android_activity::input::Keycode::Del
-                                    {
-                                        host.tree.handle_event(&UiEvent::Key(
-                                            craftui_core::KeyEvent {
-                                                code: craftui_core::KeyCode::Backspace,
-                                                text: None,
-                                                pressed: true,
-                                                repeat: false,
-                                                modifiers: Modifiers::default(),
-                                            },
-                                        ));
+                                    let repeat = ke.repeat_count() > 0;
+                                    let meta = ke.meta_state();
+                                    let mods = Modifiers {
+                                        shift: meta.shift_on(),
+                                        ctrl: meta.ctrl_on(),
+                                        alt: meta.alt_on(),
+                                        super_key: meta.meta_on(),
+                                    };
+                                    let code = map_activity_keycode(ke.key_code(), meta);
+                                    if host.handle_android_key_event(code, pressed, repeat, mods) {
+                                        InputStatus::Handled
+                                    } else if code == AndroidKeyCode::Back {
+                                        InputStatus::Unhandled
+                                    } else {
+                                        InputStatus::Handled
                                     }
-                                    InputStatus::Handled
                                 }
                                 InputEvent::TextEvent(ts) => {
-                                    let state: android_activity::input::TextInputState = ts.clone();
-                                    let _ = TextSpan {
-                                        start: state.selection.start,
-                                        end: state.selection.end,
-                                    };
+                                    let state: TextInputState = ts.clone();
                                     host.tree
                                         .handle_event(&UiEvent::Ime(ImeEvent::Commit(state.text)));
                                     InputStatus::Handled
@@ -328,7 +530,20 @@ pub mod android_runtime {
                 match cmd {
                     AndroidImeCommand::ShowSoftInput => app.show_soft_input(true),
                     AndroidImeCommand::HideSoftInput => app.hide_soft_input(false),
-                    AndroidImeCommand::SyncTextState { .. } => {}
+                    AndroidImeCommand::SyncTextState {
+                        text,
+                        selection_start,
+                        selection_end,
+                    } => {
+                        app.set_text_input_state(TextInputState {
+                            text,
+                            selection: TextSpan {
+                                start: selection_start,
+                                end: selection_end,
+                            },
+                            compose_region: None,
+                        });
+                    }
                 }
             }
             if let Some(g) = gpu.as_mut() {
@@ -351,6 +566,32 @@ mod tests {
     use craftui_core::Length;
     use craftui_layout::LayoutStyle;
     use craftui_reactive::reset_runtime;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct DummyExternalSurface {
+        dirty: bool,
+    }
+
+    impl ExternalSurfaceTextureBridge for DummyExternalSurface {
+        fn surface_id(&self) -> u64 {
+            42
+        }
+
+        fn acquire_latest_rgba(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+            if !self.dirty {
+                return None;
+            }
+            self.dirty = false;
+            Some((
+                2,
+                2,
+                vec![
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+                ],
+            ))
+        }
+    }
 
     #[test]
     fn android_host_safe_area_keyboard_insets_and_ime_commands() {
@@ -380,7 +621,89 @@ mod tests {
         let (_, cmds2) = host.step_frame(0.016);
         assert!(cmds2.iter().any(|c| matches!(
             c,
-            AndroidImeCommand::SyncTextState { text, .. } if text == "invoice"
+            AndroidImeCommand::SyncTextState { text, selection_start: 7, selection_end: 7 } if text == "invoice"
+        )));
+    }
+
+    #[test]
+    fn android_back_router_pop_enter_dpad_and_external_texture_work() {
+        reset_runtime();
+        let mut host = AndroidHost::new(UiDispatcher::new(), 1080, 1920, 2.0);
+        let router = Router::new(host.scope, "home".to_string());
+        host.bind_back_router(router);
+        router.push("detail".to_string());
+
+        let modal_open = host.scope.signal(true);
+        let root = host.tree.column(host.scope);
+        let tab_idx = host.scope.signal(0usize);
+        let tabs = host
+            .tree
+            .tabs(host.scope, vec!["One".into(), "Two".into()], tab_idx);
+        let pv_id = PlatformViewId::default();
+        let pv = host.tree.platform_view(
+            host.scope,
+            pv_id,
+            LayoutStyle::row().with_size(Length::Dp(120.0), Length::Dp(80.0)),
+        );
+        let modal = host.tree.overlay(
+            host.scope,
+            modal_open,
+            false,
+            Some(Rc::new(RefCell::new(move || modal_open.set(false)))),
+        );
+        host.tree.append_child(root, tabs);
+        host.tree.append_child(root, pv);
+        host.tree.append_child(root, modal);
+        host.tree.set_root(root);
+        let _ = host.step_frame(0.016);
+
+        // Back key first dismisses active modal/overlay
+        assert!(host.handle_android_key_event(
+            AndroidKeyCode::Back,
+            true,
+            false,
+            Modifiers::default()
+        ));
+        assert!(!modal_open.get());
+        assert_eq!(router.current(), "detail");
+
+        // Second Back key pops the Router stack
+        assert!(host.handle_android_key_event(
+            AndroidKeyCode::Back,
+            true,
+            false,
+            Modifiers::default()
+        ));
+        assert_eq!(router.current(), "home");
+
+        // Third Back key at root returns false (unhandled so Android finishes Activity)
+        assert!(!host.handle_android_key_event(
+            AndroidKeyCode::Back,
+            true,
+            false,
+            Modifiers::default()
+        ));
+
+        // Tab -> focus Tabs, DpadRight switches active tab
+        host.tree.focused = Some(tabs);
+        assert!(host.handle_android_key_event(
+            AndroidKeyCode::DpadRight,
+            true,
+            false,
+            Modifiers::default()
+        ));
+        assert_eq!(tab_idx.get(), 1);
+
+        // External SurfaceTexture upload + PlatformViewHole emitted in scene
+        let mut bridge = DummyExternalSurface { dirty: true };
+        let mut tex_slot = None;
+        let tid = host
+            .sync_external_texture(&mut bridge, &mut tex_slot)
+            .expect("external texture uploaded");
+        assert!(host.textures.get(tid).is_some());
+        assert!(host.scene.commands.iter().any(|c| matches!(
+            c,
+            craftui_render::PaintCommand::PlatformViewHole { id, .. } if *id == pv_id
         )));
     }
 }

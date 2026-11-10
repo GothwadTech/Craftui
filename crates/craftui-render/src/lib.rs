@@ -3,12 +3,14 @@
 pub mod cpu_backend;
 pub mod gpu_backend;
 pub mod scene;
+pub mod svg;
 pub mod texture;
 
 pub use cpu_backend::{TinySkiaBackend, VelloCpuBackend};
 pub use gpu_backend::GpuSurfacePipeline;
 pub use kurbo;
 pub use scene::{PaintCommand, PaintScene};
+pub use svg::{ParsedSvgIcon, SvgShape, builtin_icon_svg, paint_svg_icon};
 pub use texture::{PixelBufferHandle, TextureHandle, TextureRegistry};
 
 use craftui_core::{Color, Result};
@@ -106,7 +108,7 @@ mod tests {
                 stops: vec![
                     ColorStop {
                         offset: 0.0,
-                        color: Color::rgb(0, 186, 102),
+                        color: Color::rgb(59, 130, 246),
                     },
                     ColorStop {
                         offset: 1.0,
@@ -180,5 +182,33 @@ mod tests {
             &mut text,
         );
         assert_eq!(tiny.len(), 160 * 80 * 4);
+    }
+
+    #[test]
+    fn platform_view_hole_punches_transparent_cutout() {
+        let mut scene = PaintScene::new();
+        scene.push(PaintCommand::PlatformViewHole {
+            id: craftui_core::PlatformViewId::default(),
+            rect: Rect::new(20.0, 20.0, 40.0, 30.0),
+        });
+        let textures = TextureRegistry::new();
+        let mut text = TextEngine::new();
+        for backend in [BackendKind::VelloCpu, BackendKind::TinySkia] {
+            let rgba = render_scene_to_rgba(
+                backend,
+                &scene,
+                80,
+                80,
+                1.0,
+                Color::rgb(30, 41, 59),
+                &textures,
+                &mut text,
+            );
+            // Outside cutout retains opaque background
+            assert_eq!(rgba[3], 255);
+            // Center of cutout (40, 35) has alpha cleared to 0
+            let hole_idx = (35 * 80 + 40) * 4;
+            assert_eq!(rgba[hole_idx + 3], 0);
+        }
     }
 }

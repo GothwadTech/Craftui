@@ -19,7 +19,10 @@ members = [
     "tools/craftui-cli",
     "tools/craftui-lsp",
     "examples/counter",
-    "examples/scancraft_studio_demo",
+    "examples/showcase",
+    "examples/todo_crud",
+    "examples/settings_form",
+    "examples/canvas_paint",
 ]
 
 [workspace.package]
@@ -78,6 +81,7 @@ vello_cpu = { version = "0.3.0", features = ["std", "png", "text", "u8_pipeline"
 tiny-skia = "0.12.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
+softbuffer = "0.4.8"
 accesskit = "0.25.2"
 accesskit_winit = "0.34.2"
 
@@ -98,6 +102,12 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
 js-sys = "0.3"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 opt-level = "z"

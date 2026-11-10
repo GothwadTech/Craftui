@@ -320,6 +320,51 @@ impl TextEditorState {
         }
     }
 
+    /// Move cursor vertically up one logical `\n`-separated line keeping approximate column offset.
+    pub fn move_up(&mut self, extend_selection: bool) {
+        let cur = self.clamp_boundary(self.cursor);
+        let before = &self.text[..cur];
+        let Some(curr_line_start_nl) = before.rfind('\n') else {
+            self.move_home(extend_selection);
+            return;
+        };
+        let col_chars = self.text[curr_line_start_nl + 1..cur].chars().count();
+        let prev_line_start = self.text[..curr_line_start_nl]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let target_byte = prev_line_start
+            + self.text[prev_line_start..curr_line_start_nl]
+                .char_indices()
+                .nth(col_chars)
+                .map(|(off, _)| off)
+                .unwrap_or(curr_line_start_nl - prev_line_start);
+        self.set_cursor_at(target_byte, extend_selection);
+    }
+
+    /// Move cursor vertically down one logical `\n`-separated line keeping approximate column offset.
+    pub fn move_down(&mut self, extend_selection: bool) {
+        let cur = self.clamp_boundary(self.cursor);
+        let curr_line_start = self.text[..cur].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let col_chars = self.text[curr_line_start..cur].chars().count();
+        let Some(rel_nl) = self.text[cur..].find('\n') else {
+            self.move_end(extend_selection);
+            return;
+        };
+        let next_line_start = cur + rel_nl + 1;
+        let next_line_end = self.text[next_line_start..]
+            .find('\n')
+            .map(|off| next_line_start + off)
+            .unwrap_or(self.text.len());
+        let target_byte = next_line_start
+            + self.text[next_line_start..next_line_end]
+                .char_indices()
+                .nth(col_chars)
+                .map(|(off, _)| off)
+                .unwrap_or(next_line_end - next_line_start);
+        self.set_cursor_at(target_byte, extend_selection);
+    }
+
     pub fn set_cursor_at(&mut self, byte_index: usize, extend_selection: bool) {
         self.cursor = self.clamp_boundary(byte_index);
         if !extend_selection {

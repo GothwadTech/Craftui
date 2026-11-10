@@ -20,6 +20,10 @@ pub enum TokenKind {
     KwFrom,
     #[token("export")]
     KwExport,
+    #[token("struct")]
+    KwStruct,
+    #[token("enum")]
+    KwEnum,
     #[token("component")]
     KwComponent,
     #[token("in-out")]
@@ -48,6 +52,10 @@ pub enum TokenKind {
     TwoWayBind,
     #[token("=>")]
     FatArrow,
+    #[token("..=")]
+    DotDotEq,
+    #[token("..")]
+    DotDot,
     #[token("==")]
     EqEq,
     #[token("!=")]
@@ -103,19 +111,19 @@ pub enum TokenKind {
     #[regex(r"#[0-9a-fA-F]{3,8}")]
     ColorHex,
 
-    #[regex(r"-?[0-9]+(\.[0-9]+)?(dp|px|%)")]
+    #[regex(r"[0-9]+(\.[0-9]+)?(dp|px|%)")]
     Dimension,
 
-    #[regex(r"-?[0-9]+\.[0-9]+")]
+    #[regex(r"[0-9]+\.[0-9]+")]
     Float,
 
-    #[regex(r"-?[0-9]+")]
+    #[regex(r"[0-9]+")]
     Int,
 
     #[regex(r#""([^"\\]|\\.)*""#)]
     StringLit,
 
-    #[regex(r"[A-Za-z_][A-Za-z0-9_-]*")]
+    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
 
     Error,
@@ -152,4 +160,35 @@ pub fn tokenize(source: &str) -> Vec<Token> {
         });
     }
     tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lexes_ranges_subtraction_and_negative_literals_cleanly() {
+        let toks: Vec<(TokenKind, &str)> = tokenize("0..10 0..=n count-1 -16dp in-out")
+            .into_iter()
+            .filter(|t| !t.kind.is_trivia())
+            .map(|t| (t.kind, Box::leak(t.text.into_boxed_str()) as &str))
+            .collect();
+        assert_eq!(
+            toks,
+            vec![
+                (TokenKind::Int, "0"),
+                (TokenKind::DotDot, ".."),
+                (TokenKind::Int, "10"),
+                (TokenKind::Int, "0"),
+                (TokenKind::DotDotEq, "..="),
+                (TokenKind::Ident, "n"),
+                (TokenKind::Ident, "count"),
+                (TokenKind::Minus, "-"),
+                (TokenKind::Int, "1"),
+                (TokenKind::Minus, "-"),
+                (TokenKind::Dimension, "16dp"),
+                (TokenKind::KwInOut, "in-out"),
+            ]
+        );
+    }
 }

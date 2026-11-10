@@ -80,7 +80,7 @@ impl InspectorState {
         );
         scene.stroke_rect(
             hud,
-            Color::rgb(0, 186, 102),
+            Color::rgb(59, 130, 246),
             1.0,
             craftui_core::CornerRadii::all(8.0),
         );

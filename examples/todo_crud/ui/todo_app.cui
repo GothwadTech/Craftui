@@ -1,0 +1,185 @@
+export struct TaskItem {
+    id: int = 0,
+    title: string = "",
+    completed: bool = false,
+}
+
+export enum TodoFilter {
+    All,
+    Active,
+    Done,
+}
+
+export component TodoScreen {
+    in-out property <string> draft_title: "";
+    in-out property <string> search_query: "";
+    in-out property <int> filter_tab: 0;
+    in-out property <[TaskItem]> visible_tasks: [];
+    in-out property <string> summary_text: "0 items";
+    in-out property <float> completion_ratio: 0.0;
+    callback on_add_task();
+    callback on_toggle_index(int);
+    callback on_delete_index(int);
+    callback on_clear_completed();
+
+    Column {
+        width: 100%;
+        height: 100%;
+        background: Theme.background;
+        padding: 24dp;
+        gap: 14dp;
+
+        Row {
+            width: 100%;
+            align: Center;
+            justify: SpaceBetween;
+
+            Column {
+                gap: 4dp;
+                Text {
+                    text: "CraftUI Task Board";
+                    font_size: 24;
+                    font_weight: Bold;
+                    color: Theme.text_primary;
+                }
+                Text {
+                    text: summary_text;
+                    font_size: 13;
+                    color: Theme.text_secondary;
+                }
+            }
+
+            Button {
+                text: "Clear Done";
+                background: Theme.surface_variant;
+                foreground: Theme.text_primary;
+                on_tap => { on_clear_completed(); }
+            }
+        }
+
+        ProgressIndicator {
+            progress: completion_ratio;
+        }
+
+        Row {
+            width: 100%;
+            gap: 10dp;
+
+            TextInput {
+                flex_grow: 2.0;
+                placeholder: "Add a new task...";
+                value <=> draft_title;
+                on_submit => { on_add_task(); }
+            }
+            Button {
+                text: "Add Task";
+                background: Theme.primary;
+                foreground: Theme.on_primary;
+                on_tap => { on_add_task(); }
+            }
+        }
+
+        Row {
+            width: 100%;
+            gap: 12dp;
+            align: Center;
+
+            Tabs {
+                flex_grow: 1.0;
+                tabs: ["All", "Active", "Done"];
+                active: filter_tab;
+                on_change => { filter_tab = index; }
+            }
+
+            TextInput {
+                width: 220dp;
+                placeholder: "Filter tasks...";
+                value <=> search_query;
+            }
+        }
+
+        Divider {
+            direction: Horizontal;
+            thickness: 1;
+            color: Theme.border;
+        }
+
+        if visible_tasks.is_empty() : Column {
+            width: 100%;
+            flex_grow: 1.0;
+            background: Theme.surface;
+            border_radius: 12dp;
+            border_width: 1;
+            border_color: Theme.border;
+            align: Center;
+            justify: Center;
+            padding: 32dp;
+            gap: 8dp;
+
+            Icon {
+                svg: "check";
+                size: 28;
+                color: Theme.primary;
+            }
+            Text {
+                text: "No tasks match the current view";
+                font_size: 16;
+                font_weight: SemiBold;
+                color: Theme.text_primary;
+            }
+            Text {
+                text: "Add a task above or switch tabs to review other items.";
+                font_size: 13;
+                color: Theme.text_secondary;
+            }
+        } else : ScrollView {
+            width: 100%;
+            flex_grow: 1.0;
+            background: Theme.surface;
+            border_radius: 12dp;
+            border_width: 1;
+            border_color: Theme.border;
+            padding: 12dp;
+
+            Column {
+                width: 100%;
+                gap: 8dp;
+
+                for task, idx in visible_tasks : Row {
+                    width: 100%;
+                    background: Theme.surface_variant;
+                    border_radius: 8dp;
+                    padding_x: 12dp;
+                    padding_y: 8dp;
+                    gap: 10dp;
+                    align: Center;
+                    justify: SpaceBetween;
+
+                    Row {
+                        flex_grow: 1.0;
+                        gap: 10dp;
+                        align: Center;
+
+                        Checkbox {
+                            checked: task.completed;
+                            label: "";
+                            on_change => { on_toggle_index(idx); }
+                        }
+                        Text {
+                            text: task.title;
+                            font_size: 15;
+                            color: Theme.text_primary;
+                        }
+                    }
+
+                    Button {
+                        text: "Delete";
+                        background: Theme.danger;
+                        foreground: Theme.on_primary;
+                        on_tap => { on_delete_index(idx); }
+                    }
+                }
+            }
+        }
+    }
+}

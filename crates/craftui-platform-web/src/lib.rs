@@ -1,13 +1,17 @@
 //! WebAssembly platform adapter (`wasm-bindgen` + `web-sys` Canvas/DPR observer +
-//! WebGPU/2D-Canvas fallback + hidden `<input>` DOM IME bridge + hash URL router sync).
+//! async WebGPU/WebGL2 + 2D Canvas fallback + hidden `<input>` DOM `input`/IME bridge +
+//! `window.location.hash` router sync + OS/browser clipboard + monotonic timers).
 
 use craftui_core::{
-    ImeEvent, KeyCode, KeyEvent, Modifiers, Point, PointerButton, PointerEvent, PointerId,
-    PointerPhase, ScrollDelta, Size, UiDispatcher, UiEvent, WindowMetrics,
+    ClipboardBackend, ImeEvent, KeyCode, KeyEvent, Modifiers, PlatformServices, Point,
+    PointerButton, PointerEvent, PointerId, PointerPhase, ScrollDelta, Size, UiDispatcher, UiEvent,
+    WindowMetrics,
 };
 use craftui_reactive::Scope;
 use craftui_render::{BackendKind, PaintScene, TextureRegistry, render_scene_to_rgba};
-use craftui_widgets::{WidgetKind, WidgetTree};
+use craftui_widgets::{Router, WidgetKind, WidgetTree};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 /// Configuration for bootstrapping a CraftUI WASM application inside an HTML canvas element.
 #[derive(Debug, Clone)]
@@ -38,6 +42,43 @@ pub struct HiddenImeInputState {
     pub value: String,
 }
 
+/// Type-erased router binding connecting CraftUI [`Router<R>`] state to browser URL hashes.
+#[derive(Clone)]
+pub struct RouteBridge {
+    current_route: Rc<dyn Fn() -> String>,
+    apply_route: Rc<dyn Fn(&str) -> bool>,
+}
+
+impl RouteBridge {
+    /// Construct a [`RouteBridge`] for any custom route enum/struct `R`.
+    pub fn new<R: Clone + PartialEq + 'static>(
+        router: Router<R>,
+        to_path: fn(&R) -> String,
+        from_path: fn(&str) -> R,
+    ) -> Self {
+        Self {
+            current_route: Rc::new(move || to_path(&router.current())),
+            apply_route: Rc::new(move |path: &str| {
+                let target = from_path(path);
+                if router.current() != target {
+                    router.push(target);
+                    true
+                } else {
+                    false
+                }
+            }),
+        }
+    }
+
+    pub fn current_route(&self) -> String {
+        (self.current_route)()
+    }
+
+    pub fn navigate(&self, route: &str) -> bool {
+        (self.apply_route)(route)
+    }
+}
+
 /// Maps CraftUI router route strings to/from browser `window.location.hash` fragments (`#/route`).
 pub struct BrowserRouteSync;
 
@@ -55,21 +96,78 @@ impl BrowserRouteSync {
             format!("/{trimmed}")
         }
     }
+
+    /// Connect a typed [`Router<R>`] in `scope` so WASM `hashchange` / `window.location.hash` stay synchronized.
+    pub fn connect_router<R: Clone + PartialEq + 'static>(
+        scope: Scope,
+        router: Router<R>,
+        to_path: fn(&R) -> String,
+        from_path: fn(&str) -> R,
+    ) {
+        scope.provide_context(RouteBridge::new(router, to_path, from_path));
+    }
+
+    /// Connect a `Router<String>` directly in `scope` using raw path strings (e.g., `"/"`, `"/settings"`).
+    pub fn connect_string_router(scope: Scope, router: Router<String>) {
+        scope.provide_context(RouteBridge::new(
+            router,
+            |s| s.clone(),
+            |path| path.to_string(),
+        ));
+    }
 }
 
-/// Platform-neutral WASM host managing logical DPR sizing, hidden IME sync, and CPU/GPU rendering.
+/// Browser clipboard bridge backed by `navigator.clipboard` (on `wasm32`) and a synchronous cache.
+#[derive(Clone, Default)]
+pub struct WebClipboard {
+    cache: Arc<Mutex<String>>,
+}
+
+impl WebClipboard {
+    pub fn new(cache: Arc<Mutex<String>>) -> Self {
+        Self { cache }
+    }
+}
+
+impl ClipboardBackend for WebClipboard {
+    fn get_text(&mut self) -> Option<String> {
+        self.cache.lock().ok().map(|g| g.clone())
+    }
+
+    fn set_text(&mut self, text: &str) -> bool {
+        if let Ok(mut guard) = self.cache.lock() {
+            guard.clear();
+            guard.push_str(text);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(window) = web_sys::window() {
+            let _ = window.navigator().clipboard().write_text(text);
+        }
+        true
+    }
+}
+
+/// Platform-neutral WASM host managing logical DPR sizing, hidden IME sync, router hash sync, and rendering.
 pub struct WebAppHost {
     pub scope: Scope,
     pub tree: WidgetTree,
     pub scene: PaintScene,
     pub textures: TextureRegistry,
     pub dispatcher: UiDispatcher,
+    route_bridge: Option<RouteBridge>,
+    last_synced_hash: Option<String>,
+    pub clipboard_cache: Arc<Mutex<String>>,
 }
 
 impl WebAppHost {
     pub fn new(dispatcher: UiDispatcher, css_width: f32, css_height: f32, dpr: f32) -> Self {
         let scope = Scope::root();
         let mut tree = WidgetTree::new(scope);
+        let clipboard_cache = Arc::new(Mutex::new(String::new()));
+        tree.set_platform_services(
+            PlatformServices::in_memory()
+                .with_clipboard(WebClipboard::new(clipboard_cache.clone())),
+        );
         tree.metrics = WindowMetrics {
             logical_size: Size::new(css_width.max(1.0), css_height.max(1.0)),
             scale_factor: dpr.max(1.0),
@@ -81,6 +179,58 @@ impl WebAppHost {
             scene: PaintScene::new(),
             textures: TextureRegistry::new(),
             dispatcher,
+            route_bridge: None,
+            last_synced_hash: None,
+            clipboard_cache,
+        }
+    }
+
+    /// Resolve a [`RouteBridge`] from explicit attachment or `Scope` context (`RouteBridge` or `Router<String>`).
+    fn active_route_bridge(&mut self) -> Option<RouteBridge> {
+        if let Some(ref rb) = self.route_bridge {
+            return Some(rb.clone());
+        }
+        if let Some(rb) = self.scope.use_context::<RouteBridge>() {
+            self.route_bridge = Some(rb.clone());
+            return Some(rb);
+        }
+        if let Some(router) = self.scope.use_context::<Router<String>>() {
+            let rb = RouteBridge::new(router, |s| s.clone(), |p| p.to_string());
+            self.route_bridge = Some(rb.clone());
+            return Some(rb);
+        }
+        None
+    }
+
+    pub fn attach_route_bridge(&mut self, bridge: RouteBridge) {
+        self.route_bridge = Some(bridge);
+    }
+
+    /// Apply a browser URL hash string (from initial load or `hashchange`) to the attached router.
+    pub fn apply_url_hash(&mut self, hash: &str) -> bool {
+        let Some(bridge) = self.active_route_bridge() else {
+            return false;
+        };
+        if hash.trim().is_empty() {
+            let cur_hash = BrowserRouteSync::route_to_hash(&bridge.current_route());
+            self.last_synced_hash = Some(cur_hash);
+            return false;
+        }
+        let route = BrowserRouteSync::hash_to_route(hash);
+        let changed = bridge.navigate(&route);
+        self.last_synced_hash = Some(BrowserRouteSync::route_to_hash(&bridge.current_route()));
+        changed
+    }
+
+    /// Check whether the attached router moved to a new route and return the new `#/route` hash to apply.
+    pub fn take_pending_hash_update(&mut self) -> Option<String> {
+        let bridge = self.active_route_bridge()?;
+        let target_hash = BrowserRouteSync::route_to_hash(&bridge.current_route());
+        if self.last_synced_hash.as_deref() != Some(target_hash.as_str()) {
+            self.last_synced_hash = Some(target_hash.clone());
+            Some(target_hash)
+        } else {
+            None
         }
     }
 
@@ -186,6 +336,88 @@ pub fn dom_key_to_craft(key: &str, pressed: bool, repeat: bool, modifiers: Modif
     }
 }
 
+/// Convert mobile/virtual-keyboard DOM `InputEvent` updates on `<input>` into CraftUI key/IME events.
+pub fn dom_input_to_events(
+    prev: &str,
+    current: &str,
+    input_type: &str,
+    data: Option<&str>,
+) -> Vec<UiEvent> {
+    let mut events = Vec::new();
+    match input_type {
+        "deleteContentBackward" | "deleteWordBackward" | "deleteSoftLineBackward" => {
+            events.push(UiEvent::Key(KeyEvent {
+                code: KeyCode::Backspace,
+                text: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }));
+            return events;
+        }
+        "deleteContentForward" | "deleteWordForward" | "deleteSoftLineForward" => {
+            events.push(UiEvent::Key(KeyEvent {
+                code: KeyCode::Delete,
+                text: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }));
+            return events;
+        }
+        "insertLineBreak" | "insertParagraph" => {
+            events.push(UiEvent::Key(KeyEvent {
+                code: KeyCode::Enter,
+                text: Some("\n".to_string()),
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }));
+            return events;
+        }
+        _ => {}
+    }
+
+    if let Some(text) = data
+        && !text.is_empty()
+        && matches!(
+            input_type,
+            "insertText" | "insertFromPaste" | "insertCompositionText" | ""
+        )
+    {
+        events.push(UiEvent::Ime(ImeEvent::Commit(text.to_string())));
+        return events;
+    }
+
+    if prev == current {
+        return events;
+    }
+
+    // Fallback diff between `prev` and `current` for Android Chrome Gboard batch mutations
+    let prev_chars: Vec<char> = prev.chars().collect();
+    let curr_chars: Vec<char> = current.chars().collect();
+    let common_prefix = prev_chars
+        .iter()
+        .zip(curr_chars.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let removed = prev_chars.len().saturating_sub(common_prefix);
+    for _ in 0..removed {
+        events.push(UiEvent::Key(KeyEvent {
+            code: KeyCode::Backspace,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        }));
+    }
+    if curr_chars.len() > common_prefix {
+        let inserted: String = curr_chars[common_prefix..].iter().collect();
+        events.push(UiEvent::Ime(ImeEvent::Commit(inserted)));
+    }
+    events
+}
+
 pub fn dom_button_to_craft(button: i16) -> PointerButton {
     match button {
         2 => PointerButton::Secondary,
@@ -248,15 +480,49 @@ pub fn dom_composition_to_ime(phase_end: bool, data: String) -> UiEvent {
 pub mod wasm_runner {
     use super::*;
     use craftui_core::NodeId;
-    use std::cell::RefCell;
+    use craftui_render::GpuSurfacePipeline;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
     use web_sys::{
-        CanvasRenderingContext2d, CompositionEvent, HtmlCanvasElement, HtmlInputElement, ImageData,
+        CanvasRenderingContext2d, CompositionEvent, HashChangeEvent, HtmlCanvasElement,
+        HtmlInputElement, ImageData, InputEvent as DomInputEvent,
         KeyboardEvent as DomKeyboardEvent, PointerEvent as DomPointerEvent,
         WheelEvent as DomWheelEvent,
     };
+
+    enum WebRenderBackend {
+        Pending,
+        Gpu(GpuSurfacePipeline),
+        Canvas2d(CanvasRenderingContext2d),
+    }
+
+    fn obtain_2d_context(
+        canvas_slot: &Rc<RefCell<HtmlCanvasElement>>,
+        host: &Rc<RefCell<WebAppHost>>,
+    ) -> Option<CanvasRenderingContext2d> {
+        let existing = canvas_slot.borrow().clone();
+        if let Ok(Some(ctx)) = existing.get_context("2d")
+            && let Ok(c2d) = ctx.dyn_into::<CanvasRenderingContext2d>()
+        {
+            return Some(c2d);
+        }
+        // If failed WebGPU/WebGL2 attempt locked the `<canvas>` context type, replace with a fresh clone.
+        if let Ok(cloned_node) = existing.clone_node_with_deep(false)
+            && let Ok(fresh_canvas) = cloned_node.dyn_into::<HtmlCanvasElement>()
+        {
+            fresh_canvas.set_width(existing.width());
+            fresh_canvas.set_height(existing.height());
+            let _ = existing.replace_with_with_node_1(&fresh_canvas);
+            let _ = attach_pointer_listeners(&fresh_canvas, host.clone());
+            *canvas_slot.borrow_mut() = fresh_canvas.clone();
+            if let Ok(Some(ctx)) = fresh_canvas.get_context("2d") {
+                return ctx.dyn_into::<CanvasRenderingContext2d>().ok();
+            }
+        }
+        None
+    }
 
     /// Mount and start a reactive CraftUI application inside an HTML5 `<canvas>` element.
     pub fn start_web_app<F>(
@@ -290,8 +556,16 @@ pub mod wasm_runner {
         let root = build_ui(host.scope, &mut host.tree, &mut host.textures, &dispatcher);
         host.tree.set_root(root);
 
+        // Apply initial browser URL hash route before first frame if hash routing is enabled.
+        if config.sync_url_hash
+            && let Ok(hash) = window.location().hash()
+        {
+            host.apply_url_hash(&hash);
+        }
+
         // Hidden <input> element overlay for native mobile browser keyboards & CJK IME composition
         let hidden_input: HtmlInputElement = document.create_element("input")?.dyn_into()?;
+        hidden_input.set_type("text");
         let st = hidden_input.style();
         let _ = st.set_property("position", "fixed");
         let _ = st.set_property("opacity", "0");
@@ -303,44 +577,155 @@ pub mod wasm_runner {
         }
 
         let host_rc = Rc::new(RefCell::new(host));
-        attach_pointer_listeners(&canvas, host_rc.clone())?;
-        attach_keyboard_ime_listeners(&window, &hidden_input, host_rc.clone())?;
+        let canvas_slot = Rc::new(RefCell::new(canvas.clone()));
+        let last_hidden_val = Rc::new(RefCell::new(String::new()));
+        let is_composing = Rc::new(Cell::new(false));
 
-        // Render loop via requestAnimationFrame (2D Canvas ImageData path guaranteed on all browsers)
-        let ctx_2d: CanvasRenderingContext2d = canvas
-            .get_context("2d")?
-            .ok_or_else(|| wasm_bindgen::JsValue::from_str("2d context unavailable"))?
-            .dyn_into()?;
+        attach_pointer_listeners(&canvas, host_rc.clone())?;
+        attach_keyboard_ime_listeners(
+            &window,
+            &hidden_input,
+            host_rc.clone(),
+            last_hidden_val.clone(),
+            is_composing.clone(),
+        )?;
+
+        if config.sync_url_hash {
+            let h_hash = host_rc.clone();
+            let hash_cb = Closure::wrap(Box::new(move |_ev: HashChangeEvent| {
+                if let Some(win) = web_sys::window()
+                    && let Ok(hash) = win.location().hash()
+                {
+                    h_hash.borrow_mut().apply_url_hash(&hash);
+                }
+            }) as Box<dyn FnMut(HashChangeEvent)>);
+            window
+                .add_event_listener_with_callback("hashchange", hash_cb.as_ref().unchecked_ref())?;
+            hash_cb.forget();
+        }
+
+        let backend_slot: Rc<RefCell<WebRenderBackend>> =
+            Rc::new(RefCell::new(WebRenderBackend::Pending));
+        if config.force_2d_fallback {
+            if let Some(c2d) = obtain_2d_context(&canvas_slot, &host_rc) {
+                *backend_slot.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
+            }
+        } else {
+            let backend_async = backend_slot.clone();
+            let canvas_async = canvas_slot.clone();
+            let host_async = host_rc.clone();
+            let canvas_for_wgpu = canvas.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match GpuSurfacePipeline::new_async(
+                    wgpu::SurfaceTarget::Canvas(canvas_for_wgpu),
+                    pw,
+                    ph,
+                    false,
+                )
+                .await
+                {
+                    Ok(gpu) => {
+                        tracing::info!(
+                            "CraftUI Web renderer initialized ({})",
+                            if gpu.is_using_gpu() {
+                                "WebGPU/Vello GPU"
+                            } else {
+                                "WebGL2/CPUFallback"
+                            }
+                        );
+                        *backend_async.borrow_mut() = WebRenderBackend::Gpu(gpu);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "WebGPU/WebGL2 async init failed ({err}); falling back to 2D canvas"
+                        );
+                        if let Some(c2d) = obtain_2d_context(&canvas_async, &host_async) {
+                            *backend_async.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
+                        }
+                    }
+                }
+            });
+        }
 
         let raf_cb: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
         let raf_cb_clone = raf_cb.clone();
-        let canvas_raf = canvas.clone();
+        let canvas_raf = canvas_slot;
         let window_raf = window.clone();
-        let hidden_raf = hidden_input.clone();
+        let doc_raf = document;
+        let hidden_raf = hidden_input;
+        let sync_hash = config.sync_url_hash;
+        let mut last_ts_ms = window.performance().map(|p| p.now()).unwrap_or(0.0);
 
-        *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move |_ts: f64| {
+        *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move |ts: f64| {
+            let dt_ms = (ts - last_ts_ms).max(1.0);
+            last_ts_ms = ts;
+            let dt_sec = ((dt_ms as f32) / 1000.0).clamp(0.001, 0.05);
+            let now_ms = window_raf
+                .performance()
+                .map(|p| p.now() as u64)
+                .unwrap_or(ts.max(0.0) as u64);
+            let _ = craftui_reactive::tick_timers_at(now_ms);
+
             let mut h = host_rc.borrow_mut();
             let dpr_now = window_raf.device_pixel_ratio() as f32;
-            let bcr = canvas_raf.get_bounding_client_rect();
+            let cur_canvas = canvas_raf.borrow().clone();
+            let bcr = cur_canvas.get_bounding_client_rect();
             let (pw, ph) = h.resize_css(bcr.width() as f32, bcr.height() as f32, dpr_now);
-            if canvas_raf.width() != pw || canvas_raf.height() != ph {
-                canvas_raf.set_width(pw);
-                canvas_raf.set_height(ph);
+            if cur_canvas.width() != pw || cur_canvas.height() != ph {
+                cur_canvas.set_width(pw);
+                cur_canvas.set_height(ph);
             }
-            let _anim = h.step_frame(1.0 / 60.0);
+
+            let _anim = h.step_frame(dt_sec);
+
+            if sync_hash && let Some(new_hash) = h.take_pending_hash_update() {
+                let _ = window_raf.location().set_hash(&new_hash);
+            }
+
             let ime = h.hidden_ime_state();
             if ime.visible {
                 let ist = hidden_raf.style();
                 let _ = ist.set_property("left", &format!("{}px", bcr.left() as f32 + ime.x_dp));
                 let _ = ist.set_property("top", &format!("{}px", bcr.top() as f32 + ime.y_dp));
-                let _ = hidden_raf.focus();
+                if !is_composing.get() && *last_hidden_val.borrow() != ime.value {
+                    hidden_raf.set_value(&ime.value);
+                    *last_hidden_val.borrow_mut() = ime.value.clone();
+                }
+                let hidden_node: &web_sys::Element = hidden_raf.as_ref();
+                let already_focused = doc_raf
+                    .active_element()
+                    .is_some_and(|ae| &ae == hidden_node);
+                if !already_focused {
+                    let _ = hidden_raf.focus();
+                }
             }
-            let (w, h_px, rgba) = h.render_rgba_2d();
-            if let Ok(img) =
-                ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&rgba), w, h_px)
-            {
-                let _ = ctx_2d.put_image_data(&img, 0.0, 0.0);
+
+            match &mut *backend_slot.borrow_mut() {
+                WebRenderBackend::Pending => {}
+                WebRenderBackend::Gpu(gpu) => {
+                    gpu.resize(pw, ph);
+                    let bg = h.tree.theme().background;
+                    let host_ref = &mut *h;
+                    let _ = gpu.render_frame(
+                        &host_ref.scene,
+                        dpr_now,
+                        bg,
+                        &host_ref.textures,
+                        &mut host_ref.tree.text_engine,
+                    );
+                }
+                WebRenderBackend::Canvas2d(ctx_2d) => {
+                    let (w, h_px, rgba) = h.render_rgba_2d();
+                    if let Ok(img) = ImageData::new_with_u8_clamped_array_and_sh(
+                        wasm_bindgen::Clamped(&rgba),
+                        w,
+                        h_px,
+                    ) {
+                        let _ = ctx_2d.put_image_data(&img, 0.0, 0.0);
+                    }
+                }
             }
+
             if let Some(ref closure) = *raf_cb_clone.borrow() {
                 let _ = window_raf.request_animation_frame(closure.as_ref().unchecked_ref());
             }
@@ -391,7 +776,7 @@ pub mod wasm_runner {
             cb.forget();
         }
 
-        let h_w = host.clone();
+        let h_w = host;
         let c_w = canvas.clone();
         let wheel_cb = Closure::wrap(Box::new(move |e: DomWheelEvent| {
             let bcr = c_w.get_bounding_client_rect();
@@ -414,6 +799,8 @@ pub mod wasm_runner {
         window: &web_sys::Window,
         hidden_input: &HtmlInputElement,
         host: Rc<RefCell<WebAppHost>>,
+        last_hidden_val: Rc<RefCell<String>>,
+        is_composing: Rc<Cell<bool>>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         for (ev_name, pressed) in [("keydown", true), ("keyup", false)] {
             let h_c = host.clone();
@@ -431,6 +818,16 @@ pub mod wasm_runner {
             cb.forget();
         }
 
+        let comp_flag_start = is_composing.clone();
+        let comp_start = Closure::wrap(Box::new(move |_e: CompositionEvent| {
+            comp_flag_start.set(true);
+        }) as Box<dyn FnMut(CompositionEvent)>);
+        hidden_input.add_event_listener_with_callback(
+            "compositionstart",
+            comp_start.as_ref().unchecked_ref(),
+        )?;
+        comp_start.forget();
+
         let h_comp_upd = host.clone();
         let comp_upd = Closure::wrap(Box::new(move |e: CompositionEvent| {
             let ev = dom_composition_to_ime(false, e.data().unwrap_or_default());
@@ -442,16 +839,55 @@ pub mod wasm_runner {
         )?;
         comp_upd.forget();
 
-        let h_comp_end = host;
+        let h_comp_end = host.clone();
+        let comp_flag_end = is_composing.clone();
+        let hidden_comp = hidden_input.clone();
+        let last_val_comp = last_hidden_val.clone();
         let comp_end = Closure::wrap(Box::new(move |e: CompositionEvent| {
+            comp_flag_end.set(false);
             let ev = dom_composition_to_ime(true, e.data().unwrap_or_default());
-            h_comp_end.borrow_mut().tree.handle_event(&ev);
+            let mut guard = h_comp_end.borrow_mut();
+            guard.tree.handle_event(&ev);
+            let synced = guard.hidden_ime_state().value;
+            hidden_comp.set_value(&synced);
+            *last_val_comp.borrow_mut() = synced;
         }) as Box<dyn FnMut(CompositionEvent)>);
         hidden_input.add_event_listener_with_callback(
             "compositionend",
             comp_end.as_ref().unchecked_ref(),
         )?;
         comp_end.forget();
+
+        // Mobile virtual keyboard DOM `input` event bridge on `<input>`
+        let h_input = host;
+        let hidden_inp = hidden_input.clone();
+        let comp_flag_inp = is_composing;
+        let last_val_inp = last_hidden_val;
+        let on_input = Closure::wrap(Box::new(move |e: web_sys::Event| {
+            if comp_flag_inp.get() {
+                return;
+            }
+            let Ok(ie) = e.dyn_into::<DomInputEvent>() else {
+                return;
+            };
+            if ie.is_composing() {
+                return;
+            }
+            let current = hidden_inp.value();
+            let prev = last_val_inp.borrow().clone();
+            let input_type = ie.input_type();
+            let data = ie.data();
+            let events = dom_input_to_events(&prev, &current, &input_type, data.as_deref());
+            *last_val_inp.borrow_mut() = current;
+            let mut guard = h_input.borrow_mut();
+            for ev in events {
+                guard.tree.handle_event(&ev);
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        hidden_input
+            .add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref())?;
+        on_input.forget();
+
         Ok(())
     }
 }
@@ -464,12 +900,23 @@ mod tests {
     use craftui_reactive::reset_runtime;
 
     #[test]
-    fn web_host_dpr_ime_overlay_and_2d_fallback_render() {
+    fn web_host_dpr_ime_overlay_hash_router_dom_input_and_2d_fallback_render() {
         reset_runtime();
-        assert_eq!(BrowserRouteSync::route_to_hash("/studio"), "#/studio");
-        assert_eq!(BrowserRouteSync::hash_to_route("#/studio"), "/studio");
+        assert_eq!(BrowserRouteSync::route_to_hash("/settings"), "#/settings");
+        assert_eq!(BrowserRouteSync::hash_to_route("#/settings"), "/settings");
 
         let mut host = WebAppHost::new(UiDispatcher::new(), 400.0, 300.0, 2.0);
+        let router = Router::new(host.scope, "/".to_string());
+        BrowserRouteSync::connect_string_router(host.scope, router);
+        assert_eq!(host.take_pending_hash_update().as_deref(), Some("#/"));
+        assert!(host.apply_url_hash("#/dashboard"));
+        assert_eq!(router.current(), "/dashboard");
+        router.push("/profile".to_string());
+        assert_eq!(
+            host.take_pending_hash_update().as_deref(),
+            Some("#/profile")
+        );
+
         let (pw, ph) = host.resize_css(400.0, 300.0, 2.0);
         assert_eq!((pw, ph), (800, 600));
 
@@ -513,6 +960,16 @@ mod tests {
         let ime = host.hidden_ime_state();
         assert!(ime.visible);
         assert_eq!(ime.value, "hello");
+
+        // Mobile virtual keyboard DOM `input` insert & backspace events
+        for ev in dom_input_to_events("hello", "hello!", "insertText", Some("!")) {
+            host.tree.handle_event(&ev);
+        }
+        assert_eq!(sig.get(), "hello!");
+        for ev in dom_input_to_events("hello!", "hello", "deleteContentBackward", None) {
+            host.tree.handle_event(&ev);
+        }
+        assert_eq!(sig.get(), "hello");
 
         let (rw, rh, rgba) = host.render_rgba_2d();
         assert_eq!((rw, rh), (800, 600));

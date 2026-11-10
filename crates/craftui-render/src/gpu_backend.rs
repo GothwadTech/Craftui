@@ -28,8 +28,8 @@ pub struct GpuSurfacePipeline {
     pub surface: wgpu::Surface<'static>,
     pub config: wgpu::SurfaceConfiguration,
     blitter: TextureBlitter,
-    target_texture: wgpu::Texture,
-    target_view: wgpu::TextureView,
+    target_texture: Option<wgpu::Texture>,
+    target_view: Option<wgpu::TextureView>,
     vello_renderer: Option<Renderer>,
     cpu_fallback: Option<VelloCpuBackend>,
     cpu_upload_texture: Option<wgpu::Texture>,
@@ -38,23 +38,208 @@ pub struct GpuSurfacePipeline {
     image_cache: HashMap<TextureId, CachedGpuImage>,
 }
 
+fn default_wgpu_backends() -> wgpu::Backends {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        wgpu::Backends::from_env().unwrap_or_default()
+    }
+}
+
+fn default_instance_flags() -> wgpu::InstanceFlags {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wgpu::InstanceFlags::default()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        wgpu::InstanceFlags::from_env_or_default()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AdapterAttempt {
+    backends: wgpu::Backends,
+    flags: wgpu::InstanceFlags,
+    force_fallback_adapter: bool,
+}
+
 impl GpuSurfacePipeline {
-    /// Initialize `wgpu` surface + `vello::Renderer`, dropping gracefully to `VelloCpuBackend`
-    /// with texture blit if compute shaders are unavailable or `force_cpu` is true.
+    /// Synchronously initialize `wgpu` surface + `vello::Renderer` (native platforms only).
+    ///
+    /// On `wasm32`, use [`GpuSurfacePipeline::new_async`].
     pub fn new(
         window: impl Into<wgpu::SurfaceTarget<'static>>,
         width: u32,
         height: u32,
         force_cpu: bool,
     ) -> Result<Self> {
-        let backends = wgpu::Backends::from_env().unwrap_or_default();
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (window, width, height, force_cpu);
+            Err(CraftError::Render(
+                "GpuSurfacePipeline::new is unsupported on wasm32; use GpuSurfacePipeline::new_async"
+                    .into(),
+            ))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            pollster::block_on(Self::new_async(window, width, height, force_cpu))
+        }
+    }
+
+    /// Synchronously initialize `wgpu` surface + `vello::Renderer` with an explicit compositor display handle
+    /// (required by OpenGL/EGL on Linux Wayland/X11) and automatic backend fallback retries.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_with_display<T>(
+        target_factory: impl Fn() -> T,
+        display_factory: impl Fn() -> Box<dyn wgpu::wgt::WgpuHasDisplayHandle>,
+        width: u32,
+        height: u32,
+        force_cpu: bool,
+    ) -> Result<Self>
+    where
+        T: Into<wgpu::SurfaceTarget<'static>>,
+    {
+        pollster::block_on(Self::new_with_display_async(
+            target_factory,
+            display_factory,
+            width,
+            height,
+            force_cpu,
+        ))
+    }
+
+    /// Asynchronously initialize `wgpu` surface + `vello::Renderer` with an explicit display handle
+    /// and automatic adapter fallback (default -> non-compliant Vulkan -> OpenGL/EGL -> software fallback).
+    pub async fn new_with_display_async<T>(
+        target_factory: impl Fn() -> T,
+        display_factory: impl Fn() -> Box<dyn wgpu::wgt::WgpuHasDisplayHandle>,
+        width: u32,
+        height: u32,
+        force_cpu: bool,
+    ) -> Result<Self>
+    where
+        T: Into<wgpu::SurfaceTarget<'static>>,
+    {
+        let base_backends = default_wgpu_backends();
+        let base_flags = default_instance_flags();
+        let env_pinned_backend = {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                wgpu::Backends::from_env().is_some()
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                false
+            }
+        };
+
+        let attempts = if !env_pinned_backend && cfg!(not(target_arch = "wasm32")) {
+            vec![
+                AdapterAttempt {
+                    backends: wgpu::Backends::PRIMARY,
+                    flags: base_flags,
+                    force_fallback_adapter: false,
+                },
+                AdapterAttempt {
+                    backends: wgpu::Backends::PRIMARY,
+                    flags: base_flags | wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
+                    force_fallback_adapter: false,
+                },
+                AdapterAttempt {
+                    backends: wgpu::Backends::GL,
+                    flags: base_flags,
+                    force_fallback_adapter: false,
+                },
+                AdapterAttempt {
+                    backends: base_backends,
+                    flags: base_flags | wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
+                    force_fallback_adapter: true,
+                },
+            ]
+        } else {
+            vec![
+                AdapterAttempt {
+                    backends: base_backends,
+                    flags: base_flags,
+                    force_fallback_adapter: false,
+                },
+                AdapterAttempt {
+                    backends: base_backends,
+                    flags: base_flags | wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
+                    force_fallback_adapter: false,
+                },
+                AdapterAttempt {
+                    backends: base_backends,
+                    flags: base_flags | wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
+                    force_fallback_adapter: true,
+                },
+            ]
+        };
+
+        let mut errors = Vec::new();
+        for attempt in attempts {
+            let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(display_factory());
+            desc.backends = attempt.backends;
+            desc.flags = attempt.flags;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                desc.backend_options = desc.backend_options.with_env();
+            }
+
+            let instance = wgpu::Instance::new(desc);
+            let surface = match instance.create_surface(target_factory()) {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.push(format!("{:?} create_surface: {e}", attempt.backends));
+                    continue;
+                }
+            };
+
+            match Self::from_instance_and_surface_with_fallback(
+                instance,
+                surface,
+                width,
+                height,
+                force_cpu,
+                attempt.force_fallback_adapter,
+            )
+            .await
+            {
+                Ok(pipeline) => return Ok(pipeline),
+                Err(e) => {
+                    errors.push(format!(
+                        "{:?} (fallback={}): {e}",
+                        attempt.backends, attempt.force_fallback_adapter
+                    ));
+                }
+            }
+        }
+
+        Err(CraftError::Render(format!(
+            "all wgpu surface/adapter attempts failed: {}",
+            errors.join(" | ")
+        )))
+    }
+
+    /// Asynchronously initialize `wgpu` surface + `vello::Renderer` (works cleanly on WebGPU/WebGL2 WASM and native).
+    pub async fn new_async(
+        window: impl Into<wgpu::SurfaceTarget<'static>>,
+        width: u32,
+        height: u32,
+        force_cpu: bool,
+    ) -> Result<Self> {
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        desc.backends = default_wgpu_backends();
         let instance = wgpu::Instance::new(desc);
         let surface = instance
             .create_surface(window)
             .map_err(|e| CraftError::Render(format!("create_surface failed: {e}")))?;
-        Self::from_instance_and_surface(instance, surface, width, height, force_cpu)
+        Self::from_instance_and_surface_async(instance, surface, width, height, force_cpu).await
     }
 
     /// Initialize GPU/CPU pipeline from an unsafe raw native surface target (e.g. Android `ANativeWindow` or iOS `CAMetalLayer`).
@@ -67,45 +252,80 @@ impl GpuSurfacePipeline {
         height: u32,
         force_cpu: bool,
     ) -> Result<Self> {
-        let backends = wgpu::Backends::from_env().unwrap_or_default();
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends;
-        let instance = wgpu::Instance::new(desc);
-        // SAFETY: forwarded from `new_unsafe` caller invariant that `target` outlives the surface.
-        let surface = unsafe { instance.create_surface_unsafe(target) }
-            .map_err(|e| CraftError::Render(format!("create_surface_unsafe failed: {e}")))?;
-        Self::from_instance_and_surface(instance, surface, width, height, force_cpu)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (target, width, height, force_cpu);
+            Err(CraftError::Render(
+                "GpuSurfacePipeline::new_unsafe is unsupported on wasm32".into(),
+            ))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+            desc.backends = default_wgpu_backends();
+            let instance = wgpu::Instance::new(desc);
+            // SAFETY: forwarded from `new_unsafe` caller invariant that `target` outlives the surface.
+            let surface = unsafe { instance.create_surface_unsafe(target) }
+                .map_err(|e| CraftError::Render(format!("create_surface_unsafe failed: {e}")))?;
+            pollster::block_on(Self::from_instance_and_surface_async(
+                instance, surface, width, height, force_cpu,
+            ))
+        }
     }
 
-    fn from_instance_and_surface(
+    /// Initialize pipeline asynchronously from a pre-constructed `wgpu::Instance` and `wgpu::Surface`.
+    pub async fn from_instance_and_surface_async(
         instance: wgpu::Instance,
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
         force_cpu: bool,
     ) -> Result<Self> {
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        }))
-        .map_err(|e| CraftError::Render(format!("no compatible wgpu adapter: {e}")))?;
+        Self::from_instance_and_surface_with_fallback(
+            instance, surface, width, height, force_cpu, false,
+        )
+        .await
+    }
 
-        let supports_compute = adapter.limits().max_compute_workgroups_per_dimension > 0
+    async fn from_instance_and_surface_with_fallback(
+        instance: wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+        force_cpu: bool,
+        force_fallback_adapter: bool,
+    ) -> Result<Self> {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter,
+                apply_limit_buckets: false,
+            })
+            .await
+            .map_err(|e| CraftError::Render(format!("no compatible wgpu adapter: {e}")))?;
+
+        let adapter_info = adapter.get_info();
+        let supports_compute = adapter_info.backend != wgpu::Backend::Gl
+            && adapter.limits().max_compute_workgroups_per_dimension > 0
             && adapter.limits().max_storage_buffers_per_shader_stage >= 4;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("craftui-wgpu-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: adapter.limits(),
-            memory_hints: wgpu::MemoryHints::default(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            trace: wgpu::Trace::Off,
-        }))
-        .map_err(|e| CraftError::Render(format!("request_device failed: {e}")))?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("craftui-wgpu-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter.limits(),
+                memory_hints: wgpu::MemoryHints::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .map_err(|e| CraftError::Render(format!("request_device failed: {e}")))?;
 
         let caps = surface.get_capabilities(&adapter);
+        let default_fmt = *caps.formats.first().ok_or_else(|| {
+            CraftError::Render("wgpu surface reports no supported pixel formats".into())
+        })?;
         let format = caps
             .formats
             .iter()
@@ -116,7 +336,7 @@ impl GpuSurfacePipeline {
                     wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
                 )
             })
-            .unwrap_or(caps.formats[0]);
+            .unwrap_or(default_fmt);
 
         let w = width.max(1);
         let h = height.max(1);
@@ -133,7 +353,6 @@ impl GpuSurfacePipeline {
         };
         surface.configure(&device, &config);
 
-        let (target_texture, target_view) = create_vello_target(&device, w, h);
         let blitter = TextureBlitter::new(&device, format);
 
         let use_vello_gpu = !force_cpu && supports_compute;
@@ -155,6 +374,13 @@ impl GpuSurfacePipeline {
             }
         } else {
             None
+        };
+
+        let (target_texture, target_view) = if vello_renderer.is_some() {
+            let (tex, view) = create_vello_target(&device, w, h);
+            (Some(tex), Some(view))
+        } else {
+            (None, None)
         };
 
         let (cpu_fallback, cpu_upload_texture, cpu_upload_view) = if vello_renderer.is_none() {
@@ -196,9 +422,11 @@ impl GpuSurfacePipeline {
         self.config.width = w;
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
-        let (tex, view) = create_vello_target(&self.device, w, h);
-        self.target_texture = tex;
-        self.target_view = view;
+        if self.vello_renderer.is_some() {
+            let (tex, view) = create_vello_target(&self.device, w, h);
+            self.target_texture = Some(tex);
+            self.target_view = Some(view);
+        }
         if self.cpu_fallback.is_some() {
             let (tex, view) = create_cpu_upload_target(&self.device, w, h);
             self.cpu_upload_texture = Some(tex);
@@ -249,7 +477,9 @@ impl GpuSurfacePipeline {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let blit_source_view: &wgpu::TextureView =
-            if let Some(ref mut vello_renderer) = self.vello_renderer {
+            if let (Some(vello_renderer), Some(target_view)) =
+                (self.vello_renderer.as_mut(), self.target_view.as_ref())
+            {
                 encode_vello_scene(
                     &mut self.scene,
                     paint_scene,
@@ -263,7 +493,7 @@ impl GpuSurfacePipeline {
                         &self.device,
                         &self.queue,
                         &self.scene,
-                        &self.target_view,
+                        target_view,
                         &RenderParams {
                             base_color: background.to_peniko(),
                             width: w,
@@ -272,7 +502,7 @@ impl GpuSurfacePipeline {
                         },
                     )
                     .map_err(|e| CraftError::Render(format!("vello render failed: {e}")))?;
-                &self.target_view
+                target_view
             } else if let (Some(cpu), Some(upload_tex), Some(upload_view)) = (
                 self.cpu_fallback.as_mut(),
                 self.cpu_upload_texture.as_ref(),
@@ -578,13 +808,23 @@ fn encode_vello_scene(
                 }
             }
             PaintCommand::PlatformViewHole { rect, .. } => {
+                // Punch a clear alpha hole through composited background layers so underlying OS PlatformView shows cleanly.
+                let r = rect.to_kurbo();
+                scene.push_layer(
+                    peniko::Fill::NonZero,
+                    peniko::BlendMode::from(peniko::Compose::Clear),
+                    1.0,
+                    base,
+                    &r,
+                );
                 scene.fill(
                     peniko::Fill::NonZero,
                     base,
-                    Color::TRANSPARENT.to_peniko(),
+                    Color::BLACK.to_peniko(),
                     None,
-                    &rect.to_kurbo(),
+                    &r,
                 );
+                scene.pop_layer();
             }
         }
     }

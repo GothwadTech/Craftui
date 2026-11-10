@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use craftui_core::{CraftError, Result, Size, WindowMetrics};
-use craftui_dsl::{Severity, generate_rust, parse, validate};
+use craftui_dsl::{Severity, generate_rust, resolve_file};
 use craftui_reactive::Scope;
 use craftui_render::{
     BackendKind, PaintScene, TextureRegistry, render_scene_to_rgba, write_rgba_png,
@@ -144,10 +144,7 @@ fn run() -> Result<()> {
             width,
             height,
         } => {
-            let source = std::fs::read_to_string(&file).map_err(|e| {
-                CraftError::Platform(format!("failed reading {}: {e}", file.display()))
-            })?;
-            render_cui_to_png(&source, component.as_deref(), width, height, &out)?;
+            render_cui_file_to_png(&file, component.as_deref(), width, height, &out)?;
             println!(
                 "Rendered {}x{} snapshot to {}",
                 width,
@@ -281,12 +278,8 @@ pub fn check_cui_paths(path: &Path, emit_rust: bool) -> Result<CheckStats> {
 
     for f in files {
         stats.files += 1;
-        let src = std::fs::read_to_string(&f)
-            .map_err(|e| CraftError::Platform(format!("failed reading {}: {e}", f.display())))?;
-        let parsed = parse(&src);
-        let mut diags = parsed.diagnostics;
-        diags.extend(validate(&parsed.file));
-        for d in &diags {
+        let resolved = resolve_file(&f);
+        for d in &resolved.diagnostics {
             match d.severity {
                 Severity::Warning => {
                     stats.warnings += 1;
@@ -311,7 +304,7 @@ pub fn check_cui_paths(path: &Path, emit_rust: bool) -> Result<CheckStats> {
             }
         }
         if emit_rust {
-            let code = generate_rust(&parsed.file);
+            let code = generate_rust(&resolved.merged);
             println!("// === {} ===\n{}", f.display(), code);
         }
     }
@@ -355,7 +348,29 @@ pub fn render_cui_to_png(
     let mut tree = WidgetTree::new(cx);
     let mut session = HotReloadSession::new(cx);
     session.reload(source, component, &mut tree)?;
+    render_loaded_tree(&mut tree, width, height, out_png)
+}
 
+pub fn render_cui_file_to_png(
+    file: &Path,
+    component: Option<&str>,
+    width: u32,
+    height: u32,
+    out_png: &Path,
+) -> Result<()> {
+    let cx = Scope::root();
+    let mut tree = WidgetTree::new(cx);
+    let mut session = HotReloadSession::new(cx);
+    session.reload_file(file, component, &mut tree)?;
+    render_loaded_tree(&mut tree, width, height, out_png)
+}
+
+fn render_loaded_tree(
+    tree: &mut WidgetTree,
+    width: u32,
+    height: u32,
+    out_png: &Path,
+) -> Result<()> {
     let metrics = WindowMetrics {
         logical_size: Size::new(width.max(1) as f32, height.max(1) as f32),
         scale_factor: 1.0,
@@ -415,20 +430,25 @@ fn run_dev_watcher(entry: &Path, dir: &Path) -> Result<()> {
         if !touches_cui {
             continue;
         }
-        for p in event.paths {
-            if p.extension().and_then(|e| e.to_str()) == Some("cui")
-                && let Ok(src) = std::fs::read_to_string(&p)
-            {
-                let t0 = Instant::now();
-                match session.reload(&src, None, &mut tree) {
-                    Ok(_) => println!(
-                        "[hot-reload] {} synced in {:.2}ms",
-                        p.display(),
-                        t0.elapsed().as_secs_f64() * 1000.0
-                    ),
-                    Err(e) => eprintln!("[hot-reload] {}: {e}", p.display()),
-                }
-            }
+        let target_path = if entry.exists() {
+            entry.to_path_buf()
+        } else if let Some(p) = event
+            .paths
+            .iter()
+            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("cui"))
+        {
+            p.clone()
+        } else {
+            continue;
+        };
+        let t0 = Instant::now();
+        match session.reload_file(&target_path, None, &mut tree) {
+            Ok(_) => println!(
+                "[hot-reload] {} synced in {:.2}ms",
+                target_path.display(),
+                t0.elapsed().as_secs_f64() * 1000.0
+            ),
+            Err(e) => eprintln!("[hot-reload] {}: {e}", target_path.display()),
         }
     }
     Ok(())
@@ -525,6 +545,23 @@ mod tests {
         let png_out = tmp.join("preview.png");
         render_cui_to_png(&src, Some("MainView"), 320, 240, &png_out).unwrap();
         assert!(std::fs::metadata(&png_out).unwrap().len() > 100);
+
+        // Multi-file import check + file render
+        std::fs::write(
+            tmp.join("ui/badge.cui"),
+            "export component Badge {\n in property <string> label: \"v1\";\n Text { text: label; }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("ui/app.cui"),
+            "import { Badge } from \"./badge.cui\"\nexport component App {\n Column { Badge { label: \"OK\"; } }\n}\n",
+        )
+        .unwrap();
+        let multi_stats = check_cui_paths(&tmp.join("ui/app.cui"), false).unwrap();
+        assert_eq!(multi_stats.errors, 0);
+        let multi_png = tmp.join("multi.png");
+        render_cui_file_to_png(&tmp.join("ui/app.cui"), Some("App"), 240, 120, &multi_png).unwrap();
+        assert!(std::fs::metadata(&multi_png).unwrap().len() > 100);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

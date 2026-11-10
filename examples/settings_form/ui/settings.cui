@@ -1,0 +1,230 @@
+export component SettingsScreen {
+    in-out property <string> display_name: "Ada Lovelace";
+    in-out property <string> role_bio: "Cross-platform systems & graphics engineer.";
+    in-out property <bool> desktop_alerts: true;
+    in-out property <bool> auto_save: true;
+    in-out property <int> density_idx: 1;
+    in-out property <int> locale_idx: 0;
+    in-out property <float> ui_scale: 1.0;
+    in-out property <string> status_line: "Profile synced";
+    callback on_copy_profile();
+    callback on_import_profile();
+    callback on_export_profile();
+    callback on_cycle_theme();
+
+    Column {
+        width: 100%;
+        height: 100%;
+        background: Theme.background;
+        padding: 24dp;
+        gap: 14dp;
+
+        Row {
+            width: 100%;
+            align: Center;
+            justify: SpaceBetween;
+
+            Column {
+                gap: 4dp;
+                Text {
+                    text: "Application Preferences";
+                    font_size: 24;
+                    font_weight: Bold;
+                    color: Theme.text_primary;
+                }
+                Text {
+                    text: status_line;
+                    font_size: 13;
+                    color: Theme.text_secondary;
+                }
+            }
+
+            Row {
+                gap: 8dp;
+                Button {
+                    text: "Cycle Theme";
+                    background: Theme.primary;
+                    foreground: Theme.on_primary;
+                    on_tap => { on_cycle_theme(); }
+                }
+            }
+        }
+
+        Divider {
+            direction: Horizontal;
+            thickness: 1;
+            color: Theme.border;
+        }
+
+        if display_name.is_empty() : Row {
+            width: 100%;
+            background: Theme.danger;
+            border_radius: 8dp;
+            padding_x: 12dp;
+            padding_y: 8dp;
+            gap: 8dp;
+            align: Center;
+
+            Icon {
+                svg: "close";
+                size: 16;
+                color: Theme.on_primary;
+            }
+            Text {
+                text: "Display name is required before exporting your profile.";
+                font_size: 13;
+                font_weight: SemiBold;
+                color: Theme.on_primary;
+            }
+        }
+
+        ScrollView {
+            width: 100%;
+            flex_grow: 1.0;
+            background: Theme.surface;
+            border_radius: 12dp;
+            border_width: 1;
+            border_color: Theme.border;
+            padding: 18dp;
+
+            Column {
+                width: 100%;
+                gap: 14dp;
+
+                Column {
+                    width: 100%;
+                    gap: 6dp;
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+                        Text {
+                            text: "Display Name";
+                            font_size: 14;
+                            font_weight: SemiBold;
+                            color: Theme.text_primary;
+                        }
+                        Tooltip { text: "Shown in exports and shared workspace headers."; }
+                    }
+                    TextInput {
+                        placeholder: "Enter your name...";
+                        value <=> display_name;
+                    }
+                }
+
+                Column {
+                    width: 100%;
+                    gap: 6dp;
+                    Text {
+                        text: "Bio & Notes";
+                        font_size: 14;
+                        font_weight: SemiBold;
+                        color: Theme.text_primary;
+                    }
+                    TextArea {
+                        placeholder: "Write a short bio or signature...";
+                        value <=> role_bio;
+                    }
+                }
+
+                Row {
+                    width: 100%;
+                    gap: 20dp;
+                    Switch {
+                        checked <=> desktop_alerts;
+                        label: "Desktop Notifications";
+                    }
+                    Checkbox {
+                        checked <=> auto_save;
+                        label: "Auto-Save Changes";
+                    }
+                }
+
+                Column {
+                    width: 100%;
+                    gap: 6dp;
+                    Text {
+                        text: "Interface Density";
+                        font_size: 14;
+                        font_weight: SemiBold;
+                        color: Theme.text_primary;
+                    }
+                    RadioGroup {
+                        direction: Horizontal;
+                        options: ["Compact", "Comfortable", "Spacious"];
+                        selected: density_idx;
+                        on_change => {
+                            density_idx = index;
+                            status_line = "Density updated";
+                        }
+                    }
+                }
+
+                Row {
+                    width: 100%;
+                    gap: 16dp;
+                    align: Center;
+
+                    Column {
+                        flex_grow: 1.0;
+                        gap: 6dp;
+                        Text {
+                            text: "Locale";
+                            font_size: 14;
+                            font_weight: SemiBold;
+                            color: Theme.text_primary;
+                        }
+                        Select {
+                            options: ["English (US)", "Japanese", "Spanish", "German"];
+                            selected: locale_idx;
+                            on_change => {
+                                locale_idx = index;
+                                status_line = "Locale updated";
+                            }
+                        }
+                    }
+
+                    Column {
+                        flex_grow: 1.0;
+                        gap: 6dp;
+                        Slider {
+                            value <=> ui_scale;
+                            min: 0.75;
+                            max: 1.50;
+                            label: "UI Scale Factor";
+                        }
+                    }
+                }
+            }
+        }
+
+        Row {
+            width: 100%;
+            justify: SpaceBetween;
+            align: Center;
+
+            Row {
+                gap: 10dp;
+                Button {
+                    text: "Copy Profile JSON";
+                    background: Theme.surface_variant;
+                    foreground: Theme.text_primary;
+                    on_tap => { on_copy_profile(); }
+                }
+                Button {
+                    text: "Import...";
+                    background: Theme.surface_variant;
+                    foreground: Theme.text_primary;
+                    on_tap => { on_import_profile(); }
+                }
+            }
+
+            Button {
+                text: "Export Profile...";
+                background: Theme.primary;
+                foreground: Theme.on_primary;
+                disabled: display_name.is_empty();
+                on_tap => { on_export_profile(); }
+            }
+        }
+    }
+}

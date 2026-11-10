@@ -1,0 +1,332 @@
+import { SectionHeader, TagChip, ShowcaseMetric, GalleryTab } from "./tokens.cui"
+
+export component ShowcaseScreen {
+    in-out property <int> active_tab: 0;
+    in-out property <string> draft_note: "CraftUI general-purpose UI framework";
+    in-out property <string> multi_notes: "Multi-line TextArea supporting\nselection and line navigation.";
+    in-out property <bool> feature_enabled: true;
+    in-out property <bool> agree_terms: true;
+    in-out property <int> selected_region: 1;
+    in-out property <int> density_choice: 0;
+    in-out property <float> progress_level: 0.68;
+    in-out property <bool> show_modal: false;
+    in-out property <bool> show_sheet: false;
+    in-out property <bool> show_menu: false;
+    in-out property <bool> pin_tag: true;
+    in-out property <string> last_action: "Ready";
+    callback on_theme_cycle();
+
+    Stack {
+        width: 100%;
+        height: 100%;
+        background: Theme.background;
+
+        Column {
+            width: 100%;
+            height: 100%;
+            padding: 20dp;
+            gap: 14dp;
+
+            Row {
+                width: 100%;
+                align: Center;
+                justify: SpaceBetween;
+
+                Column {
+                    gap: 4dp;
+                    Text {
+                        text: "CraftUI Widget & DSL Gallery";
+                        font_size: 24;
+                        font_weight: Bold;
+                        color: Theme.text_primary;
+                    }
+                    Text {
+                        text: last_action;
+                        font_size: 13;
+                        color: Theme.text_secondary;
+                    }
+                }
+
+                Row {
+                    gap: 10dp;
+                    TagChip {
+                        label: "MIT Core";
+                        selected <=> pin_tag;
+                    }
+                    Button {
+                        text: "Menu";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        on_tap => {
+                            show_menu = !show_menu;
+                            last_action = "Toggled PopupMenu";
+                        }
+                    }
+                    Button {
+                        text: "Cycle Theme";
+                        background: Theme.primary;
+                        foreground: Theme.on_primary;
+                        on_tap => {
+                            last_action = "Requested theme change";
+                            on_theme_cycle();
+                        }
+                    }
+                }
+            }
+
+            Divider {
+                direction: Horizontal;
+                thickness: 1;
+                color: Theme.border;
+            }
+
+            Tabs {
+                tabs: ["Controls", "Virtual Data", "Overlays"];
+                active: active_tab;
+                on_change => {
+                    active_tab = index;
+                    last_action = "Switched tab to #" + index;
+                }
+            }
+
+            if active_tab == 0 : Row {
+                width: 100%;
+                flex_grow: 1.0;
+                gap: 16dp;
+
+                Column {
+                    flex_grow: 1.0;
+                    background: Theme.surface;
+                    border_radius: 12dp;
+                    border_width: 1;
+                    border_color: Theme.border;
+                    padding: 16dp;
+                    gap: 12dp;
+
+                    SectionHeader {
+                        title: "Inputs & Selection";
+                        badge: "Reactive";
+                        icon_name: "edit";
+                        on_badge_tap => { last_action = "Header badge clicked"; }
+                    }
+
+                    TextInput {
+                        placeholder: "Type headline...";
+                        value <=> draft_note;
+                    }
+
+                    TextArea {
+                        placeholder: "Multiline notes...";
+                        value <=> multi_notes;
+                    }
+
+                    Row {
+                        width: 100%;
+                        gap: 12dp;
+                        align: Center;
+                        Select {
+                            flex_grow: 1.0;
+                            options: ["North America", "Europe", "Asia-Pacific"];
+                            selected: selected_region;
+                            on_change => {
+                                selected_region = index;
+                                last_action = "Selected region #" + index;
+                            }
+                        }
+                        Tooltip { text: "Region dropdown with popup options"; }
+                    }
+
+                    RadioGroup {
+                        direction: Horizontal;
+                        options: ["Compact", "Balanced", "Spacious"];
+                        selected: density_choice;
+                        on_change => {
+                            density_choice = index;
+                            last_action = "Density #" + index;
+                        }
+                    }
+                }
+
+                Column {
+                    flex_grow: 1.0;
+                    background: Theme.surface;
+                    border_radius: 12dp;
+                    border_width: 1;
+                    border_color: Theme.border;
+                    padding: 16dp;
+                    gap: 12dp;
+
+                    SectionHeader {
+                        title: "Toggles, Progress & Tags";
+                        badge: "MIT";
+                        icon_name: "settings";
+                        on_badge_tap => { last_action = "Settings section tapped"; }
+                    }
+
+                    Row {
+                        width: 100%;
+                        gap: 16dp;
+                        Switch {
+                            checked <=> feature_enabled;
+                            label: "Live Preview";
+                        }
+                        Checkbox {
+                            checked <=> agree_terms;
+                            label: "Validated Schema";
+                        }
+                    }
+
+                    Slider {
+                        value <=> progress_level;
+                        min: 0.0;
+                        max: 1.0;
+                        label: "Completion";
+                    }
+
+                    ProgressIndicator {
+                        progress: progress_level;
+                    }
+
+                    if feature_enabled : Row {
+                        gap: 8dp;
+                        for tag, idx in ["Rust", "MIT", "GPU", "WASM"] : Button {
+                            text: tag;
+                            background: Theme.surface_variant;
+                            foreground: Theme.text_primary;
+                            border_radius: 14dp;
+                            on_tap => { last_action = "Tapped badge #" + idx; }
+                        }
+                    } else : Text {
+                        text: "Preview badges hidden when toggle is off.";
+                        font_size: 13;
+                        color: Theme.text_secondary;
+                    }
+                }
+            } else : Column {
+                width: 100%;
+                flex_grow: 1.0;
+                background: Theme.surface;
+                border_radius: 12dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding: 16dp;
+                gap: 12dp;
+
+                if active_tab == 1 : VirtualList {
+                    width: 100%;
+                    height: 260dp;
+                    item_extent: 38;
+                    for item_num in 0..24 : Row {
+                        width: 100%;
+                        padding_x: 12dp;
+                        align: Center;
+                        justify: SpaceBetween;
+                        Text {
+                            text: "Virtual Row #" + item_num;
+                            font_size: 14;
+                            color: Theme.text_primary;
+                        }
+                        Icon {
+                            svg: "check";
+                            size: 16;
+                            color: Theme.primary;
+                        }
+                    }
+                } else : Column {
+                    gap: 12dp;
+                    Text {
+                        text: "Modal Dialogs & Bottom Sheets";
+                        font_size: 18;
+                        font_weight: SemiBold;
+                        color: Theme.text_primary;
+                    }
+                    Row {
+                        gap: 12dp;
+                        Button {
+                            text: "Open Modal Dialog";
+                            background: Theme.primary;
+                            foreground: Theme.on_primary;
+                            on_tap => { show_modal = true; }
+                        }
+                        Button {
+                            text: "Open Bottom Sheet";
+                            background: Theme.surface_variant;
+                            foreground: Theme.text_primary;
+                            on_tap => { show_sheet = true; }
+                        }
+                    }
+                }
+            }
+        }
+
+        PopupMenu {
+            open: show_menu;
+            items: ["Inspect Tokens", "Open Dialog", "Reset Tab"];
+            on_select => {
+                show_menu = false;
+                last_action = "Menu item #" + index;
+            }
+            on_close => { show_menu = false; }
+        }
+
+        Modal {
+            open <=> show_modal;
+            Container {
+                width: 340dp;
+                background: Theme.surface;
+                border_radius: 14dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding: 20dp;
+                gap: 12dp;
+                shadow: true;
+
+                Text {
+                    text: "Declarative .cui Modal";
+                    font_size: 18;
+                    font_weight: Bold;
+                    color: Theme.text_primary;
+                }
+                Text {
+                    text: "Press Escape or click backdrop/Close to dismiss.";
+                    font_size: 14;
+                    color: Theme.text_secondary;
+                }
+                Row {
+                    width: 100%;
+                    justify: End;
+                    Button {
+                        text: "Close";
+                        background: Theme.primary;
+                        foreground: Theme.on_primary;
+                        on_tap => { show_modal = false; }
+                    }
+                }
+            }
+        }
+
+        BottomSheet {
+            open <=> show_sheet;
+            Container {
+                width: 100%;
+                max_width: 560dp;
+                background: Theme.surface;
+                border_radius: 16dp;
+                padding: 20dp;
+                gap: 12dp;
+                Text {
+                    text: "Responsive Bottom Sheet";
+                    font_size: 18;
+                    font_weight: SemiBold;
+                    color: Theme.text_primary;
+                }
+                Button {
+                    text: "Dismiss Sheet";
+                    background: Theme.primary;
+                    foreground: Theme.on_primary;
+                    on_tap => { show_sheet = false; }
+                }
+            }
+        }
+    }
+}

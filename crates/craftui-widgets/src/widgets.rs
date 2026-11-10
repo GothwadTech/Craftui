@@ -1,9 +1,11 @@
+use craftui_a11y::A11yMetadata;
 use craftui_core::{
-    Axis, Border, BoxShadow, Brush, CornerRadii, Fit, PlatformViewId, Rect, TextureId,
+    Axis, Border, BoxShadow, Brush, Color, CornerRadii, Fit, PlatformViewId, Point, Rect, Size,
+    TextureId, ThemeTokens, UiEvent,
 };
 use craftui_reactive::{Computed, ReadSignal, Signal};
 use craftui_render::PaintScene;
-use craftui_text::{TextEditorState, TextStyle};
+use craftui_text::{TextEditorState, TextEngine, TextStyle};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -77,6 +79,7 @@ where
 pub struct BoxStyle {
     pub background: Option<ReactiveValue<Brush>>,
     pub border: Option<Border>,
+    pub border_color: Option<ReactiveValue<Color>>,
     pub shadow: Option<BoxShadow>,
     pub radius: CornerRadii,
     pub opacity: f32,
@@ -94,9 +97,58 @@ impl BoxStyle {
 }
 
 pub type TapHandler = Rc<RefCell<dyn FnMut()>>;
+pub type HoverCallback = Rc<RefCell<dyn FnMut(bool)>>;
+pub type BoolCallback = Rc<RefCell<dyn FnMut(bool)>>;
+pub type FloatCallback = Rc<RefCell<dyn FnMut(f32)>>;
+pub type IndexCallback = Rc<RefCell<dyn FnMut(usize)>>;
 pub type TextCallback = Rc<RefCell<dyn FnMut(String)>>;
+pub type PinchRotateCallback = Rc<RefCell<dyn FnMut(Point, f32, f32)>>;
 pub type CanvasPaintFn = Rc<dyn Fn(Rect, &mut PaintScene)>;
 pub type CanvasPointerFn = Rc<RefCell<dyn FnMut(Rect, &craftui_core::PointerEvent)>>;
+
+/// Public extension trait enabling downstream applications to implement custom
+/// layout, painting, input handling, and accessibility widgets without editing `craftui-widgets`.
+pub trait CustomWidget {
+    fn debug_name(&self) -> &'static str {
+        "CustomWidget"
+    }
+
+    fn measure(
+        &mut self,
+        constraints: craftui_core::Constraints,
+        _text_engine: &mut TextEngine,
+        _theme: &ThemeTokens,
+    ) -> Size {
+        let w = if constraints.max_width.is_finite() {
+            constraints.max_width.min(120.0)
+        } else {
+            120.0
+        };
+        let h = if constraints.max_height.is_finite() {
+            constraints.max_height.min(40.0)
+        } else {
+            40.0
+        };
+        Size::new(w.max(constraints.min_width), h.max(constraints.min_height))
+    }
+
+    fn paint(
+        &mut self,
+        rect: Rect,
+        scene: &mut PaintScene,
+        text_engine: &mut TextEngine,
+        theme: &ThemeTokens,
+        focused: bool,
+    );
+
+    fn handle_event(&mut self, _rect: Rect, _event: &UiEvent) -> bool {
+        false
+    }
+
+    fn a11y(&self) -> A11yMetadata {
+        A11yMetadata::default()
+    }
+}
 
 /// Concrete widget behavior stored in a retained [`WidgetNode`](crate::WidgetNode).
 #[derive(Clone)]
@@ -104,14 +156,24 @@ pub enum WidgetKind {
     Container,
     Spacer,
     SafeArea,
+    Divider {
+        axis: Axis,
+        thickness: f32,
+        color: Option<ReactiveValue<Color>>,
+    },
     Text {
         content: ReactiveValue<String>,
         style: ReactiveValue<TextStyle>,
     },
+    Icon {
+        svg: ReactiveValue<String>,
+        size: f32,
+        color: Option<ReactiveValue<Color>>,
+    },
     Button {
         label: ReactiveValue<String>,
         disabled: ReactiveValue<bool>,
-        foreground: Option<ReactiveValue<craftui_core::Color>>,
+        foreground: Option<ReactiveValue<Color>>,
         on_tap: Option<TapHandler>,
         hovered: bool,
         pressed: bool,
@@ -144,6 +206,7 @@ pub enum WidgetKind {
         editor: TextEditorState,
         placeholder: String,
         style: TextStyle,
+        multiline: bool,
         bound_signal: Option<Signal<String>>,
         on_change: Option<TextCallback>,
         on_submit: Option<TextCallback>,
@@ -151,16 +214,47 @@ pub enum WidgetKind {
     Checkbox {
         checked: Signal<bool>,
         label: String,
+        on_change: Option<BoolCallback>,
     },
     Switch {
         checked: Signal<bool>,
         label: String,
+        on_change: Option<BoolCallback>,
     },
     Slider {
         value: Signal<f32>,
         min: f32,
         max: f32,
         label: String,
+        on_change: Option<FloatCallback>,
+    },
+    Tabs {
+        tabs: ReactiveValue<Vec<String>>,
+        active: Signal<usize>,
+        on_change: Option<IndexCallback>,
+    },
+    Select {
+        options: ReactiveValue<Vec<String>>,
+        selected: Signal<usize>,
+        open: bool,
+        placeholder: String,
+        on_change: Option<IndexCallback>,
+    },
+    RadioGroup {
+        options: ReactiveValue<Vec<String>>,
+        selected: Signal<usize>,
+        axis: Axis,
+        on_change: Option<IndexCallback>,
+    },
+    PopupMenu {
+        open: ReactiveValue<bool>,
+        items: ReactiveValue<Vec<String>>,
+        anchor: Option<Point>,
+        on_select: Option<IndexCallback>,
+        on_close: Option<TapHandler>,
+    },
+    Tooltip {
+        text: ReactiveValue<String>,
     },
     ProgressIndicator {
         progress: ReactiveValue<Option<f32>>,
@@ -174,4 +268,5 @@ pub enum WidgetKind {
     PlatformView {
         id: PlatformViewId,
     },
+    Custom(Rc<RefCell<dyn CustomWidget>>),
 }

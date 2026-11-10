@@ -1,5 +1,8 @@
-use craftui_dsl::{BUILTIN_PROPS, BUILTIN_WIDGETS, Severity, SyntaxKind, parse, validate};
+use craftui_dsl::{
+    BUILTIN_EVENTS, BUILTIN_PROPS, BUILTIN_WIDGETS, Severity, SyntaxKind, parse, resolve_source,
+};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
@@ -21,7 +24,7 @@ impl CuiBackend {
     }
 
     async fn update_document(&self, uri: Url, text: String) {
-        let diags = analyze_cui_diagnostics(&text);
+        let diags = analyze_cui_document(Some(&uri), &text);
         self.docs.write().await.insert(uri.clone(), text);
         self.client.publish_diagnostics(uri, diags, None).await;
     }
@@ -135,15 +138,22 @@ impl LanguageServer for CuiBackend {
 }
 
 pub fn analyze_cui_diagnostics(text: &str) -> Vec<Diagnostic> {
-    let parsed = parse(text);
-    let mut all = parsed.diagnostics;
-    all.extend(validate(&parsed.file));
+    analyze_cui_document(None, text)
+}
 
-    all.into_iter()
+pub fn analyze_cui_document(uri: Option<&Url>, text: &str) -> Vec<Diagnostic> {
+    let base_dir: Option<PathBuf> = uri
+        .and_then(|u| u.to_file_path().ok())
+        .and_then(|p| p.parent().map(PathBuf::from));
+    let resolved = resolve_source(text, base_dir.as_deref());
+
+    resolved
+        .diagnostics
+        .into_iter()
         .map(|d| Diagnostic {
             range: Range {
-                start: offset_to_position(text, d.span.start),
-                end: offset_to_position(text, d.span.end),
+                start: offset_to_position(text, d.span.start.min(text.len())),
+                end: offset_to_position(text, d.span.end.min(text.len())),
             },
             severity: Some(match d.severity {
                 Severity::Error => DiagnosticSeverity::ERROR,
@@ -227,15 +237,58 @@ pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
             ..Default::default()
         });
     }
+    for &ev in BUILTIN_EVENTS {
+        items.push(CompletionItem {
+            label: ev.to_string(),
+            kind: Some(CompletionItemKind::EVENT),
+            detail: Some("CraftUI Widget Event Handler".to_string()),
+            ..Default::default()
+        });
+    }
+    let parsed = parse(text);
+    for comp in &parsed.file.components {
+        items.push(CompletionItem {
+            label: comp.name.clone(),
+            kind: Some(CompletionItemKind::CLASS),
+            detail: Some("User .cui Component".to_string()),
+            ..Default::default()
+        });
+    }
+    for st in &parsed.file.structs {
+        items.push(CompletionItem {
+            label: st.name.clone(),
+            kind: Some(CompletionItemKind::STRUCT),
+            detail: Some("User .cui Struct".to_string()),
+            ..Default::default()
+        });
+    }
+    for en in &parsed.file.enums {
+        items.push(CompletionItem {
+            label: en.name.clone(),
+            kind: Some(CompletionItemKind::ENUM),
+            detail: Some("User .cui Enum".to_string()),
+            ..Default::default()
+        });
+    }
     for kw in [
         "export component",
+        "export struct",
+        "export enum",
+        "import { } from \"\"",
         "in property",
         "out property",
         "in-out property",
         "callback",
         "Theme",
+        "ThemeMode",
         "SafeArea.insets",
+        "for item, idx in",
+        "if",
+        "else",
         "on_tap =>",
+        "on_change =>",
+        "on_submit =>",
+        "on_close =>",
     ] {
         items.push(CompletionItem {
             label: kw.to_string(),
@@ -254,11 +307,19 @@ pub fn lookup_hover(text: &str, pos: Position) -> Option<Hover> {
         "Row" => "Horizontal Flexbox container (`FlexDirection::Row`).",
         "Grid" => "CSS Grid container (`columns`, `gap`).",
         "Stack" => "Overlay / Z-stack positioning container.",
-        "Text" => {
-            "Multi-script shaped text rendered with Parley & Vello (`text`, `font_size`, `color`)."
+        "Spacer" => "Flexible space-filling node (`flex_grow: 1.0`).",
+        "SafeArea" => {
+            "Hardware cutout / Dynamic Island / gesture-bar + keyboard inset token (`SafeArea.insets`)."
         }
+        "Divider" => {
+            "Horizontal or vertical hairline separator (`direction`, `thickness`, `color`)."
+        }
+        "Text" => {
+            "Multi-script shaped text rendered with Parley & Vello (`text`, `font_size`, `font_weight`, `color`)."
+        }
+        "Icon" => "Scalable vector SVG / built-in preset icon (`svg`, `size`, `color`).",
         "Button" => {
-            "Accessible interactive button with hover/press feedback (`text`, `background`, `on_tap`)."
+            "Accessible interactive button with hover/press feedback (`text`, `background`, `foreground`, `on_tap`)."
         }
         "ImageView" | "Image" => {
             "Zero-copy GPU texture / PixelBuffer viewport (`source`, `fit`, `border_radius`)."
@@ -269,14 +330,38 @@ pub fn lookup_hover(text: &str, pos: Position) -> Option<Hover> {
             "Windowed recycling list/grid capable of 10k+ items at 120fps."
         }
         "Slider" => {
-            "Accessible continuous range slider supporting `<=>` two-way binding (`min`, `max`, `value`)."
+            "Accessible continuous range slider supporting `<=>` two-way binding (`min`, `max`, `value`, `on_change`)."
         }
+        "TextInput" => {
+            "Single-line text editor with selection, clipboard shortcuts, IME, and `<=>` two-way `value` binding."
+        }
+        "TextArea" => {
+            "Multi-line text editor supporting newlines, Up/Down cursor motion, and `<=>` two-way `value` binding."
+        }
+        "Checkbox" | "Switch" => {
+            "Boolean toggle control supporting `<=>` two-way `checked` binding and `on_change`."
+        }
+        "Tabs" | "TabBar" => "Tab navigation bar (`tabs`, `<=> active`, `on_change`).",
+        "Select" | "Dropdown" => {
+            "Single-selection dropdown picker with floating menu (`options`, `<=> selected`, `placeholder`)."
+        }
+        "RadioGroup" => "Exclusive choice radio group (`options`, `<=> selected`, `direction`).",
+        "PopupMenu" => {
+            "Anchored context / action menu dismissed on outside click or `Escape` (`open`, `items`, `on_select`, `on_close`)."
+        }
+        "Tooltip" => "Informational callout rendered on hover or focus (`text`).",
+        "ProgressIndicator" => {
+            "Determinate (`0.0..=1.0`) or indeterminate animated progress bar (`progress`)."
+        }
+        "Modal" | "BottomSheet" => {
+            "Focus-trapping overlay / sheet with backdrop click & `Escape` dismissal (`open`, `on_close`)."
+        }
+        "PlatformView" => "Native platform view / texture hole-punch container.",
         "Theme" => {
-            "Active `ThemeTokens` design system palette (Light, Dark, AMOLED, HighContrast)."
+            "Reactive `ThemeTokens` design system palette (`background`, `surface`, `primary`, `border`, etc.)."
         }
-        "SafeArea" => {
-            "Hardware cutout / Dynamic Island / gesture-bar + keyboard inset token (`SafeArea.insets`)."
-        }
+        "ThemeMode" => "Theme variant enum (`Light`, `Dark`, `Amoled`, `HighContrast`).",
+        w if BUILTIN_EVENTS.contains(&w) => "CraftUI widget event handler (`on_tap => { ... }`).",
         w if BUILTIN_PROPS.contains(&w) => {
             "CraftUI element property (`px`, `dp`, `%`, Color, Enum, or reactive binding)."
         }
@@ -397,5 +482,54 @@ mod tests {
                 .iter()
                 .any(|d| d.severity == Some(DiagnosticSeverity::WARNING))
         );
+    }
+
+    #[test]
+    fn lsp_multifile_imports_events_structs_and_new_widget_hover() {
+        let tmp = std::env::temp_dir().join("craftui_lsp_import_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let types_path = tmp.join("types.cui");
+        let app_path = tmp.join("app.cui");
+        std::fs::write(
+            &types_path,
+            r#"export enum FilterKind { All, Open }
+export struct ItemRow { id: int, label: string }
+export component Badge {
+    in property <string> text: "";
+    Text { text: text; }
+}
+"#,
+        )
+        .unwrap();
+
+        let app_src = r#"import { FilterKind, ItemRow, Badge } from "./types.cui";
+export component App {
+    in-out property <string> query: "";
+    Column {
+        Tabs { tabs: ["A", "B"]; active: 0; on_change => { } }
+        TextInput { value <=> query; on_submit => { } }
+        Badge { text: "ok"; }
+    }
+}
+"#;
+        std::fs::write(&app_path, app_src).unwrap();
+        let url = Url::from_file_path(&app_path).unwrap();
+        let diags = analyze_cui_document(Some(&url), app_src);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+        let comps = build_completions(app_src, Position::new(4, 12));
+        assert!(comps.iter().any(|c| c.label == "Tabs"));
+        assert!(comps.iter().any(|c| c.label == "PopupMenu"));
+        assert!(comps.iter().any(|c| c.label == "on_submit"));
+        assert!(comps.iter().any(|c| c.label == "on_double_tap"));
+
+        let hover_tabs = lookup_hover(app_src, Position::new(4, 9)).expect("hover on Tabs");
+        match hover_tabs.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => assert!(s.contains("Tab")),
+            _ => panic!("expected scalar hover"),
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

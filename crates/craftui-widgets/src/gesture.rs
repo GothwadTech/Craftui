@@ -236,6 +236,14 @@ impl GestureArena {
                             node,
                             velocity: p.tracker.velocity_px_per_sec(),
                         });
+                    } else if !p.long_press_fired
+                        && p.down_pos.distance_to(event.position) < self.drag_slop_dp
+                        && event.timestamp_ms.saturating_sub(p.down_time_ms) >= self.long_press_ms
+                    {
+                        out.push(RecognizedGesture::LongPress {
+                            node,
+                            position: event.position,
+                        });
                     } else if !p.long_press_fired {
                         out.push(RecognizedGesture::Tap {
                             node,

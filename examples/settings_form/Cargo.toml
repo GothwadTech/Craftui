@@ -1,12 +1,12 @@
 [package]
-name = "scancraft-studio-demo"
+name = "craftui-example-settings"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "scancraft-studio-demo"
+name = "craftui-settings"
 path = "src/main.rs"
 
 [lints]

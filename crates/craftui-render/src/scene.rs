@@ -99,6 +99,18 @@ impl PaintScene {
         });
     }
 
+    pub fn fill_path(&mut self, path: BezPath, brush: impl Into<Brush>) {
+        self.commands.push(PaintCommand::FillPath {
+            path,
+            brush: brush.into(),
+        });
+    }
+
+    pub fn stroke_path(&mut self, path: BezPath, color: Color, width: f32) {
+        self.commands
+            .push(PaintCommand::StrokePath { path, color, width });
+    }
+
     pub fn draw_text(
         &mut self,
         origin: Point,

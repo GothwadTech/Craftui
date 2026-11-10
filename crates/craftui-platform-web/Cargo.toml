@@ -40,6 +40,8 @@ web-sys = { workspace = true, features = [
     "Location",
     "HashChangeEvent",
     "Performance",
+    "Navigator",
+    "Clipboard",
     "CanvasRenderingContext2d",
     "ImageData",
 ] }

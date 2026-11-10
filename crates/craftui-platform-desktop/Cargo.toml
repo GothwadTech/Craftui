@@ -17,6 +17,7 @@ craftui-a11y.workspace = true
 craftui-widgets.workspace = true
 craftui-runtime.workspace = true
 winit.workspace = true
+softbuffer.workspace = true
 accesskit.workspace = true
 accesskit_winit.workspace = true
 notify.workspace = true

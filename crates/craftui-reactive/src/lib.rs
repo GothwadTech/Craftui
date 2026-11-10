@@ -4,13 +4,15 @@
 //! eliminating `.clone()` boilerplate in UI event closures while guaranteeing
 //! deterministic scope-based disposal.
 
-use craftui_core::{DirtyFlags, NodeId};
+use craftui_core::{DirtyFlags, NodeId, UiDispatcher, monotonic_ms};
 use slotmap::{SlotMap, new_key_type};
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 new_key_type! {
     struct SignalKey;
@@ -63,6 +65,31 @@ struct ScopeSlot {
     disposed: bool,
 }
 
+struct UiTimer {
+    due_ms: u64,
+    interval_ms: Option<u64>,
+    cancelled: Arc<AtomicBool>,
+    callback: Rc<RefCell<dyn FnMut()>>,
+}
+
+/// Cancellation handle for a [`Scope`]-bound async task, timeout, or interval.
+#[derive(Clone, Debug)]
+pub struct TaskHandle {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl TaskHandle {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+type PendingJobCallback = Box<dyn FnOnce(Box<dyn Any>)>;
+
 struct ReactiveArena {
     scopes: SlotMap<ScopeKey, ScopeSlot>,
     signals: SlotMap<SignalKey, SignalSlot>,
@@ -72,6 +99,10 @@ struct ReactiveArena {
     pending_effects: VecDeque<EffectKey>,
     pending_effect_set: HashSet<EffectKey>,
     dirty_nodes: HashMap<NodeId, DirtyFlags>,
+    dispatcher: UiDispatcher,
+    pending_jobs: HashMap<u64, PendingJobCallback>,
+    next_job_id: u64,
+    ui_timers: Vec<UiTimer>,
     batch_depth: usize,
     flushing: bool,
     root_scope: Option<ScopeKey>,
@@ -99,6 +130,10 @@ impl ReactiveArena {
             pending_effects: VecDeque::new(),
             pending_effect_set: HashSet::new(),
             dirty_nodes: HashMap::new(),
+            dispatcher: UiDispatcher::new(),
+            pending_jobs: HashMap::new(),
+            next_job_id: 1,
+            ui_timers: Vec::new(),
             batch_depth: 0,
             flushing: false,
             root_scope: Some(root_scope),
@@ -115,6 +150,108 @@ pub fn reset_runtime() {
     ARENA.with(|a| {
         *a.borrow_mut() = ReactiveArena::new();
     });
+}
+
+/// Access the UI thread's default [`UiDispatcher`] (used by platform loops and async scope hooks).
+pub fn ui_dispatcher() -> UiDispatcher {
+    ARENA.with(|a| a.borrow().dispatcher.clone())
+}
+
+/// Replace the default [`UiDispatcher`] (e.g., installed by a platform runner with a window waker).
+pub fn set_ui_dispatcher(dispatcher: UiDispatcher) {
+    ARENA.with(|a| {
+        a.borrow_mut().dispatcher = dispatcher;
+    });
+}
+
+/// Drain due UI timers + pending dispatcher closures at explicit `now_ms`.
+pub fn tick_timers_at(now_ms: u64) -> usize {
+    let dispatcher = ui_dispatcher();
+    let mut executed = dispatcher.drain_at(now_ms);
+
+    let due_timers = ARENA.with(|a| {
+        let mut arena = a.borrow_mut();
+        let mut due = Vec::new();
+        let mut remaining = Vec::with_capacity(arena.ui_timers.len());
+        for timer in arena.ui_timers.drain(..) {
+            if timer.cancelled.load(Ordering::SeqCst) {
+                continue;
+            }
+            if timer.due_ms <= now_ms {
+                due.push(timer);
+            } else {
+                remaining.push(timer);
+            }
+        }
+        arena.ui_timers = remaining;
+        due
+    });
+
+    let mut requeue = Vec::new();
+    for mut timer in due_timers {
+        if timer.cancelled.load(Ordering::SeqCst) {
+            continue;
+        }
+        if let Ok(mut cb) = timer.callback.try_borrow_mut() {
+            cb();
+        }
+        executed += 1;
+        if let Some(interval) = timer.interval_ms
+            && !timer.cancelled.load(Ordering::SeqCst)
+        {
+            let mut next_due = timer.due_ms.saturating_add(interval);
+            if next_due <= now_ms {
+                next_due = now_ms.saturating_add(interval);
+            }
+            timer.due_ms = next_due;
+            requeue.push(timer);
+        }
+    }
+
+    if !requeue.is_empty() {
+        ARENA.with(|a| {
+            a.borrow_mut().ui_timers.extend(requeue);
+        });
+    }
+
+    executed
+}
+
+/// Drain due UI timers and pending async completions as of [`monotonic_ms`].
+pub fn tick_timers() -> usize {
+    tick_timers_at(monotonic_ms())
+}
+
+/// Minimum delay in ms before the next reactive UI timer or dispatcher timer fires.
+pub fn next_timer_delay_ms(now_ms: u64) -> Option<u64> {
+    let ui_min = ARENA.with(|a| {
+        a.borrow()
+            .ui_timers
+            .iter()
+            .filter(|t| !t.cancelled.load(Ordering::SeqCst))
+            .map(|t| t.due_ms.saturating_sub(now_ms))
+            .min()
+    });
+    let disp_min = ui_dispatcher().next_due_delay_ms(now_ms);
+    match (ui_min, disp_min) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn complete_ui_job(job_id: u64, cancelled: &AtomicBool, result: Box<dyn Any>) {
+    if cancelled.load(Ordering::SeqCst) {
+        ARENA.with(|a| {
+            a.borrow_mut().pending_jobs.remove(&job_id);
+        });
+        return;
+    }
+    let job = ARENA.with(|a| a.borrow_mut().pending_jobs.remove(&job_id));
+    if let Some(cb) = job {
+        cb(result);
+    }
 }
 
 /// Drain all widget [`NodeId`]s marked dirty since the last frame.
@@ -314,6 +451,153 @@ impl Scope {
             }
             None
         })
+    }
+
+    /// Look up a `UiDispatcher` from ancestor context, falling back to the runtime dispatcher.
+    pub fn dispatcher(self) -> UiDispatcher {
+        self.use_context::<UiDispatcher>()
+            .unwrap_or_else(ui_dispatcher)
+    }
+
+    /// Run `work` off the UI thread (on native targets) and deliver the result to `on_complete`
+    /// on the UI thread if this [`Scope`] is still alive.
+    pub fn spawn_task<T, W, C>(self, work: W, on_complete: C) -> TaskHandle
+    where
+        T: Send + 'static,
+        W: FnOnce() -> T + Send + 'static,
+        C: FnOnce(T) + 'static,
+    {
+        let dispatcher = self.dispatcher();
+        self.spawn_with_dispatcher(&dispatcher, work, on_complete)
+    }
+
+    /// Run `work` asynchronously and marshal the completion back via an explicit [`UiDispatcher`].
+    pub fn spawn_with_dispatcher<T, W, C>(
+        self,
+        dispatcher: &UiDispatcher,
+        work: W,
+        on_complete: C,
+    ) -> TaskHandle
+    where
+        T: Send + 'static,
+        W: FnOnce() -> T + Send + 'static,
+        C: FnOnce(T) + 'static,
+    {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let job_id = ARENA.with(|a| {
+            let mut arena = a.borrow_mut();
+            let id = arena.next_job_id;
+            arena.next_job_id = arena.next_job_id.wrapping_add(1).max(1);
+            arena.pending_jobs.insert(
+                id,
+                Box::new(move |boxed: Box<dyn Any>| {
+                    if let Ok(value) = boxed.downcast::<T>() {
+                        on_complete(*value);
+                    }
+                }),
+            );
+            id
+        });
+
+        let cancel_cleanup = cancelled.clone();
+        self.on_cleanup(move || {
+            cancel_cleanup.store(true, Ordering::SeqCst);
+            ARENA.with(|a| {
+                a.borrow_mut().pending_jobs.remove(&job_id);
+            });
+        });
+
+        let handle = TaskHandle {
+            cancelled: cancelled.clone(),
+        };
+        let disp = dispatcher.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn(move || {
+                if cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                let result = work();
+                if cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                disp.post(move || {
+                    complete_ui_job(job_id, &cancelled, Box::new(result));
+                });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            disp.post(move || {
+                if cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                let result = work();
+                complete_ui_job(job_id, &cancelled, Box::new(result));
+            });
+        }
+
+        handle
+    }
+
+    /// Schedule a one-shot UI-thread timeout automatically cancelled when this [`Scope`] is disposed.
+    pub fn timeout(self, delay_ms: u64, on_fire: impl FnOnce() + 'static) -> TaskHandle {
+        self.timeout_at(monotonic_ms(), delay_ms, on_fire)
+    }
+
+    /// Schedule a one-shot UI-thread timeout relative to an explicit `now_ms`.
+    pub fn timeout_at(
+        self,
+        now_ms: u64,
+        delay_ms: u64,
+        on_fire: impl FnOnce() + 'static,
+    ) -> TaskHandle {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut opt = Some(on_fire);
+        ARENA.with(|a| {
+            a.borrow_mut().ui_timers.push(UiTimer {
+                due_ms: now_ms.saturating_add(delay_ms),
+                interval_ms: None,
+                cancelled: cancelled.clone(),
+                callback: Rc::new(RefCell::new(move || {
+                    if let Some(f) = opt.take() {
+                        f();
+                    }
+                })),
+            });
+        });
+        let cancel_cleanup = cancelled.clone();
+        self.on_cleanup(move || cancel_cleanup.store(true, Ordering::SeqCst));
+        TaskHandle { cancelled }
+    }
+
+    /// Schedule a repeating UI-thread interval automatically cancelled when this [`Scope`] is disposed.
+    pub fn interval(self, interval_ms: u64, on_tick: impl FnMut() + 'static) -> TaskHandle {
+        self.interval_at(monotonic_ms(), interval_ms, on_tick)
+    }
+
+    /// Schedule a repeating UI-thread interval relative to an explicit `now_ms`.
+    pub fn interval_at(
+        self,
+        now_ms: u64,
+        interval_ms: u64,
+        on_tick: impl FnMut() + 'static,
+    ) -> TaskHandle {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let step = interval_ms.max(1);
+        ARENA.with(|a| {
+            a.borrow_mut().ui_timers.push(UiTimer {
+                due_ms: now_ms.saturating_add(step),
+                interval_ms: Some(step),
+                cancelled: cancelled.clone(),
+                callback: Rc::new(RefCell::new(on_tick)),
+            });
+        });
+        let cancel_cleanup = cancelled.clone();
+        self.on_cleanup(move || cancel_cleanup.store(true, Ordering::SeqCst));
+        TaskHandle { cancelled }
     }
 
     pub fn is_alive(self) -> bool {
@@ -994,5 +1278,70 @@ mod tests {
         let dirty = drain_dirty_nodes();
         assert_eq!(dirty, vec![(n1, DirtyFlags::PAINT)]);
         assert!(drain_dirty_nodes().is_empty());
+    }
+
+    #[test]
+    fn scope_timers_and_spawn_task_respect_disposal() {
+        reset_runtime();
+        let root = Scope::root();
+        let child = root.child_scope();
+
+        let fired = child.signal(0i32);
+        child.timeout_at(100, 25, move || fired.set(fired.get() + 10));
+        let iv = child.interval_at(100, 50, move || fired.set(fired.get() + 1));
+
+        assert_eq!(next_timer_delay_ms(100), Some(25));
+        assert_eq!(tick_timers_at(125), 1);
+        assert_eq!(fired.get(), 10);
+        assert_eq!(tick_timers_at(150), 1);
+        assert_eq!(fired.get(), 11);
+
+        iv.cancel();
+        assert_eq!(tick_timers_at(300), 0);
+
+        // Spawn async task on background thread and drain back onto UI thread
+        let result_sig = child.signal(String::new());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let disp = UiDispatcher::with_waker(move || {
+            let _ = tx.send(());
+        });
+        child.spawn_with_dispatcher(
+            &disp,
+            || "loaded".to_string(),
+            move |val| result_sig.set(val),
+        );
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .expect("worker signaled waker");
+        assert_eq!(disp.drain(), 1);
+        assert_eq!(result_sig.get(), "loaded");
+
+        // Disposed scope prevents queued completion from executing even if work already finished
+        let stale_ran = Rc::new(Cell::new(false));
+        let stale_flag = stale_ran.clone();
+        let orphan = root.child_scope();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (woke_tx, woke_rx) = std::sync::mpsc::channel();
+        let disp2 = UiDispatcher::with_waker(move || {
+            let _ = woke_tx.send(());
+        });
+        orphan.spawn_with_dispatcher(
+            &disp2,
+            move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                123u32
+            },
+            move |_| stale_flag.set(true),
+        );
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("worker started");
+        orphan.dispose();
+        let _ = release_tx.send(());
+        // Short wait ensures worker exited cleanly without posting cancelled work
+        let _ = woke_rx.recv_timeout(std::time::Duration::from_millis(50));
+        disp2.drain();
+        assert!(!stale_ran.get());
     }
 }

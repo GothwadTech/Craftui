@@ -87,51 +87,101 @@ pub const fn auto() -> craftui_core::Length {
 
 pub mod prelude {
     pub use crate::{auto, dp, pct, px};
+    pub use craftui_a11y::{A11yMetadata, A11yRole};
     pub use craftui_core::{
-        Alignment, Axis, Border, BoxShadow, Breakpoint, Brush, Color, Constraints, CornerRadii,
-        Direction, DirtyFlags, Fit, ImeEvent, Insets, Justify, KeyCode, KeyEvent, Length,
-        Modifiers, NodeId, PlatformViewId, Point, PointerButton, PointerEvent, PointerId,
-        PointerPhase, Rect, ScrollDelta, Size, TextureId, ThemeMode, ThemeTokens, UiDispatcher,
-        UiEvent, WindowMetrics,
+        Alignment, Axis, Border, BoxShadow, Breakpoint, Brush, ClipboardBackend, Color,
+        Constraints, CornerRadii, Direction, DirtyFlags, FileDialogBackend, FileDialogRequest,
+        FileFilter, Fit, ImeEvent, Insets, Justify, KeyCode, KeyEvent, Length, Modifiers, NodeId,
+        PlatformServices, PlatformViewId, Point, PointerButton, PointerEvent, PointerId,
+        PointerPhase, Rect, ScrollDelta, Size, TextureId, ThemeMode, ThemeOverride, ThemeTokens,
+        UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
     };
     pub use craftui_layout::{LayoutMode, LayoutStyle};
     pub use craftui_macros::{component, cui};
-    pub use craftui_reactive::{Computed, Effect, ReadSignal, Scope, Signal, batch, untrack};
+    pub use craftui_reactive::{
+        Computed, Effect, ReadSignal, Scope, Signal, TaskHandle, batch, next_timer_delay_ms,
+        tick_timers, tick_timers_at, untrack,
+    };
     pub use craftui_render::{
         BackendKind, PaintCommand, PaintScene, PixelBufferHandle, TextureHandle, TextureRegistry,
         kurbo, render_scene_to_rgba,
     };
     pub use craftui_text::{TextAlign, TextEditorState, TextStyle};
     pub use craftui_widgets::{
-        BoxStyle, Easing, GestureArena, InspectorState, ReactiveValue, RecognizedGesture, Router,
-        ScrollPhysics, Spring, Tween, View, ViewFn, WidgetKind, WidgetTree,
+        BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CustomWidget, Easing,
+        FloatCallback, GestureArena, HoverCallback, IndexCallback, InspectorState,
+        PinchRotateCallback, ReactiveValue, RecognizedGesture, Router, ScrollPhysics, Spring,
+        TapHandler, TextCallback, Tween, View, ViewFn, VirtualItemFactory, WidgetKind, WidgetTree,
     };
 
     #[cfg(feature = "desktop")]
-    pub use craftui_platform_desktop::{AppContext, WindowConfig, run_app, run_hot_reload_cui};
+    pub use craftui_platform_desktop::{
+        AppContext, DesktopClipboard, DesktopFileDialog, WindowConfig, WindowLauncher, run_app,
+        run_hot_reload_cui,
+    };
 }
 
 #[cfg(test)]
 mod tests {
     use super::prelude::*;
     use craftui_reactive::reset_runtime;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     #[component]
     fn sample_panel(cx: Scope, count: Signal<i32>) -> impl View {
+        let name = cx.signal("World".to_string());
+        let active_tab = cx.signal(0usize);
+        let agreed = cx.signal(true);
+        let volume = cx.signal(0.4f32);
+        let choice = cx.signal(1usize);
+        let notes = cx.signal("Line 1".to_string());
+        let modal_open = cx.signal(false);
+
         cui! {
-            Column(width: pct(100), height: pct(100), bg: theme.background, padding: 16, gap: 12) {
-                Text(text: move || format!("Count = {}", count.get()), size: 22)
-                Button(
-                    label: "Add",
-                    bg: theme.primary,
-                    on_tap: move || count.update(|v| *v += 1)
-                )
+            Column(
+                width: pct(100),
+                height: pct(100),
+                bg: theme.background,
+                border_width: 1,
+                border_color: theme.border,
+                padding: 16,
+                gap: 10
+            ) {
+                Row(width: pct(100), align: Alignment::Center, gap: 8) {
+                    Icon(svg: "check", size: 20, color: theme.primary)
+                    Text(text: move || format!("Count = {}", count.get()), size: 20, color: theme.text_primary)
+                    Tooltip(text: "Interactive count badge")
+                }
+                Divider(axis: Axis::Horizontal, thickness: 1, color: theme.border)
+                Tabs(tabs: vec!["General".into(), "Preview".into()], active: active_tab)
+                Row(width: pct(100), gap: 8) {
+                    TextInput(placeholder: "Name", value: name)
+                    Button(
+                        label: "Add",
+                        bg: theme.primary,
+                        fg: theme.on_primary,
+                        on_tap: move || count.update(|v| *v += 1)
+                    )
+                }
+                TextArea(placeholder: "Notes", value: notes)
+                Row(width: pct(100), gap: 12) {
+                    Checkbox(checked: agreed, label: "Agree")
+                    Switch(checked: agreed, label: "Notify")
+                    Select(options: vec!["Alpha".into(), "Beta".into()], selected: choice)
+                }
+                RadioGroup(options: vec!["Compact".into(), "Comfortable".into()], selected: choice)
+                Slider(value: volume, min: 0.0, max: 1.0, label: "Volume")
+                ProgressIndicator(progress: Some(0.65))
+                Modal(open: modal_open, on_close: move || modal_open.set(false)) {
+                    Text(text: "Inside Modal", color: theme.text_primary)
+                }
             }
         }
     }
 
     #[test]
-    fn facade_cui_macro_and_component_render_snapshot() {
+    fn facade_cui_macro_supports_all_widgets_and_live_theme_switch() {
         reset_runtime();
         let cx = Scope::root();
         let count = cx.signal(0);
@@ -139,7 +189,7 @@ mod tests {
         tree.mount(cx, sample_panel(cx, count));
 
         let metrics = WindowMetrics {
-            logical_size: Size::new(320.0, 200.0),
+            logical_size: Size::new(480.0, 640.0),
             scale_factor: 1.0,
             ..Default::default()
         };
@@ -148,17 +198,51 @@ mod tests {
         tree.paint(&mut scene);
 
         let textures = TextureRegistry::new();
-        let rgba = render_scene_to_rgba(
+        let dark_rgba = render_scene_to_rgba(
             BackendKind::VelloCpu,
             &scene,
-            320,
-            200,
+            480,
+            640,
             1.0,
             tree.theme().background,
             &textures,
             &mut tree.text_engine,
         );
-        assert_eq!(rgba.len(), 320 * 200 * 4);
-        assert!(rgba.iter().any(|&b| b > 20));
+        assert_eq!(dark_rgba.len(), 480 * 640 * 4);
+        assert!(dark_rgba.iter().any(|&b| b > 20));
+
+        // Verify reactive `Theme.*` tokens in `cui!` respond live to ThemeMode + ThemeOverride changes
+        tree.set_theme_mode(ThemeMode::Light);
+        for _ in 0..240 {
+            if !tree.tick_animations(0.016) {
+                break;
+            }
+        }
+        assert_eq!(tree.theme().mode, ThemeMode::Light);
+
+        let mut light_scene = PaintScene::new();
+        tree.paint(&mut light_scene);
+        let light_rgba = render_scene_to_rgba(
+            BackendKind::VelloCpu,
+            &light_scene,
+            480,
+            640,
+            1.0,
+            tree.theme().background,
+            &textures,
+            &mut tree.text_engine,
+        );
+        assert_ne!(dark_rgba, light_rgba);
+
+        // Verify Scope timer hooks cleanly fire when ticked
+        let ticks = Rc::new(Cell::new(0usize));
+        let t_c = ticks.clone();
+        let handle = cx.interval_at(100, 50, move || t_c.set(t_c.get() + 1));
+        tick_timers_at(150);
+        tick_timers_at(200);
+        assert_eq!(ticks.get(), 2);
+        handle.cancel();
+        tick_timers_at(300);
+        assert_eq!(ticks.get(), 2);
     }
 }

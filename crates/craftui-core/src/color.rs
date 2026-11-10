@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn hex_parsing_and_lerp() {
-        assert_eq!(Color::from_hex("#00BA66"), Some(Color::rgb(0, 186, 102)));
+        assert_eq!(Color::from_hex("#3B82F6"), Some(Color::rgb(59, 130, 246)));
         assert_eq!(
             Color::from_hex("#FFF8"),
             Some(Color::rgba(255, 255, 255, 136))

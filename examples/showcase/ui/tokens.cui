@@ -1,0 +1,68 @@
+export struct ShowcaseMetric {
+    label: string = "Metric",
+    detail: string = "Ready",
+}
+
+export enum GalleryTab {
+    Controls,
+    DataList,
+    Overlays,
+}
+
+export component SectionHeader {
+    in property <string> title: "Section";
+    in property <string> badge: "v0.1";
+    in property <string> icon_name: "check";
+    callback on_badge_tap();
+
+    Row {
+        width: 100%;
+        align: Center;
+        justify: SpaceBetween;
+
+        Row {
+            gap: 8dp;
+            align: Center;
+            Icon {
+                svg: icon_name;
+                size: 18;
+                color: Theme.primary;
+            }
+            Text {
+                text: title;
+                font_size: 18;
+                font_weight: SemiBold;
+                color: Theme.text_primary;
+            }
+        }
+
+        Button {
+            text: badge;
+            background: Theme.surface_variant;
+            foreground: Theme.text_primary;
+            border_radius: 14dp;
+            on_tap => { on_badge_tap(); }
+        }
+    }
+}
+
+export component TagChip {
+    in property <string> label: "Tag";
+    in-out property <bool> selected: false;
+
+    Container {
+        if selected : Button {
+            text: label;
+            background: Theme.primary;
+            foreground: Theme.on_primary;
+            border_radius: 16dp;
+            on_tap => { selected = false; }
+        } else : Button {
+            text: label;
+            background: Theme.surface_variant;
+            foreground: Theme.text_primary;
+            border_radius: 16dp;
+            on_tap => { selected = true; }
+        }
+    }
+}

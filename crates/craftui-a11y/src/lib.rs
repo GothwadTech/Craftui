@@ -15,9 +15,18 @@ pub enum A11yRole {
     Label,
     Button,
     TextInput,
+    MultilineTextInput,
     CheckBox,
+    RadioButton,
     Switch,
     Slider,
+    ComboBox,
+    TabList,
+    Tab,
+    Menu,
+    MenuItem,
+    Tooltip,
+    Divider,
     ProgressIndicator,
     Image,
     ScrollView,
@@ -35,9 +44,18 @@ impl A11yRole {
             Self::Label => accesskit::Role::Label,
             Self::Button => accesskit::Role::Button,
             Self::TextInput => accesskit::Role::TextInput,
+            Self::MultilineTextInput => accesskit::Role::MultilineTextInput,
             Self::CheckBox => accesskit::Role::CheckBox,
+            Self::RadioButton => accesskit::Role::RadioButton,
             Self::Switch => accesskit::Role::Switch,
             Self::Slider => accesskit::Role::Slider,
+            Self::ComboBox => accesskit::Role::ComboBox,
+            Self::TabList => accesskit::Role::TabList,
+            Self::Tab => accesskit::Role::Tab,
+            Self::Menu => accesskit::Role::Menu,
+            Self::MenuItem => accesskit::Role::MenuItem,
+            Self::Tooltip => accesskit::Role::Tooltip,
+            Self::Divider => accesskit::Role::Splitter,
             Self::ProgressIndicator => accesskit::Role::ProgressIndicator,
             Self::Image => accesskit::Role::Image,
             Self::ScrollView => accesskit::Role::ScrollView,
@@ -170,7 +188,13 @@ impl A11yBridge {
             });
 
             match snap.meta.role {
-                A11yRole::Button | A11yRole::CheckBox | A11yRole::Switch => {
+                A11yRole::Button
+                | A11yRole::CheckBox
+                | A11yRole::Switch
+                | A11yRole::RadioButton
+                | A11yRole::Tab
+                | A11yRole::MenuItem
+                | A11yRole::ComboBox => {
                     ak_node.add_action(accesskit::Action::Click);
                 }
                 A11yRole::Slider => {
@@ -178,7 +202,7 @@ impl A11yBridge {
                     ak_node.add_action(accesskit::Action::Decrement);
                     ak_node.add_action(accesskit::Action::SetValue);
                 }
-                A11yRole::TextInput => {
+                A11yRole::TextInput | A11yRole::MultilineTextInput => {
                     ak_node.add_action(accesskit::Action::SetValue);
                     ak_node.add_action(accesskit::Action::Focus);
                 }
@@ -259,7 +283,7 @@ mod tests {
                     bounds: Rect::new(20.0, 20.0, 120.0, 40.0),
                     meta: A11yMetadata {
                         role: A11yRole::Button,
-                        label: Some("Save Scan".into()),
+                        label: Some("Submit".into()),
                         focusable: true,
                         ..Default::default()
                     },

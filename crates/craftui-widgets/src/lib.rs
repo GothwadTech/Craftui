@@ -13,7 +13,9 @@ pub use inspector::InspectorState;
 pub use router::Router;
 pub use tree::{VirtualItemFactory, WidgetNode, WidgetTree};
 pub use widgets::{
-    BoxStyle, CanvasPaintFn, CanvasPointerFn, ReactiveValue, TapHandler, TextCallback, WidgetKind,
+    BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CustomWidget, FloatCallback,
+    HoverCallback, IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, TextCallback,
+    WidgetKind,
 };
 
 /// Composable declarative view mountable onto a [`WidgetTree`].
@@ -64,7 +66,7 @@ mod tests {
     use craftui_reactive::{Scope, reset_runtime};
     use craftui_render::{BackendKind, PaintScene, TextureRegistry, render_scene_to_rgba};
     use craftui_text::TextStyle;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     #[test]
@@ -220,5 +222,262 @@ mod tests {
             }
         }
         assert_eq!(tree.theme().mode, ThemeMode::Light);
+    }
+
+    struct CounterBadgeWidget {
+        hits: Rc<Cell<usize>>,
+    }
+
+    impl CustomWidget for CounterBadgeWidget {
+        fn debug_name(&self) -> &'static str {
+            "CounterBadgeWidget"
+        }
+
+        fn measure(
+            &mut self,
+            _constraints: craftui_core::Constraints,
+            _text_engine: &mut craftui_text::TextEngine,
+            _theme: &craftui_core::ThemeTokens,
+        ) -> Size {
+            Size::new(90.0, 32.0)
+        }
+
+        fn paint(
+            &mut self,
+            rect: craftui_core::Rect,
+            scene: &mut PaintScene,
+            _text_engine: &mut craftui_text::TextEngine,
+            theme: &craftui_core::ThemeTokens,
+            focused: bool,
+        ) {
+            scene.fill_rect(
+                rect,
+                if focused {
+                    theme.primary
+                } else {
+                    theme.surface_variant
+                },
+                craftui_core::CornerRadii::all(8.0),
+            );
+        }
+
+        fn handle_event(&mut self, _rect: craftui_core::Rect, event: &UiEvent) -> bool {
+            if let UiEvent::Pointer(pe) = event
+                && matches!(pe.phase, PointerPhase::Down)
+            {
+                self.hits.set(self.hits.get() + 1);
+                return true;
+            }
+            false
+        }
+    }
+
+    #[test]
+    fn custom_widget_new_controls_gestures_and_keyboard_traversal() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let metrics = WindowMetrics {
+            logical_size: Size::new(500.0, 500.0),
+            ..Default::default()
+        };
+
+        let root = tree.column(cx);
+        let tab_idx = cx.signal(0usize);
+        let sel_idx = cx.signal(0usize);
+        let rad_idx = cx.signal(0usize);
+        let area_sig = cx.signal("line1".to_string());
+        let modal_open = cx.signal(false);
+
+        let tabs = tree.tabs(cx, vec!["Overview".into(), "Logs".into()], tab_idx);
+        let select = tree.select(
+            cx,
+            vec!["Alpha".into(), "Beta".into(), "Gamma".into()],
+            sel_idx,
+            "Choose...",
+        );
+        let radio = tree.radio_group(
+            cx,
+            vec!["Small".into(), "Large".into()],
+            rad_idx,
+            Axis::Horizontal,
+        );
+        let textarea = tree.text_area(cx, "", "Notes...", Some(area_sig));
+        let div = tree.divider(cx, Axis::Horizontal, 2.0);
+        let ico = tree.icon(cx, "check", 24.0, None);
+        let badge_hits = Rc::new(Cell::new(0usize));
+        let badge = tree.custom_widget(
+            cx,
+            CounterBadgeWidget {
+                hits: badge_hits.clone(),
+            },
+            LayoutStyle::row(),
+        );
+        let modal = tree.overlay(
+            cx,
+            modal_open,
+            false,
+            Some(Rc::new(RefCell::new(move || modal_open.set(false)))),
+        );
+        let modal_btn = tree.button(cx, "Confirm", move || modal_open.set(false));
+        tree.append_child(modal, modal_btn);
+
+        for child in [tabs, select, radio, textarea, div, ico, badge, modal] {
+            tree.append_child(root, child);
+        }
+        tree.set_root(root);
+        tree.layout(metrics);
+
+        // Verify gestures: DoubleTap, LongPress, Hover, PinchRotate
+        let dbl_hits = Rc::new(Cell::new(0usize));
+        let dbl_c = dbl_hits.clone();
+        tree.set_on_double_tap(badge, move || dbl_c.set(dbl_c.get() + 1));
+        let lp_hits = Rc::new(Cell::new(0usize));
+        let lp_c = lp_hits.clone();
+        tree.set_on_long_press(badge, move || lp_c.set(lp_c.get() + 1));
+        let hovered = Rc::new(Cell::new(false));
+        let hov_c = hovered.clone();
+        tree.set_on_hover(badge, move |h| hov_c.set(h));
+        let pinched = Rc::new(Cell::new(false));
+        let pin_c = pinched.clone();
+        tree.set_on_pinch_rotate(root, move |_, _, _| pin_c.set(true));
+
+        let bc = tree.rect(badge).center();
+        let make_pt = |phase, ts| PointerEvent {
+            id: PointerId(1),
+            phase,
+            position: bc,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: ts,
+        };
+        tree.handle_event(&UiEvent::Pointer(make_pt(PointerPhase::Down, 10)));
+        tree.handle_event(&UiEvent::Pointer(make_pt(PointerPhase::Up, 30)));
+        tree.handle_event(&UiEvent::Pointer(make_pt(PointerPhase::Down, 80)));
+        tree.handle_event(&UiEvent::Pointer(make_pt(PointerPhase::Up, 110)));
+        assert_eq!(badge_hits.get(), 2);
+        assert_eq!(dbl_hits.get(), 1);
+        assert!(hovered.get());
+
+        // LongPress
+        tree.handle_event(&UiEvent::Pointer(make_pt(PointerPhase::Down, 500)));
+        tree.handle_event(&UiEvent::Pointer(make_pt(PointerPhase::Move, 1100)));
+        tree.handle_event(&UiEvent::Pointer(make_pt(PointerPhase::Up, 1150)));
+        assert_eq!(lp_hits.get(), 1);
+
+        // Pinch
+        tree.handle_event(&UiEvent::Pinch {
+            factor: 1.25,
+            center: bc,
+        });
+        assert!(pinched.get());
+
+        // Tab / Shift+Tab focus traversal
+        let key_evt = |code, shift| KeyEvent {
+            code,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                shift,
+                ..Default::default()
+            },
+        };
+        tree.focused = None;
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::Tab, false)));
+        assert_eq!(tree.focused, Some(tabs));
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::ArrowRight, false)));
+        assert_eq!(tab_idx.get(), 1);
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::Tab, false)));
+        assert_eq!(tree.focused, Some(select));
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::Tab, false)));
+        assert_eq!(tree.focused, Some(radio));
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::Tab, false)));
+        assert_eq!(tree.focused, Some(textarea));
+
+        // TextArea newline with Enter + Up/Down
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::Enter, false)));
+        tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::Character("B".into()),
+            text: Some("B".into()),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(area_sig.get(), "line1\nB");
+
+        // Clipboard via PlatformServices
+        tree.services.write_clipboard("+C");
+        tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::KeyV,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }));
+        assert_eq!(area_sig.get(), "line1\nB+C");
+
+        // Modal open traps Tab focus & Escape closes it
+        modal_open.set(true);
+        tree.layout(metrics);
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::Tab, false)));
+        assert_eq!(tree.focused, Some(modal_btn));
+        tree.handle_event(&UiEvent::Key(key_evt(KeyCode::Escape, false)));
+        assert!(!modal_open.get());
+
+        // Render full scene verifying SVG Icon, CustomWidget, Select, Radio, Tabs, Divider all paint
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+        let textures = TextureRegistry::new();
+        let rgba = render_scene_to_rgba(
+            BackendKind::VelloCpu,
+            &scene,
+            500,
+            500,
+            1.0,
+            tree.theme().background,
+            &textures,
+            &mut tree.text_engine,
+        );
+        assert_eq!(rgba.len(), 500 * 500 * 4);
+    }
+
+    #[test]
+    fn reactive_for_reuses_keyed_nodes_on_reorder() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let list_sig = cx.signal(vec![(1u32, "One"), (2u32, "Two"), (3u32, "Three")]);
+        let build_count = Rc::new(Cell::new(0usize));
+        let bc = build_count.clone();
+
+        let host = tree.reactive_for(
+            cx,
+            LayoutStyle::column(),
+            move || list_sig.get(),
+            |_, (k, _)| *k,
+            move |scope, (_k, lbl), _, t| {
+                bc.set(bc.get() + 1);
+                t.text(scope, lbl, TextStyle::default())
+            },
+        );
+        tree.set_root(host);
+        let metrics = WindowMetrics::default();
+        tree.layout(metrics);
+        assert_eq!(build_count.get(), 3);
+        let initial_children = tree.nodes.get(host).unwrap().children.clone();
+
+        // Reorder and drop #2, add #4: #1 and #3 keep exact same NodeId, only #4 built!
+        list_sig.set(vec![(3u32, "Three"), (1u32, "One"), (4u32, "Four")]);
+        tree.layout(metrics);
+        assert_eq!(build_count.get(), 4);
+        let new_children = tree.nodes.get(host).unwrap().children.clone();
+        assert_eq!(new_children[0], initial_children[2]);
+        assert_eq!(new_children[1], initial_children[0]);
+        assert!(!tree.nodes.contains_key(initial_children[1]));
     }
 }
