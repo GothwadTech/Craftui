@@ -1,0 +1,33 @@
+[package]
+name = "craftui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["dep:craftui-platform-desktop"]
+android = ["dep:craftui-platform-android"]
+ios = ["dep:craftui-platform-ios"]
+web = ["dep:craftui-platform-web"]
+
+[dependencies]
+craftui-core.workspace = true
+craftui-reactive.workspace = true
+craftui-layout.workspace = true
+craftui-text.workspace = true
+craftui-render.workspace = true
+craftui-a11y.workspace = true
+craftui-widgets.workspace = true
+craftui-dsl.workspace = true
+craftui-runtime.workspace = true
+craftui-macros.workspace = true
+
+craftui-platform-desktop = { workspace = true, optional = true }
+craftui-platform-android = { workspace = true, optional = true }
+craftui-platform-ios = { workspace = true, optional = true }
+craftui-platform-web = { workspace = true, optional = true }

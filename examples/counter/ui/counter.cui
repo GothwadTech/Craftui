@@ -1,0 +1,34 @@
+export component CounterCard {
+    in-out property <int> count: 0;
+
+    Column {
+        width: 100%;
+        height: 100%;
+        background: Theme.background;
+        padding: 24dp;
+        gap: 12dp;
+
+        Text {
+            text: "AOT .cui Counter Card";
+            font_size: 20;
+            color: Theme.text_primary;
+        }
+        Text {
+            text: count;
+            font_size: 28;
+            color: Theme.primary;
+        }
+        Row {
+            gap: 10dp;
+            Button {
+                text: "+1";
+                background: Theme.primary;
+                on_tap => { count = count + 1; }
+            }
+            Button {
+                text: "Reset";
+                on_tap => { count = 0; }
+            }
+        }
+    }
+}

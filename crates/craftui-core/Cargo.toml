@@ -1,0 +1,19 @@
+[package]
+name = "craftui-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core geometry, color, style, event, theme, and dispatcher primitives for CraftUI"
+
+[lints]
+workspace = true
+
+[dependencies]
+bitflags.workspace = true
+bytemuck.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+serde.workspace = true
+slotmap.workspace = true
+thiserror.workspace = true

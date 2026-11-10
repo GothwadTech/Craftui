@@ -1,0 +1,23 @@
+[package]
+name = "craftui-platform-android"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui-core.workspace = true
+craftui-layout.workspace = true
+craftui-reactive.workspace = true
+craftui-render.workspace = true
+craftui-widgets.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity.workspace = true
+raw-window-handle = "0.6"

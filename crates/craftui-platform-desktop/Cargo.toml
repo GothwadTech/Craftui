@@ -1,0 +1,23 @@
+[package]
+name = "craftui-platform-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui-core.workspace = true
+craftui-reactive.workspace = true
+craftui-text.workspace = true
+craftui-render.workspace = true
+craftui-a11y.workspace = true
+craftui-widgets.workspace = true
+craftui-runtime.workspace = true
+winit.workspace = true
+accesskit.workspace = true
+accesskit_winit.workspace = true
+notify.workspace = true
+tracing.workspace = true

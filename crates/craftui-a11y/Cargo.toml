@@ -1,0 +1,15 @@
+[package]
+name = "craftui-a11y"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "AccessKit semantic accessibility tree synchronization and action routing for CraftUI"
+
+[lints]
+workspace = true
+
+[dependencies]
+accesskit.workspace = true
+craftui-core.workspace = true
+slotmap.workspace = true

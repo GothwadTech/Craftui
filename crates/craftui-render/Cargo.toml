@@ -1,0 +1,26 @@
+[package]
+name = "craftui-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Hybrid GPU (vello/wgpu) and CPU (vello_cpu/tiny-skia) vector renderer with zero-copy pixel buffers"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+craftui-core.workspace = true
+craftui-text.workspace = true
+kurbo.workspace = true
+parley.workspace = true
+peniko.workspace = true
+png.workspace = true
+pollster.workspace = true
+slotmap.workspace = true
+tiny-skia.workspace = true
+tracing.workspace = true
+vello.workspace = true
+vello_cpu.workspace = true
+wgpu.workspace = true

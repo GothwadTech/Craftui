@@ -1,0 +1,45 @@
+[package]
+name = "craftui-platform-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui-core.workspace = true
+craftui-layout.workspace = true
+craftui-reactive.workspace = true
+craftui-render.workspace = true
+craftui-widgets.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+wgpu.workspace = true
+web-sys = { workspace = true, features = [
+    "Window",
+    "Document",
+    "Element",
+    "CssStyleDeclaration",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "HtmlInputElement",
+    "DomRect",
+    "Event",
+    "EventTarget",
+    "PointerEvent",
+    "WheelEvent",
+    "KeyboardEvent",
+    "CompositionEvent",
+    "InputEvent",
+    "Location",
+    "HashChangeEvent",
+    "Performance",
+    "CanvasRenderingContext2d",
+    "ImageData",
+] }

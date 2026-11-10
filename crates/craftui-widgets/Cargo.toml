@@ -1,0 +1,20 @@
+[package]
+name = "craftui-widgets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Retained widget tree, standard widgets, GestureArena, ScrollPhysics, ThemeScope, Router, and VirtualList"
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui-a11y.workspace = true
+craftui-core.workspace = true
+craftui-layout.workspace = true
+craftui-reactive.workspace = true
+craftui-render.workspace = true
+craftui-text.workspace = true
+kurbo.workspace = true
+slotmap.workspace = true

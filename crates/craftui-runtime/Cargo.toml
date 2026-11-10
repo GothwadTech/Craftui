@@ -1,0 +1,18 @@
+[package]
+name = "craftui-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Dev-mode dynamic .cui AST/IR interpreter for sub-100ms hot-reload"
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui-core.workspace = true
+craftui-dsl.workspace = true
+craftui-layout.workspace = true
+craftui-reactive.workspace = true
+craftui-text.workspace = true
+craftui-widgets.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "craftui-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Rich text shaping, font fallback, glyph run metrics, and IME editing state via Parley"
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui-core.workspace = true
+fontique.workspace = true
+parley.workspace = true
+serde.workspace = true

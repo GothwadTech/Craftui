@@ -1,0 +1,17 @@
+[package]
+name = "craftui-dsl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = ".cui declarative DSL lexer (logos), lossless CST (rowan), semantic validator, and Rust AOT codegen"
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui-core.workspace = true
+logos.workspace = true
+rowan.workspace = true
+serde.workspace = true
+thiserror.workspace = true
