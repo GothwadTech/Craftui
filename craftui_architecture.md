@@ -1,162 +1,124 @@
-# CraftUI — System Architecture & Workspace Design (`ARCHITECTURE.md`)
+# CraftUI — System Architecture & Engineering Design (`ARCHITECTURE.md`)
 
-## 1. Architectural Philosophy
+## 1. Real-World UI Framework Principles Used by CraftUI
 
-CraftUI avoids the two classic GUI traps:
-1. **No Virtual DOM Overhead:** Instead of diffing huge trees on every state change (React/Dioxus style), CraftUI uses **Fine-Grained Signals + Retained Layout/Render Tree**. Updating a slider only invalidates the affected node's paint/layout flags.
-2. **No Monolithic Re-implementation:** CraftUI delegates ultra-hard, non-differentiating subsystems (Flexbox math, Unicode/BiDi text shaping, OS windowing, GPU vector rasterization, OS accessibility bridges) to mature MIT/Apache-2.0 crates, focusing engineering effort on reactivity, DSL compilation, ergonomics, mobile polish, and platform embedding.
+Production frameworks like **Slint**, **Zed GPUI**, and **Flutter** avoid naive re-render bottlenecks through five strict architectural invariants:
+
+1. **Zero Redundant Per-Frame Shaping & Layout Sync:** Static text is shaped once and cached; font glyphs are rasterized into a GPU **Glyph Texture Atlas**; layout style updates propagate **only for dirty nodes**.
+2. **Instanced SDF GPU Fast-Path Instead of Pure Vector Tessellation:** Over 90% of application UI consists of rounded boxes, gradients, borders, drop/inset shadows, images, and text. An **Instanced SDF Quad + Glyph Atlas pipeline** renders thousands of UI primitives in minimal draw calls and works cleanly even on **WebGL2 / OpenGL ES / Safari**, reserving heavy compute vector rasterization (`vello`) for arbitrary Bézier paths/Canvas via opt-in feature flags.
+3. **Compile-Time Property Safety & Animation Integration:** The DSL compiler enforces strict per-widget schemas and scopes (emitting hard compile errors on typos), compiles reactive expressions for *all* layout/transform/style properties, attaches `Spring`/`Tween` interpolators directly to animated visual properties, and compiles out interpreter crates in release builds.
+4. **Demand-Driven VSync Scheduling (0% Idle Power):** Neither desktop nor mobile nor web spins an idle render loop. Blinking carets use a 530ms UI timer; `requestAnimationFrame` / `poll_events` / `CADisplayLink` only submit GPU frames when `dirty || animating`.
+5. **Clean Feature-Gated Crates:** Applications opt into only what they deploy (`gpu-sdf`, `gpu-vello`, `cpu-vello`, `cpu-tiny-skia`, `hot-reload`, `dsl`).
 
 ---
 
-## 2. Seven-Layer System Architecture
+## 2. Eight-Layer Production Architecture
 
 ```mermaid
 flowchart TB
-    App["User Application Logic (Rust + Signals)"]
-    DSL["Layer 1: UI Syntax (.cui DSL / cui! Macro / Dev Interpreter)"]
-    Reactive["Layer 2: Reactive & Retained Node Tree (craftui-reactive + craftui-widgets)"]
-    Layout["Layer 3: Layout (taffy Flexbox & Grid)"]
-    Text["Layer 4: Text Shaping (parley + harfrust + fontique)"]
-    A11y["Layer 5: Accessibility (accesskit)"]
-    Render["Layer 6: Hybrid Renderer (vello / wgpu + vello_cpu fallback)"]
-    Platform["Layer 7: Platform Shell (winit / android-activity / UIKit / Web WASM)"]
+    App["User Application (Rust + Typed .cui AOT Structs / cui! Macro)"]
+    DSL["Layer 1: Strictly Typed .cui Compiler & Diagnostics (craftui-dsl + dev runtime)"]
+    Reactive["Layer 2: Fine-Grained Signal Arena & Scopes (craftui-reactive)"]
+    Anim["Layer 3: Property Animation & Transition Clock (Spring / Tween / Transforms)"]
+    Widgets["Layer 4: Retained WidgetTree, Keyed Reconciliation & GestureArena"]
+    Layout["Layer 5: Dirty-Filtered Taffy Flexbox/Grid + SafeArea (craftui-layout)"]
+    Text["Layer 6: Shaped-Layout LRU Cache + Embedded Fallback Font (craftui-text)"]
+    Render["Layer 7: Hybrid Feature-Gated Renderer (gpu-sdf + Atlas / gpu-vello / cpu fallbacks)"]
+    Platform["Layer 8: Demand-Driven Platform Shells + A11y + Native Services"]
 
     App --> DSL
     DSL --> Reactive
-    Reactive --> Layout
-    Reactive --> Text
-    Reactive --> A11y
+    Reactive --> Widgets
+    Anim --> Widgets
+    Widgets --> Layout
+    Widgets --> Text
     Layout --> Render
     Text --> Render
-    A11y --> Platform
+    Widgets --> Platform
     Render --> Platform
 ```
 
 ---
 
-## 3. Cargo Workspace Structure
+## 3. Cargo Workspace & Feature Architecture
 
 ```text
 craftui/
-├── Cargo.toml                         # Workspace root, shared lints & release profiles
-├── deny.toml                          # Strict MIT/Apache-2.0 license gatekeeper
+├── Cargo.toml                         # Workspace root & shared lints/profiles
+├── deny.toml                          # Strict permissive license gatekeeper
+├── ROADMAP.md                         # Verified issue register & 4-phase production roadmap
 ├── crates/
-│   ├── craftui-core/                  # Geometry (Point, Rect, Size), Color, Constraints, NodeId, Events
-│   ├── craftui-reactive/              # SlotMap Signal arena, Scope tree, Computed, Effect, Scheduler
-│   ├── craftui-layout/                # Taffy bridge, SafeArea insets, responsive layout cache
-│   ├── craftui-text/                  # Parley + Fontique + Glyph Atlas + IME selection/cursor math
-│   ├── craftui-render/                # Renderer trait, Vello GPU backend, CPU fallback, TextureRegistry
-│   ├── craftui-a11y/                  # AccessKit tree synchronization & action routing
-│   ├── craftui-widgets/               # Standard widgets, GestureArena, ScrollPhysics, ThemeScope
-│   ├── craftui-dsl/                   # .cui Lexer/Parser (logos/rowan), AST, Validator, Rust Codegen
-│   ├── craftui-runtime/               # Dev-mode dynamic AST/bytecode interpreter for <100ms hot-reload
-│   ├── craftui-macros/                # cui! inline proc-macro & #[component] attribute macro
-│   ├── craftui-platform-desktop/      # winit desktop runner + native file dialog / clipboard
-│   ├── craftui-platform-android/      # android-activity + JNI + IME bridge + SurfaceTexture PlatformView
-│   ├── craftui-platform-ios/          # UIKit/Metal runner + safe area + keyboard notifications
-│   ├── craftui-platform-web/          # wasm-bindgen + WebGPU/WebGL2 + hidden DOM input IME bridge
-│   └── craftui/                       # Unified public facade crate re-exporting user APIs
+│   ├── craftui-core/                  # Geometry, Transform2D, BlendMode, Color, Rich BoxShadow, Events, Services
+│   ├── craftui-reactive/              # SlotMap Signal/Computed/Effect arena, Scope disposal, Timers, UiDispatcher
+│   ├── craftui-layout/                # Dirty-tracked Taffy bridge, SafeArea insets, RTL mirroring
+│   ├── craftui-text/                  # Parley + Fontique + LRU ShapedLayoutCache + 65KB Vera fallback + TextEditorState
+│   ├── craftui-render/                # PaintScene + Feature-gated Backends: gpu-sdf (Atlas+SDF+Blur), gpu-vello, cpu-vello, cpu-tiny-skia
+│   ├── craftui-a11y/                  # Incremental AccessKit TreeUpdate generator & action routing
+│   ├── craftui-widgets/               # Retained WidgetTree, AnimatedProperty, Composable Widgets, Router, Toast, Inspector
+│   ├── craftui-dsl/                   # Lossless rowan CST, per-widget typed validator, multi-file resolver, AOT Rust codegen
+│   ├── craftui-runtime/               # Feature-gated state-preserving dev hot-reload interpreter
+│   ├── craftui-macros/                # cui! inline proc-macro & #[component] macro
+│   ├── craftui-platform-desktop/      # Demand-driven winit + AccessKit + non-blocking native clipboard/dialogs
+│   ├── craftui-platform-android/      # Demand-driven GameActivity + Vulkan/GLES + IME/key/Kotlin templates
+│   ├── craftui-platform-ios/          # CADisplayLink dirty-gated UIKit/Metal + C-ABI + Swift templates
+│   ├── craftui-platform-web/          # On-demand WebGPU/WebGL2/2D WASM + DOM ARIA mirror + Web APIs
+│   └── craftui/                       # Unified facade (feature-gating dsl, hot-reload, renderer backends, platforms)
 ├── tools/
-│   ├── craftui-cli/                   # CLI: `craftui new`, `dev`, `preview`, `build`
-│   └── craftui-lsp/                   # Language Server Protocol for .cui files
-└── examples/
-    ├── counter/                       # Minimal cross-platform starter
-    └── scancraft_studio_demo/         # Real-world dogfooding app (image filters + crop + grid)
+│   ├── craftui-cli/                   # `new`, `dev`, `preview`, `check`, `render`, `doctor`, `build` (real bundlers)
+│   └── craftui-lsp/                   # Context-aware .cui LSP (schema completion, goto-def, diagnostics, color picker)
+└── examples/                          # counter, showcase, todo_crud, settings_form, canvas_paint
 ```
 
----
+### Feature Flags (`craftui` & `craftui-render`)
 
-## 4. Core Pipelines & Data Flow
-
-### 4.1 Fine-Grained Frame Update Pipeline (Zero VDOM Diffing)
-
-Every widget node lives inside a flat `SlotMap<NodeId, WidgetNode>` arena. Each node stores bitflags: `DIRTY_LAYOUT`, `DIRTY_PAINT`, `DIRTY_A11Y`.
-
-```mermaid
-sequenceDiagram
-    participant Worker as Background Thread (CV / IO)
-    participant Signal as Reactive Signal Arena
-    participant Tree as Retained Widget Tree
-    participant Taffy as Layout Engine (taffy)
-    participant Vello as Renderer (vello / CPU)
-
-    Worker->>Signal: wake_ui_thread(dispatch_update)
-    Signal->>Signal: Update value & walk subscriber edges
-    Signal->>Tree: Mark bound NodeIds DIRTY_PAINT or DIRTY_LAYOUT
-    Note over Tree: Only dirty subtrees recalculated
-    Tree->>Taffy: compute_layout() if any DIRTY_LAYOUT
-    Tree->>Vello: record_scene() -> Vello Scene fragments
-    Vello->>Vello: Submit wgpu compute pass to surface
-```
-
-**Why this matters:** When dragging a brightness slider or crop handle at 120Hz, **zero memory allocations** happen for unrelated widgets — only the handle transform or image texture uniform updates.
-
----
-
-### 4.2 Dual Compilation Pipeline (Dev Hot-Reload vs Release AOT)
-
-```mermaid
-flowchart LR
-    Src[".cui Template Files"] -->|Dev Mode| Watch["craftui-cli File Watcher"]
-    Watch -->|Parse < 10ms| IR["Validated UI IR"]
-    IR -->|WebSocket / IPC| Runtime["craftui-runtime Interpreter"]
-    Runtime --> Screen["Live Preview (< 100ms update)"]
-
-    Src -->|Release Mode| BuildRS["build.rs / craftui-dsl Codegen"]
-    BuildRS --> RustGen["Generated Static Rust Code"]
-    RustGen --> Cargo["rustc + LTO + strip"]
-    Cargo --> Binary["Zero-Overhead Native / WASM Binary"]
-```
-
-* **Dev Mode:** Only Rust business logic compiles once; UI `.cui` files interpret dynamically in `craftui-runtime`, giving Flutter/Web-like instant visual iteration.
-* **Release Mode:** The interpreter crate is completely compiled out (`#[cfg(feature = "hot-reload")]`), leaving pure statically typed Rust code with dead-code elimination and LTO.
-
----
-
-### 4.3 Android Native Surface & Zero-Copy CV Pipeline (`PlatformView`)
-
-For apps like **ScanCraft** (live CameraX preview + C++/Rust CV overlays + Android hardware bitmaps), rendering camera frames through CPU copies is too slow. CraftUI solves this via **External Texture / Hole-Punch Composition**:
-
-```mermaid
-sequenceDiagram
-    participant CameraX as Android CameraX (Kotlin)
-    participant SurfTex as Android SurfaceTexture / HardwareBuffer
-    participant JNI as craftui-platform-android
-    participant Vello as wgpu / Vello Scene
-    participant Overlay as CraftUI Vector Overlay
-
-    CameraX->>SurfTex: Stream 60fps YUV/OES frames on GPU
-    JNI->>Vello: Bind HardwareBuffer / External Texture ID
-    Vello->>Vello: Draw live camera texture slot
-    Overlay->>Vello: Draw green polygon + animated corner handles on top
-    Vello->>SurfTex: Present composite frame at display refresh rate
-```
-
-1. **Two Composition Modes:**
-   - **External Texture Mode (Preferred for Camera/Video):** Native surface renders directly into an offscreen GPU texture (`AHardwareBuffer` on Android, `CVPixelBuffer` on iOS) imported into `wgpu`. CraftUI can clip, rotate, blur, and draw vector overlays *both behind and in front of* the native feed!
-   - **Hole-Punch Mode (Fallback for Maps/WebView):** CraftUI punches a transparent cutout (`BlendMode::Clear`) in its surface and positions a native Android `View` / iOS `UIView` synchronized with `taffy` bounds.
-
----
-
-## 5. Threading & Memory Model
-
-1. **UI Thread Owns All Arenas:**
-   - `SignalArena`, `WidgetTree`, `TaffyTree`, `ParleyFontContext`, and `wgpu::Surface` live strictly on the main/UI thread.
-   - Because access is single-threaded inside the event loop, signals use zero-cost interior mutability (`Cell` / `RefCell` hidden inside `craftui-reactive` internals) with **no mutex contention during layout/paint**.
-2. **Thread-Safe Handle (`UiDispatcher`):**
-   - Background threads (`tokio`, `rayon`) receive a `Send + Sync` `UiDispatcher` handle backed by `winit::EventLoopProxy`.
-   - Calling `dispatcher.post(|| signal.set(new_data))` safely wakes the UI loop without blocking worker threads.
-3. **Texture Streaming for Heavy Media:**
-   - Heavy 12MP–24MP image decodes or filters run on `rayon` threads into aligned `Vec<u8>` RGBA buffers and upload via `wgpu::Queue::write_texture` once ready, preventing UI thread jank.
-
----
-
-## 6. Key Technical Decisions & Trade-Offs
-
-| Decision | Choice Made | Why |
+| Crate | Feature Flag | Purpose |
 | :--- | :--- | :--- |
-| **Rendering Backend** | `vello` (`wgpu`) + `vello_cpu`/`tiny-skia` fallback | Pure MIT/Apache-2.0; handles arbitrary Bézier paths, gradients, and crisp vector UI at GPU speed without shipping Skia C++ (~15MB+ build pain). |
-| **Layout Engine** | `taffy` | Battle-tested pure-Rust MIT Flexbox & CSS Grid engine used by Bevy, Dioxus Blitz, and Servo experiments. |
-| **Text Stack** | `parley` + `harfrust` | Handles Indic/Devanagari, Arabic BiDi, multi-font fallback, and IME metrics cleanly in pure Rust under Apache-2.0/MIT. |
-| **Reactivity** | Generational Arena Signals (`slotmap`) | Eliminates `move` + `.clone()` boilerplate in Rust UI closures while avoiding Virtual DOM tree allocations. |
-| **Web Strategy** | WebGPU/WebGL2 Canvas first, DOM projection trait optional | Guarantees 100% visual & custom-canvas parity (e.g., drawing tools, crop loupes) from day one. |
+| `craftui-render` | `gpu-sdf` | Lightweight batched WGSL Instanced SDF + Glyph Atlas + Kawase Blur pipeline (no compute shaders required) |
+| `craftui-render` | `gpu-vello` | Full `vello` GPU compute vector rasterizer for complex paths/SVGs/Canvas |
+| `craftui-render` | `cpu-vello` | Deterministic `vello_cpu` software fallback & headless snapshot renderer |
+| `craftui-render` | `cpu-tiny-skia` | Minimal pure-CPU `tiny-skia` fallback |
+| `craftui` | `dsl` / `hot-reload` | Optional parser & live hot-reload interpreter — **excluded automatically in lightweight release builds** |
+| `craftui-text` | `embedded-fallback-font` | Embeds 65 KB `Vera.ttf` so Web/headless Linux never fail with blank text |
+
+---
+
+## 4. Core Frame & Update Pipelines
+
+### 4.1 Demand-Driven Dirty Propagation Pipeline
+
+```mermaid
+sequenceDiagram
+    participant Loop as Platform Event Loop (Wait / rAF / Poll)
+    participant Sig as Signal Arena
+    participant Tree as Retained WidgetTree
+    participant Layout as Dirty Taffy Engine
+    participant Text as ShapedLayoutCache + GlyphAtlas
+    participant GPU as SDF+Atlas / Vello Surface
+
+    Note over Loop: 0% CPU/GPU when idle (caret timer = 530ms)
+    Loop->>Sig: Event / Timer / Background UiDispatcher
+    Sig->>Tree: Mark affected NodeIds (LAYOUT | PAINT | TEXT | A11Y)
+    Tree->>Tree: Advance active Spring/Tween timelines
+    alt Needs Layout (DIRTY_LAYOUT)
+        Tree->>Layout: Sync ONLY modified node styles -> taffy.compute_layout()
+    end
+    alt Needs Paint (DIRTY_PAINT || animating)
+        Tree->>GPU: Record PaintScene (transforms, SDF shadows, blur, cached text)
+        GPU->>Text: Lookup cached glyphs / shape dirty strings only
+        GPU->>Loop: Present frame & clear dirty flags
+    end
+    alt A11y Active && DIRTY_A11Y
+        Tree->>Loop: Emit incremental AccessKit update for changed nodes only
+    end
+```
+
+### 4.2 Hybrid Rendering Pipeline (`gpu-sdf` Fast-Path + `vello` Vector Path)
+
+* **UI Primitives (`gpu-sdf`):** Rounded rectangles (per-corner radii), borders, gradients, analytical SDF drop shadows, inset shadows, and glyph quads are packed into GPU instance buffers (`#[repr(C)]` `bytemuck::Pod`) and drawn with instanced WGSL shaders.
+* **Backdrop Blur (Frosted Glass):** Multi-pass downsampled Kawase blur over the backdrop region before compositing tinted rounded overlays (`Modal`, `BottomSheet`, glass cards).
+* **Vector & Canvas Fallback:** `FillPath` / `StrokePath` / complex SVGs rasterize cleanly either via `vello` (when `gpu-vello` is enabled) or cached texture upload from CPU path rasterizer on ultra-lightweight WebGL2/mobile targets.
+
+### 4.3 Dual Compilation Model (Dev Hot-Reload vs Release AOT)
+
+* **Dev Mode:** `HotReloadSession` watches `.cui` modules and diffs component structure while **preserving live `DynamicStore` signals, focus, and scroll offsets**.
+* **Release Mode:** `build.rs` validates `.cui` strictly with `Severity::Error` diagnostics, emits zero-overhead typed Rust structs with reactive property bindings & compiled animation controllers, and omits `craftui-runtime` from the final linked binary.

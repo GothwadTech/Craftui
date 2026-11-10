@@ -1,130 +1,101 @@
 # CraftUI — Product Requirements Document (PRD)
 
-> **Working Codename:** `CraftUI` (placeholder — rename freely before crates.io reservation)  
-> **License:** MIT (Dual-compatible with Apache-2.0)  
-> **Target Platforms:** Desktop (Windows, macOS, Linux), Mobile (Android, iOS), Web (WASM)  
-> **Core Stack:** 100% Pure Rust (`winit`, `wgpu`, `vello`, `tiny-skia`, `taffy`, `parley`, `accesskit`)
+> **Working Codename:** `CraftUI`  
+> **License:** MIT (Zero GPL/LGPL/AGPL dependencies — enforced via `deny.toml`)  
+> **Target Platforms:** Desktop (Windows, macOS, Linux), Mobile (Android, iOS), Web (WASM + WebGPU/WebGL2)  
+> **Core Mission:** Slint-level declarative ergonomics & tiny footprint + GPUI-level instanced GPU rendering beauty + Flutter-level 60–120 FPS fluid motion across all platforms.
 
 ---
 
 ## 1. Executive Summary & Product Vision
 
-**CraftUI** is an open-source, **MIT-licensed**, compiled declarative UI framework built in Rust. Its mission is to deliver the ergonomics, tiny runtime footprint, and smooth 60–120 FPS native performance of Slint — **without GPLv3 restrictions or commercial licensing fees** — while providing first-class support for **Desktop, Mobile (Android & iOS), and Web (WASM)** from a single codebase.
+**CraftUI** is an open-source, **MIT-licensed**, compiled declarative UI framework built in pure Rust. Its goal is to build **genuinely beautiful, silky-smooth, lightweight native & web applications** from a single codebase across **Desktop, Mobile (Android & iOS), and Web (WebAssembly)** — with zero WebView overhead and zero commercial licensing fees.
 
-Unlike Electron or Tauri, CraftUI does **not** embed or rely on a browser WebView for native targets. Instead, it compiles declarative UI templates into zero-overhead native Rust code (with a fast interpreted hot-reload mode during development) rendered via GPU compute shaders (`vello`/`wgpu`) with an automatic CPU software fallback (`vello_cpu`/`tiny-skia`).
+Unlike early prototypes that re-shape text every frame or bundle monolithic compute pipelines into every target, CraftUI combines three proven production architectures:
+1. **Slint-style Compile-Time Safety & Declarative Animations:** `.cui` files compile to typed Rust + fine-grained `SlotMap` signals with first-class `animate ... { duration / spring }` transitions, strict compile-time diagnostics (hard errors on typos/type mismatches), and zero interpreter bloat in release builds.
+2. **GPUI/Makepad-style Instanced SDF + Glyph Atlas GPU Pipeline:** 95% of modern UI (rounded cards, layered/inset shadows, crisp borders, frosted-glass backdrop blur, gradients, text glyphs, textures) renders via lightweight batched **WGSL Instanced SDF + Glyph Atlas shaders** compatible with Vulkan, Metal, DX12, WebGPU, **and WebGL2** — with optional `vello` vector path and CPU software (`vello_cpu`/`tiny-skia`) backends gated by Cargo features.
+3. **Demand-Driven Power & Native OS Integration:** True **0% idle CPU/GPU usage** (timer-driven caret blink and dirty-only layout/a11y/paint updates), bundled tiny fallback font (`Vera.ttf`, 65 KB) so text never renders blank on Web/minimal OSes, async OS dialogs/clipboard, and real app packaging via `craftui-cli`.
 
 ---
 
-## 2. Market Gap & Competitive Positioning
+## 2. Competitive Positioning
 
-| Framework | License | Language / Syntax | Desktop | Android / iOS | Web (WASM) | Key Limitation for Our Use Case |
-| :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| **Slint** | GPLv3 / Paid | `.slint` DSL + Rust | Yes | Yes | Yes | Copyleft GPLv3 or paid commercial license for closed apps |
-| **Makepad** | MIT | `live_design!` DSL | Yes | Yes | Yes | Experimental API ergonomics, non-standard widget kit |
-| **Xilem / Masonry** | Apache-2.0 / MIT | Rust Builder API | Yes | WIP | WIP | No dedicated markup DSL; mobile & web still maturing |
-| **Iced** | MIT | Rust Elm (MVU) | Yes | Limited | Yes | Mobile touch/IME/platform-view support is secondary |
-| **Dioxus** | MIT / Apache-2.0 | RSX Macro | Yes | Beta | Yes | WebView overhead by default; Blitz native renderer still maturing |
-| **Tauri 2.0** | MIT / Apache-2.0 | HTML/JS + Rust | Yes | Yes | N/A | WebView memory/latency bottleneck for camera & heavy canvas apps |
-| **CraftUI (Target)** | **MIT** | **`.cui` DSL + `cui!` Macro** | **Yes** | **Yes** | **Yes** | **New framework — mitigates risk by composing proven MIT crates** |
+| Framework | License | Core Paradigm | Rendering Strategy | Desktop / Mobile / Web | Key Limitation vs CraftUI Target |
+| :--- | :--- | :--- | :--- | :---: | :--- |
+| **Slint** | GPLv3 / Paid | `.slint` Compiler + Property Graph | FemtoVG / Skia / SW Damage | Yes / Yes / Yes | Copyleft GPLv3 or commercial fees for closed-source apps |
+| **Zed GPUI** | Apache-2.0 | Retained View + Rust | Instanced SDF Quads + Glyph Atlas | Desktop only | No first-class Mobile/Web support or declarative markup DSL |
+| **Makepad** | MIT | `live_design!` DSL | Custom GPU SDF Shaders | Yes / Yes / Yes | Non-standard ecosystem crates and steep API learning curve |
+| **Flutter** | BSD-3 | 3-Tree (Widget/Element/Render) | Impeller / Skia | Yes / Yes / Yes | Dart VM runtime & larger mobile/web binary footprint |
+| **Iced / Dioxus** | MIT | MVU / RSX VDOM | `wgpu` / WebView or Blitz | Desktop/Web / Beta | Mobile IME/touch/platform-view & lightweight SDF beauty lag behind |
+| **CraftUI (Target)** | **MIT** | **`.cui` AOT + `cui!` + `SlotMap` Signals** | **Feature-Gated SDF+Atlas GPU / Vello / SW** | **Yes / Yes / Yes** | **Active evolution tracked in `ROADMAP.md`** |
 
 ---
 
 ## 3. Target Audience & Personas
 
-1. **Privacy & Performance-First App Developers (e.g., ScanCraft, Media Editors, PDF Tools):**
-   - Need direct zero-copy GPU/buffer rendering for camera feeds, high-resolution images, and vector annotations without WebView serialization overhead.
-   - Require a permissive MIT license so apps can be distributed on Google Play, Apple App Store, Steam, or Enterprise channels with zero legal friction.
-2. **Cross-Platform Rust Product Teams:**
-   - Want one shared business logic + UI codebase across Windows, macOS, Linux, Android, iOS, and Web.
-   - Want sub-20ms incremental dev hot-reload without waiting 30 seconds for full Rust recompilation on every padding tweak.
-3. **Embedded & Lightweight Utility Builders:**
-   - Need small stripped binaries (< 5 MB native core) and deterministic memory usage without GC pauses.
+1. **Design-Conscious Cross-Platform App Builders:** Need glassmorphism, spring micro-interactions, smooth route/modal transitions, crisp typography, and custom vector canvases without Electron/WebView bloat.
+2. **Privacy, Media & Real-Time Tool Developers (Camera, Image Editors, Scanners, Audio/Video):** Need zero-copy GPU texture streaming, `PlatformView` composition (CameraX/Metal), multi-touch `GestureArena`, and MIT licensing for App Store / Play Store / commercial release.
+3. **Lightweight Web & Utility Developers:** Need small WASM bundles, instant cold startup, deterministic memory, and zero-flicker light/dark/AMOLED themes.
 
 ---
 
 ## 4. Core Differentiators
 
-1. **100% Permissive MIT Stack:** Automated CI license enforcement (`cargo-deny`) guarantees zero GPL/AGPL/LGPL dependencies anywhere in the dependency tree.
-2. **Dual-Mode Compilation (Interpreter + AOT):** Instant hot-reload preview in development; zero-overhead statically compiled Rust state-machine in release builds.
-3. **Fine-Grained Signal Reactivity (No Virtual DOM):** `Copy`-able arena signal handles update only affected layout nodes and paint commands, eliminating Rust borrow-checker friction in UI callbacks.
-4. **First-Class Native Surface Embedding (`PlatformView`):** Day-1 support for embedding Android `SurfaceTexture`/CameraX, iOS `CALayer`/Metal views, or native video surfaces directly inside the CraftUI scene graph.
-5. **GPU-First with Graceful Software Fallback:** Uses `vello` (`wgpu`) on modern hardware and transparently falls back to `vello_cpu`/`tiny-skia` on headless runners, VMs, or older mobile GPUs with broken Vulkan/GLES compute drivers.
+1. **Feature-Gated Minimal Footprint:** Release builds opt into only the backend needed (`gpu-sdf` lightweight default vs full `vello` vector compute vs `cpu-vello` / `cpu-tiny-skia`) and strip `.cui` parser/interpreter crates completely out when `hot-reload` is disabled.
+2. **Fine-Grained Retained Tree + Cached Text/Glyphs:** Signal updates dirty only affected nodes; Taffy sync, AccessKit updates, and Parley text shaping are cached across frames so idle and steady interactions minimize allocations.
+3. **First-Class Declarative Motion & Visual Polish:** Transform matrix stack (`translate`, `scale`, `rotate`), multi-layered/inset `BoxShadow`, `BackdropBlur` frosted glass, blend modes, and property-level `Spring` / `Tween` animations directly in `.cui` and standard widgets.
+4. **Guaranteed Typography Out of the Box:** Bundles a permissive 65 KB fallback font (`Vera.ttf`, Bitstream Vera License) alongside system font discovery (`fontique`) and complex script shaping (`parley` + `harfrust`).
+5. **100% Permissive MIT Ecosystem:** Automated CI enforcement (`deny.toml`) permitting zero GPL/LGPL/AGPL dependencies.
 
 ---
 
 ## 5. Functional Requirements (FR)
 
-### FR-1: Declarative UI DSL & Rust Macro Interop
-* **FR-1.1 `.cui` File Format:** Human-readable declarative syntax supporting components, properties, two-way bindings, event callbacks, loops (`for`), conditionals (`if`), and built-in animation transitions.
-* **FR-1.2 Inline `cui!` Proc-Macro:** Pure-Rust macro alternative for teams preferring single-file Rust development with full `rust-analyzer` type checking.
-* **FR-1.3 AOT Codegen:** `build.rs` / CLI compiler translates `.cui` files into strongly typed Rust structs and Signal bindings at compile time.
-* **FR-1.4 Dev Hot-Reload Interpreter:** File watcher reloads `.cui` layout, styles, and tokens into a running desktop/mobile preview shell in < 100ms without relinking Rust.
+### FR-1: Strict Declarative `.cui` Compiler & `cui!` Macro
+* **FR-1.1 Lossless `.cui` DSL:** Components, `in`/`out`/`in-out`/`private` properties, two-way `<=>` bindings, one-way `:` bindings (strictly read-only), loops (`for item, idx in model` with stable identity `key:`), conditionals (`if` / `else`), inline handler statements (`struct.field = ...`, `+=`, `if/else`, callbacks), and declarative `animate <prop> { duration / spring }`.
+* **FR-1.2 Strict Compile-Time Validation:** Per-widget property schemas, full identifier/scope resolution, member/enum/struct type checking, and `Severity::Error` diagnostics on typos or type mismatches (no silent string fallbacks in codegen).
+* **FR-1.3 Zero-Overhead AOT & State-Preserving Hot-Reload:** `build.rs` AOT generates pure typed Rust structs; dev-mode `craftui-runtime` reloads `.cui` changes in `< 50ms` while preserving scroll positions, focus, and live signals.
+* **FR-1.4 Complete `cui!` Proc-Macro:** Supports inline reactive bindings, `if`/`for` blocks, two-way bindings, transforms, and animations inside `.rs` files.
 
-### FR-2: Fine-Grained Reactive State Engine
-* **FR-2.1 Arena Signal Handles:** `Signal<T>`, `ReadSignal<T>`, `Computed<T>`, and `Effect` backed by generational arena indices (`slotmap`), making handles `Copy` so closures require no `.clone()` or `Rc<RefCell<...>>`.
-* **FR-2.2 Scoped Ownership:** Signals attach to component scopes and automatically dispose subscriptions when a component unmounts (preventing memory leaks).
-* **FR-2.3 Async Runtime Agnostic:** Built-in task bridge allowing background worker threads (`rayon`, `tokio`, `std::thread`) to push updates safely onto the UI event loop.
+### FR-2: Fine-Grained Reactive State Engine (`craftui-reactive`)
+* Generational `Copy` handles (`Signal<T>`, `ReadSignal<T>`, `Computed<T>`, `Effect`), `batch`, `untrack`, `Scope`-bound cleanup (zero duplicate effect leaks when restyling nodes), and thread-safe `UiDispatcher` for `rayon`/`tokio`/`std::thread`.
 
-### FR-3: Cross-Platform Layout Engine
-* **FR-3.1 Flexbox & CSS Grid:** Powered by `taffy`, supporting `Row`, `Column`, `Grid`, `Stack` (Z-order), `Spacer`, `Padding`, `Margin`, `AspectRatio`, and `Constraints`.
-* **FR-3.2 Safe-Area & Keyboard Insets:** First-class `SafeArea` component reacting automatically to mobile notches, navigation bars, and software keyboard (IME) height changes.
-* **FR-3.3 RTL & Responsive Breakpoints:** Automatic layout mirroring for Right-to-Left locales and reactive viewport size breakpoints (`Compact`, `Medium`, `Expanded`).
+### FR-3: Dirty-Tracked Cross-Platform Layout (`craftui-layout`)
+* Powered by `taffy` (Flexbox, CSS Grid, Z-`Stack`, `SafeArea` notch/keyboard insets, RTL mirroring, breakpoints) with **dirty-only style synchronization** and reusable traversal buffers.
 
-### FR-4: Hybrid GPU / Software Rendering & External Textures
-* **FR-4.1 Vector & Scene Graph Rendering:** Anti-aliased paths, rounded rects, shadows, linear/radial gradients, clipping, opacity layers, and SVG rendering via `vello` (`wgpu`).
-* **FR-4.2 Automatic Software Fallback:** Seamless fallback to CPU rasterization (`vello_cpu` / `tiny-skia`) when `wgpu` adapter creation fails or device lacks compute shader support.
-* **FR-4.3 Zero-Copy Image & Pixel Buffer API:** Mutable `TextureHandle` / `PixelBuffer` API allowing real-time CV/image-processing pipelines (like live photo filters or camera frames) to stream straight to GPU textures without PNG/JPEG re-encoding.
-* **FR-4.4 Native `PlatformView` Slot:** Hole-punch / external texture composition API for embedding OS-native Camera previews (CameraX/AVFoundation), WebViews, or Maps seamlessly underneath/between CraftUI layers.
+### FR-4: Next-Gen Visual Scene & Hybrid GPU/CPU Renderer (`craftui-render`)
+* **FR-4.1 Rich `PaintScene` Primitives:** `Transform2D` push/pop stack, rounded rects (`CornerRadii`), multi-shadow & inset `BoxShadow`, linear/radial gradients, **Kawase `BackdropBlur` (frosted glass)**, `BlendMode`, bounded opacity layers, vector paths (`BezPath`), SVG icons, images, and `PlatformViewHole`.
+* **FR-4.2 Instanced SDF + Glyph Atlas GPU Backend (`gpu-sdf`):** Batched WGSL render pipeline working on Desktop, Android Vulkan/GLES, iOS Metal, WebGPU, and **WebGL2** without compute shaders.
+* **FR-4.3 Optional Heavy Vector (`vello`) & Complete Software (`vello_cpu`, `tiny-skia`) Backends:** Feature-gated in `craftui-render/Cargo.toml`; software backends faithfully support text, clipping, gradients, opacity layers, and shadows.
 
-### FR-5: Text Shaping, Fonts & International Input (IME)
-* **FR-5.1 Complex Script Shaping:** Powered by `parley` + `harfrust`, supporting Latin, Devanagari, Arabic (BiDi), CJK, and Color Emoji with automatic system font fallback (`fontique`).
-* **FR-5.2 Rich `TextInput` & IME:** Multi-line editing, selection handles, clipboard copy/paste, cursor blinking, hardware keyboard shortcuts, and mobile IME pre-edit composition (autocomplete/swipe typing).
+### FR-5: Cached Text Shaping, Glyph Atlas & Complete Editor (`craftui-text`)
+* **FR-5.1 Shaped-Layout Cache + Embedded Fallback:** LRU-cached `parley` shaping (`(text, style, max_width)`) + embedded 65 KB `Vera.ttf` fallback font.
+* **FR-5.2 Production `TextEditorState`:** Multi-line editing, undo/redo stack, word-by-word navigation (`Ctrl/Alt + Arrow`), OS-aware shortcuts (`Cmd` on macOS, `Ctrl` on Win/Linux/Web), safe cursor preservation across external signal updates, selection highlights, and full CJK/mobile IME preedit composition.
 
-### FR-6: Standard Widget Library & Adaptive Theming
-* **FR-6.1 Core Primitives:** `View`, `Text`, `Image`, `Canvas`, `ScrollView`, `VirtualList` / `VirtualGrid` (windowed recycling for 10,000+ items), `Button`, `TextInput`, `Checkbox`, `Switch`, `Slider`, `ProgressIndicator`.
-* **FR-6.2 Overlays & Navigation:** Declarative `Modal`, `BottomSheet`, `PopupMenu`, `Tooltip`, and stack-based `Router` with mobile back-gesture support.
-* **FR-6.3 Design Token & Theme System:** Reactive `ThemeScope` supporting Light, Dark, AMOLED Black, and High-Contrast variants with smooth color interpolation.
-* **FR-6.4 Gesture Arena:** Unified pointer/touch recognizer supporting `Tap`, `DoubleTap`, `LongPress`, `Drag`, `PinchZoom`, `Rotate`, and inertial momentum fling physics.
+### FR-6: Rich Animated Widget Kit & Navigation (`craftui-widgets`)
+* Animated built-in micro-interactions (spring hover/press, sliding `Tabs` pill, animated `Switch`/`Checkbox`, scale+fade+blur `Modal`/`BottomSheet`, transition-capable `Router<R>`).
+* Composable `Button` (accepts arbitrary child layouts or text label), scrollable `Select`, fixed child-aware `ScrollView` drag & momentum fling, `Toast` overlay manager, `Spinner`, `SplitPane`, `Badge`, cursor shapes (`CursorIcon`), and `Ctrl+Shift+I` Inspector overlay.
 
-### FR-7: Web Target Architecture (WASM)
-* **FR-7.1 Unified WASM Canvas Mode:** Compiles directly to `wasm32-unknown-unknown` rendering via WebGPU (with WebGL2 fallback) for 100% visual parity across all platforms.
-* **FR-7.2 Browser Integration:** URL routing, browser history sync, virtual hidden `<input>` bridge for mobile web keyboards/IME, and native clipboard/file-picker APIs.
-* **FR-7.3 Optional DOM Projection Mode (Phase 5+):** Trait-abstracted backend allowing future lightweight HTML/DOM rendering for SEO-critical web pages without changing app state logic.
-
-### FR-8: Accessibility (`accesskit`)
-* **FR-8.1 Native Screen Reader Sync:** Synchronizes semantic UI tree (roles, labels, bounds, focus, actions) to Windows UIA, macOS VoiceOver, Linux AT-SPI, Android TalkBack, and Web ARIA via `accesskit`.
-
-### FR-9: Developer Tooling (`craftui-cli` & LSP)
-* **FR-9.1 CLI Scaffolding:** `craftui new`, `craftui run --platform desktop|android|ios|web`, `craftui build --release`.
-* **FR-9.2 Live Inspector:** Dev-mode overlay (`Ctrl+Shift+I`) showing layout boxes, padding bounds, FPS/frame-time graph, and signal updates.
-* **FR-9.3 Language Server (`craftui-lsp`):** Syntax highlighting, autocomplete, inline color previews, and live error diagnostics for `.cui` files.
+### FR-7: Demand-Driven All-Platform Shells & Packaging
+* **FR-7.1 Zero Idle Spin Loops:** Desktop (`ControlFlow::Wait`/`WaitUntil`), Android (`poll_events` waking only on input/waker/animation/timer), Web (on-demand `requestAnimationFrame`), and iOS (`CADisplayLink` dirty gating) consume ~0% CPU/GPU at rest, including with focused `TextInput` (timer-based 530ms caret blink).
+* **FR-7.2 Real OS Services:** Non-blocking/native Desktop clipboard & file picker (`arboard` / `rfd` or async OS portals without stalling UI thread), real browser clipboard & CSS cursor + **DOM ARIA Accessibility Mirror** on Web, full Android key/IME/Gradle/Kotlin bridge, and iOS UIKit/Metal/Swift template.
+* **FR-7.3 Production `craftui-cli` & Context-Aware `craftui-lsp`:** Scaffolding multi-platform templates (`web/`, `android/`, `ios/`), `craftui doctor`, `craftui build` emitting deployable Web `dist/`, Android Gradle/APK projects, and iOS XCFramework setups, plus schema-driven LSP completion/validation.
 
 ---
 
 ## 6. Non-Functional Requirements (NFR)
 
-* **NFR-1 Frame Latency & Smoothness:**
-  * UI layout + paint budget <= **8.3ms** (120 FPS) for standard screens on modern desktop and mid-range ARM64 mobile devices.
-  * Continuous `VirtualList` scrolling must achieve zero dropped frames after warm-up.
-* **NFR-2 Binary Size & Startup Time:**
-  * Stripped Desktop release binary (Hello World + core widgets): **<= 5 MB**.
-  * Stripped Android `.so` library (per ABI `arm64-v8a`): **<= 4 MB**.
-  * Web WASM (`wasm-opt -Oz` + brotli): **<= 2.5 MB** compressed.
-  * Cold startup to first rendered frame: **<= 150ms** on Desktop, **<= 300ms** on mid-range Android.
-* **NFR-3 Memory Safety & Footprint:**
-  * Zero `unsafe` in reactive, layout, and widget user-facing layers; any `unsafe` strictly isolated and documented inside FFI/GPU/JNI platform boundaries.
-  * Idle memory footprint for a 5-screen utility app: **<= 45 MB RAM**.
-* **NFR-4 License Purity:**
-  * 100% of direct and transitive crates must pass `cargo-deny` allow-list (`MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Zlib`, `Unicode-3.0`).
-* **NFR-5 Platform Minimums:**
-  * **Desktop:** Windows 10+, macOS 12+, Linux (Wayland & X11).
-  * **Mobile:** Android 8.0+ (API 26+, `arm64-v8a` & `x86_64`), iOS 15+.
-  * **Web:** Modern Chrome, Firefox, Safari, Edge (WebGPU / WebGL2 + WASM).
-
----
-
-## 7. Success Metrics (v0.1 Alpha → v1.0)
-
-1. **Dogfooding Proof:** Successfully render a real-world multi-screen application (**ScanCraft Desktop & Mobile Prototype**: document grid, interactive 8-point crop canvas with magnifier loupe, live filter sliders, and virtualized page viewer) entirely in CraftUI at 60+ FPS.
-2. **Developer Onboarding:** A Rust developer can scaffold, hot-reload, and deploy a multi-platform counter/image app to Desktop + Web in under **10 minutes**.
-3. **CI Cross-Compilation Green:** Automated GitHub Actions matrix passes builds & headless snapshot tests for Linux, Windows, macOS, Android, iOS, and WASM on every PR.
+* **NFR-1 Frame Budget & Idle Power:**
+  * Steady UI layout + SDF/Atlas paint + submit: **<= 4.0ms** (Desktop/Modern Mobile, capable of 120–240 FPS).
+  * Idle power consumption (no active animations): **0 redraws/sec**; blinking cursor wakes UI loop at `~1.9 Hz` (530ms toggle), never 60–120 Hz.
+* **NFR-2 Feature-Gated Binary Size Targets (Stripped Release):**
+  * Minimal `gpu-sdf` Desktop core (no `dsl`/`runtime`/`vello`): **<= 4–6 MB**.
+  * Minimal `gpu-sdf` Web WASM (`opt-level = "z"`, `lto = "thin"`, `wasm-opt -Oz` + brotli): **<= 1.8 MB compressed**.
+  * Full-featured `vello` vector Desktop build: **<= 12 MB**.
+* **NFR-3 Safety & License Gate:**
+  * Minimal isolated `unsafe` restricted to FFI/GPU surface creation (`wgpu`/JNI/ObjC).
+  * `cargo-deny` allow-list strictly enforced (`MIT`, `Apache-2.0`, `BSD-2/3-Clause`, `ISC`, `Zlib`, `Unicode-3.0`, and Bitstream Vera font redistribution terms).
+* **NFR-4 Platform Matrix:**
+  * Desktop: Linux (Wayland/X11), macOS 12+, Windows 10+.
+  * Mobile: Android 8.0+ (API 26+), iOS 15+.
+  * Web: Chrome, Firefox, Safari, Edge (WebGPU & WebGL2/Canvas2D).
