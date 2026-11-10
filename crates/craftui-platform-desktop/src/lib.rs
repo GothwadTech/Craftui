@@ -3,7 +3,6 @@
 //! pickers without GPL C bindings, and timer scheduling.
 
 use accesskit_winit::Adapter as AccessKitAdapter;
-use craftui_a11y::accesskit;
 use craftui_core::{
     ClipboardBackend, Color, CraftError, FileDialogBackend, FileDialogRequest, ImeEvent, KeyCode,
     KeyEvent, Modifiers, NodeId, PlatformServices, Point, PointerButton, PointerEvent, PointerId,
@@ -684,6 +683,7 @@ struct DesktopWindowState {
     textures: TextureRegistry,
     scene: PaintScene,
     a11y: Option<AccessKitAdapter>,
+    a11y_active: bool,
     presenter: Option<DesktopPresenter>,
     hot_reload: Option<HotReloadSpec>,
     cursor_pos: Point,
@@ -935,6 +935,7 @@ impl DesktopRunner {
                 textures: app_ctx.textures,
                 scene: PaintScene::new(),
                 a11y: Some(a11y),
+                a11y_active: false,
                 presenter,
                 hot_reload,
                 cursor_pos: Point::ZERO,
@@ -960,6 +961,7 @@ impl DesktopRunner {
         };
 
         let frame_start = Instant::now();
+        let _ = state.tree.tick_blink_timers(monotonic_ms());
         let animating = state.tree.tick_animations(dt);
 
         let layout_start = Instant::now();
@@ -984,30 +986,14 @@ impl DesktopRunner {
             eprintln!("[craftui] frame render error: {e}");
         }
 
-        if let Some(a11y) = state.a11y.as_mut() {
-            let tree_ref = &mut state.tree;
-            a11y.update_if_active(|| {
-                tree_ref
-                    .build_a11y_update()
-                    .unwrap_or_else(|| accesskit::TreeUpdate {
-                        nodes: vec![],
-                        tree: None,
-                        tree_id: accesskit::TreeId::ROOT,
-                        focus: accesskit::NodeId(0),
-                    })
-            });
+        if state.a11y_active
+            && let Some(a11y) = state.a11y.as_mut()
+            && let Some(update) = state.tree.build_a11y_update()
+        {
+            a11y.update_if_active(|| update);
         }
 
-        let focused_is_input = state
-            .tree
-            .focused
-            .and_then(|nid| state.tree.nodes.get(nid))
-            .is_some_and(|n| {
-                matches!(
-                    n.kind,
-                    craftui_widgets::widgets::WidgetKind::TextInput { .. }
-                )
-            });
+        let focused_is_input = state.tree.focused_is_text_input();
         if focused_is_input != state.last_focused_was_input {
             state.last_focused_was_input = focused_is_input;
             state.window.set_ime_allowed(focused_is_input);
@@ -1075,13 +1061,18 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
                             }
                         }
                         accesskit_winit::WindowEvent::InitialTreeRequested => {
+                            state.a11y_active = true;
+                            state.tree.invalidate_a11y();
                             if let Some(a11y) = state.a11y.as_mut()
                                 && let Some(update) = state.tree.build_a11y_update()
                             {
                                 a11y.update_if_active(|| update);
                             }
                         }
-                        accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+                        accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                            state.a11y_active = false;
+                            state.tree.invalidate_a11y();
+                        }
                     }
                 }
             }
@@ -1110,14 +1101,20 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now_ms = monotonic_ms();
         let timers_ran = craftui_reactive::tick_timers();
         let jobs_ran = self.dispatcher.drain();
-        if timers_ran > 0 || jobs_ran > 0 {
-            for state in self.windows.values() {
+        let mut min_delay = craftui_reactive::next_timer_delay_ms(now_ms);
+        for state in self.windows.values_mut() {
+            let blink_due = state.tree.tick_blink_timers(now_ms);
+            if timers_ran > 0 || jobs_ran > 0 || blink_due {
                 state.window.request_redraw();
             }
+            if let Some(win_delay) = state.tree.next_internal_delay_ms(now_ms) {
+                min_delay = Some(min_delay.map_or(win_delay, |cur| cur.min(win_delay)));
+            }
         }
-        if let Some(delay_ms) = craftui_reactive::next_timer_delay_ms(monotonic_ms()) {
+        if let Some(delay_ms) = min_delay {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(delay_ms.max(1)),
             ));
@@ -1335,6 +1332,7 @@ pub fn translate_winit_key(key_ev: &winit::event::KeyEvent, modifiers: Modifiers
         PhysicalKey::Code(WinitKeyCode::KeyC) => KeyCode::KeyC,
         PhysicalKey::Code(WinitKeyCode::KeyV) => KeyCode::KeyV,
         PhysicalKey::Code(WinitKeyCode::KeyX) => KeyCode::KeyX,
+        PhysicalKey::Code(WinitKeyCode::KeyY) => KeyCode::KeyY,
         PhysicalKey::Code(WinitKeyCode::KeyZ) => KeyCode::KeyZ,
         _ => match &key_ev.logical_key {
             Key::Named(NamedKey::Enter) => KeyCode::Enter,

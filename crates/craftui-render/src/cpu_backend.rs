@@ -224,24 +224,27 @@ impl VelloCpuBackend {
                     if text.is_empty() {
                         continue;
                     }
-                    let layout = text_engine.build_layout(text, style, *max_width);
+                    let layout = text_engine.build_layout_cached(text, style, *max_width);
                     let text_xform =
                         base_transform * Affine::translate((origin.x as f64, origin.y as f64));
                     self.ctx.set_transform(text_xform);
                     self.ctx.reset_paint_transform();
+                    self.ctx.set_paint(style.color.to_peniko());
+                    let mut coords_buf: Vec<i16> = Vec::new();
                     for line in layout.lines() {
                         for item in line.items() {
                             if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
                                 let run = glyph_run.run();
                                 let font = run.font();
                                 let font_size = run.font_size();
-                                let color = glyph_run.style().brush;
-                                self.ctx.set_paint(color.to_peniko());
-                                let coords: Vec<i16> = run
-                                    .normalized_coords()
-                                    .iter()
-                                    .map(|c| c.to_bits())
-                                    .collect();
+                                let norm = run.normalized_coords();
+                                let coords_slice: &[i16] = if norm.is_empty() {
+                                    &[]
+                                } else {
+                                    coords_buf.clear();
+                                    coords_buf.extend(norm.iter().map(|c| c.to_bits()));
+                                    &coords_buf
+                                };
                                 let glyphs =
                                     glyph_run.positioned_glyphs().map(|g| vello_cpu::Glyph {
                                         id: g.id,
@@ -253,7 +256,7 @@ impl VelloCpuBackend {
                                     .glyph_run(&mut self.resources, font)
                                     .font_size(font_size)
                                     .hint(true)
-                                    .normalized_coords(&coords)
+                                    .normalized_coords(coords_slice)
                                     .fill_glyphs(glyphs);
                             }
                         }

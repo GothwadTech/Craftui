@@ -1,4 +1,4 @@
-//! Complex script shaping, font discovery, layout metrics, and IME editing powered by `parley`.
+//! Complex script shaping, font discovery, layout caching, metrics, and IME editing powered by `parley`.
 
 use craftui_core::{Color, Rect, Size};
 use parley::editing::{Cursor, Selection};
@@ -8,9 +8,16 @@ use parley::{
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+#[cfg(feature = "embedded-fallback-font")]
+const EMBEDDED_FALLBACK_FONT: &[u8] = include_bytes!("../assets/Vera.ttf");
+
+const DEFAULT_LAYOUT_CACHE_CAPACITY: usize = 1024;
 
 /// Text horizontal alignment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum TextAlign {
     #[default]
     Start,
@@ -69,10 +76,102 @@ impl TextStyle {
     }
 }
 
-/// Shared font database and shaping scratchpad.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LayoutCacheKey {
+    text: String,
+    font_size_bits: u32,
+    font_weight_bits: u32,
+    italic: bool,
+    font_family: Option<String>,
+    line_height_bits: u32,
+    align: TextAlign,
+    underline: bool,
+    max_width_bits: Option<u32>,
+}
+
+impl LayoutCacheKey {
+    fn from_inputs(text: &str, style: &TextStyle, max_width: Option<f32>) -> Self {
+        let norm_max_w = max_width
+            .filter(|w| w.is_finite())
+            .map(|w| if w == 0.0 { 0.0f32 } else { w.max(0.0) }.to_bits());
+        let family = style
+            .font_family
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(str::to_string);
+        Self {
+            text: text.to_string(),
+            font_size_bits: style.font_size.to_bits(),
+            font_weight_bits: style.font_weight.to_bits(),
+            italic: style.italic,
+            font_family: family,
+            line_height_bits: style.line_height.to_bits(),
+            align: style.align,
+            underline: style.underline,
+            max_width_bits: norm_max_w,
+        }
+    }
+}
+
+struct ShapedLayoutCache {
+    entries: HashMap<LayoutCacheKey, (u64, Arc<Layout<Color>>)>,
+    clock: u64,
+    capacity: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl ShapedLayoutCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::with_capacity(capacity.min(256)),
+            clock: 0,
+            capacity: capacity.max(16),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    fn get(&mut self, key: &LayoutCacheKey) -> Option<Arc<Layout<Color>>> {
+        if let Some((tick, layout)) = self.entries.get_mut(key) {
+            self.clock = self.clock.wrapping_add(1);
+            *tick = self.clock;
+            self.hits = self.hits.saturating_add(1);
+            Some(Arc::clone(layout))
+        } else {
+            self.misses = self.misses.saturating_add(1);
+            None
+        }
+    }
+
+    fn insert(&mut self, key: LayoutCacheKey, layout: Arc<Layout<Color>>) {
+        if self.entries.len() >= self.capacity {
+            let evict_count = (self.capacity / 4).max(1);
+            let mut order: Vec<(u64, LayoutCacheKey)> = self
+                .entries
+                .iter()
+                .map(|(k, (t, _))| (*t, k.clone()))
+                .collect();
+            order.select_nth_unstable_by_key(evict_count.saturating_sub(1), |(t, _)| *t);
+            for (_, k) in order.into_iter().take(evict_count) {
+                self.entries.remove(&k);
+            }
+        }
+        self.clock = self.clock.wrapping_add(1);
+        self.entries.insert(key, (self.clock, layout));
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Shared font database, LRU shaped-layout cache, and shaping scratchpad.
 pub struct TextEngine {
     pub font_cx: FontContext,
     pub layout_cx: LayoutContext<Color>,
+    cache: ShapedLayoutCache,
 }
 
 impl Default for TextEngine {
@@ -83,23 +182,74 @@ impl Default for TextEngine {
 
 impl TextEngine {
     pub fn new() -> Self {
-        Self {
+        let mut engine = Self {
             font_cx: FontContext::new(),
             layout_cx: LayoutContext::new(),
+            cache: ShapedLayoutCache::new(DEFAULT_LAYOUT_CACHE_CAPACITY),
+        };
+        engine.install_embedded_fallback_font();
+        engine
+    }
+
+    /// Create a [`TextEngine`] without discovering system fonts (relies solely on
+    /// registered or embedded fallback fonts — useful for deterministic headless tests and Web/WASM).
+    pub fn new_without_system_fonts() -> Self {
+        let collection = fontique::Collection::new(fontique::CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        });
+        let font_cx = FontContext {
+            collection,
+            source_cache: fontique::SourceCache::default(),
+        };
+        let mut engine = Self {
+            font_cx,
+            layout_cx: LayoutContext::new(),
+            cache: ShapedLayoutCache::new(DEFAULT_LAYOUT_CACHE_CAPACITY),
+        };
+        engine.install_embedded_fallback_font();
+        engine
+    }
+
+    fn install_embedded_fallback_font(&mut self) {
+        #[cfg(feature = "embedded-fallback-font")]
+        {
+            let blob = fontique::Blob::new(Arc::new(EMBEDDED_FALLBACK_FONT));
+            let registered = self.font_cx.collection.register_fonts(blob, None);
+            let ids: Vec<_> = registered.into_iter().map(|(id, _)| id).collect();
+            if !ids.is_empty() {
+                self.font_cx
+                    .collection
+                    .append_generic_families(GenericFamily::SansSerif, ids.iter().copied());
+                self.font_cx
+                    .collection
+                    .append_generic_families(GenericFamily::SystemUi, ids.iter().copied());
+            }
         }
     }
 
     /// Register custom font bytes (e.g., bundled app icons or fallback font on minimal systems).
     pub fn register_font_bytes(&mut self, bytes: Vec<u8>) {
         self.font_cx.collection.register_fonts(bytes.into(), None);
+        self.cache.clear();
     }
 
-    /// Shape and break text lines into a [`parley::Layout<Color>`].
-    pub fn build_layout(
+    /// Number of cache hits and misses recorded by the shaped layout LRU cache.
+    pub fn cache_stats(&self) -> (u64, u64) {
+        (self.cache.hits, self.cache.misses)
+    }
+
+    /// Clear all cached shaped text layouts.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    fn shape_uncached(
         &mut self,
         text: &str,
         style: &TextStyle,
         max_width: Option<f32>,
+        brush_color: Color,
     ) -> Layout<Color> {
         let mut builder = self
             .layout_cx
@@ -113,7 +263,7 @@ impl TextEngine {
         } else {
             FontStyle::Normal
         }));
-        builder.push_default(StyleProperty::Brush(style.color));
+        builder.push_default(StyleProperty::Brush(brush_color));
         builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
             style.line_height,
         )));
@@ -143,12 +293,42 @@ impl TextEngine {
         layout
     }
 
-    /// Measure bounding size of shaped text under optional `max_width`.
+    /// Shape and break text lines into a cached shared [`Arc<parley::Layout<Color>>`].
+    ///
+    /// Shaping geometry is independent of color, so hover/theme color transitions hit the cache cleanly;
+    /// renderers should paint glyph runs using the caller's `style.color`.
+    pub fn build_layout_cached(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+    ) -> Arc<Layout<Color>> {
+        let key = LayoutCacheKey::from_inputs(text, style, max_width);
+        if let Some(cached) = self.cache.get(&key) {
+            return cached;
+        }
+        let layout = Arc::new(self.shape_uncached(text, style, max_width, Color::WHITE));
+        self.cache.insert(key, Arc::clone(&layout));
+        layout
+    }
+
+    /// Shape and break text lines into a [`parley::Layout<Color>`].
+    pub fn build_layout(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+    ) -> Layout<Color> {
+        let shared = self.build_layout_cached(text, style, max_width);
+        (*shared).clone()
+    }
+
+    /// Measure bounding size of shaped text under optional `max_width` using the LRU cache.
     pub fn measure(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Size {
         if text.is_empty() {
             return Size::new(0.0, style.font_size * style.line_height);
         }
-        let layout = self.build_layout(text, style, max_width);
+        let layout = self.build_layout_cached(text, style, max_width);
         Size::new(
             layout.width().ceil(),
             layout
@@ -200,7 +380,16 @@ impl TextEngine {
     }
 }
 
-/// Interactive single/multi-line text buffer state supporting selection and IME preedit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextSnapshot {
+    text: String,
+    cursor: usize,
+    anchor: usize,
+}
+
+const MAX_UNDO_HISTORY: usize = 128;
+
+/// Interactive single/multi-line text buffer state supporting selection, word navigation, undo/redo, and IME preedit.
 #[derive(Debug, Clone, Default)]
 pub struct TextEditorState {
     pub text: String,
@@ -208,6 +397,8 @@ pub struct TextEditorState {
     pub anchor: usize,
     pub preedit: Option<String>,
     pub preedit_cursor: Option<(usize, usize)>,
+    undo_stack: Vec<TextSnapshot>,
+    redo_stack: Vec<TextSnapshot>,
 }
 
 impl TextEditorState {
@@ -220,7 +411,71 @@ impl TextEditorState {
             anchor: len,
             preedit: None,
             preedit_cursor: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
+    }
+
+    fn push_undo(&mut self) {
+        let snap = TextSnapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+        };
+        if self.undo_stack.last() == Some(&snap) {
+            return;
+        }
+        if self.undo_stack.len() >= MAX_UNDO_HISTORY {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(snap);
+        self.redo_stack.clear();
+    }
+
+    /// Synchronize external signal updates while preserving cursor/selection clamped on valid UTF-8 boundaries.
+    pub fn sync_external(&mut self, next: &str) -> bool {
+        if self.text == next {
+            return false;
+        }
+        self.push_undo();
+        self.text.clear();
+        self.text.push_str(next);
+        self.cursor = self.clamp_boundary(self.cursor);
+        self.anchor = self.clamp_boundary(self.anchor);
+        true
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(prev) = self.undo_stack.pop() else {
+            return false;
+        };
+        self.redo_stack.push(TextSnapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+        });
+        self.text = prev.text;
+        self.cursor = self.clamp_boundary(prev.cursor);
+        self.anchor = self.clamp_boundary(prev.anchor);
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        if self.undo_stack.len() >= MAX_UNDO_HISTORY {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(TextSnapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+        });
+        self.text = next.text;
+        self.cursor = self.clamp_boundary(next.cursor);
+        self.anchor = self.clamp_boundary(next.anchor);
+        true
     }
 
     pub fn selection_range(&self) -> Option<(usize, usize)> {
@@ -245,19 +500,29 @@ impl TextEditorState {
     }
 
     pub fn insert_str(&mut self, s: &str) {
-        self.delete_selection();
+        self.push_undo();
+        self.delete_selection_inner();
         let idx = self.clamp_boundary(self.cursor);
         self.text.insert_str(idx, s);
         self.cursor = idx + s.len();
         self.anchor = self.cursor;
     }
 
-    pub fn delete_selection(&mut self) -> bool {
+    fn delete_selection_inner(&mut self) -> bool {
         if let Some((start, end)) = self.selection_range() {
             self.text.replace_range(start..end, "");
             self.cursor = start;
             self.anchor = start;
             true
+        } else {
+            false
+        }
+    }
+
+    pub fn delete_selection(&mut self) -> bool {
+        if self.selection_range().is_some() {
+            self.push_undo();
+            self.delete_selection_inner()
         } else {
             false
         }
@@ -271,6 +536,7 @@ impl TextEditorState {
         if cur == 0 {
             return;
         }
+        self.push_undo();
         let prev = self.prev_char_boundary(cur);
         self.text.replace_range(prev..cur, "");
         self.cursor = prev;
@@ -285,7 +551,37 @@ impl TextEditorState {
         if cur >= self.text.len() {
             return;
         }
+        self.push_undo();
         let next = self.next_char_boundary(cur);
+        self.text.replace_range(cur..next, "");
+        self.anchor = self.cursor;
+    }
+
+    pub fn delete_word_backward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let cur = self.clamp_boundary(self.cursor);
+        if cur == 0 {
+            return;
+        }
+        self.push_undo();
+        let prev = self.prev_word_boundary(cur);
+        self.text.replace_range(prev..cur, "");
+        self.cursor = prev;
+        self.anchor = prev;
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let cur = self.clamp_boundary(self.cursor);
+        if cur >= self.text.len() {
+            return;
+        }
+        self.push_undo();
+        let next = self.next_word_boundary(cur);
         self.text.replace_range(cur..next, "");
         self.anchor = self.cursor;
     }
@@ -301,6 +597,22 @@ impl TextEditorState {
     pub fn move_right(&mut self, extend_selection: bool) {
         let cur = self.clamp_boundary(self.cursor);
         self.cursor = self.next_char_boundary(cur);
+        if !extend_selection {
+            self.anchor = self.cursor;
+        }
+    }
+
+    pub fn move_word_left(&mut self, extend_selection: bool) {
+        let cur = self.clamp_boundary(self.cursor);
+        self.cursor = self.prev_word_boundary(cur);
+        if !extend_selection {
+            self.anchor = self.cursor;
+        }
+    }
+
+    pub fn move_word_right(&mut self, extend_selection: bool) {
+        let cur = self.clamp_boundary(self.cursor);
+        self.cursor = self.next_word_boundary(cur);
         if !extend_selection {
             self.anchor = self.cursor;
         }
@@ -416,6 +728,45 @@ impl TextEditorState {
         }
         i
     }
+
+    fn prev_word_boundary(&self, idx: usize) -> usize {
+        let mut cur = idx.min(self.text.len());
+        let mut iter = self.text[..cur].char_indices().rev().peekable();
+        // Skip trailing whitespace / punctuation before cursor
+        while let Some(&(pos, ch)) = iter.peek() {
+            if ch.is_alphanumeric() || ch == '_' {
+                break;
+            }
+            cur = pos;
+            iter.next();
+        }
+        // Walk backwards across word characters
+        for (pos, ch) in iter {
+            if !(ch.is_alphanumeric() || ch == '_') {
+                break;
+            }
+            cur = pos;
+        }
+        cur
+    }
+
+    fn next_word_boundary(&self, idx: usize) -> usize {
+        let start = idx.min(self.text.len());
+        let mut iter = self.text[start..].char_indices().peekable();
+        while let Some(&(_, ch)) = iter.peek() {
+            if !(ch.is_alphanumeric() || ch == '_') {
+                break;
+            }
+            iter.next();
+        }
+        while let Some(&(off, ch)) = iter.peek() {
+            if ch.is_alphanumeric() || ch == '_' {
+                return start + off;
+            }
+            iter.next();
+        }
+        self.text.len()
+    }
 }
 
 #[cfg(test)]
@@ -423,16 +774,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shape_latin_and_unicode_scripts() {
+    fn shape_latin_and_unicode_scripts_with_cache_hits() {
         let mut engine = TextEngine::new();
         let style = TextStyle::default().with_size(18.0);
         let size = engine.measure("Hello CraftUI • नमस्ते • مرحبا", &style, Some(300.0));
         assert!(size.width > 0.0);
         assert!(size.height >= 18.0);
+
+        // Same text with different color hits the layout cache!
+        let style2 = style.clone().with_color(Color::rgb(255, 0, 128));
+        let size2 = engine.measure("Hello CraftUI • नमस्ते • مرحبا", &style2, Some(300.0));
+        assert_eq!(size, size2);
+        let (hits, misses) = engine.cache_stats();
+        assert_eq!(hits, 1);
+        assert_eq!(misses, 1);
     }
 
     #[test]
-    fn editor_selection_and_ime_preedit() {
+    fn embedded_fallback_font_shapes_without_system_fonts() {
+        let mut engine = TextEngine::new_without_system_fonts();
+        let style = TextStyle::default().with_size(16.0);
+        let layout = engine.build_layout_cached("CraftUI Fallback Font", &style, None);
+        assert!(layout.width() > 50.0);
+        assert!(layout.lines().count() >= 1);
+    }
+
+    #[test]
+    fn editor_selection_word_motion_undo_redo_and_cursor_clamp() {
         let mut ed = TextEditorState::new("Craft");
         ed.insert_str("UI");
         assert_eq!(ed.text, "CraftUI");
@@ -443,5 +811,30 @@ mod tests {
         assert_eq!(ed.text, "CraftKit");
         ed.preedit = Some("!".into());
         assert_eq!(ed.display_text(), "CraftKit!");
+        ed.preedit = None;
+
+        // Undo & Redo
+        assert!(ed.undo());
+        assert_eq!(ed.text, "CraftUI");
+        assert!(ed.redo());
+        assert_eq!(ed.text, "CraftKit");
+
+        // Word jump and word delete
+        let mut doc = TextEditorState::new("hello world_123 test");
+        doc.move_word_left(false);
+        assert_eq!(doc.cursor, 16);
+        doc.move_word_left(false);
+        assert_eq!(doc.cursor, 6);
+        doc.delete_word_backward();
+        assert_eq!(doc.text, "world_123 test");
+        assert!(doc.undo());
+        assert_eq!(doc.text, "hello world_123 test");
+
+        // External sync preserves mid-string cursor cleanly clamped
+        doc.set_cursor_at(5, false);
+        assert!(doc.sync_external("hello updated string"));
+        assert_eq!(doc.cursor, 5);
+        assert!(doc.sync_external("hi"));
+        assert_eq!(doc.cursor, 2);
     }
 }

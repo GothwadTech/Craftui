@@ -119,6 +119,8 @@ pub struct IosAppHost {
     pub textures: TextureRegistry,
     pub dispatcher: UiDispatcher,
     last_first_responder: bool,
+    last_synced_text: Option<String>,
+    needs_redraw: bool,
     pub last_ime_commands: Vec<IosImeCommand>,
     #[cfg(target_os = "ios")]
     gpu: Option<craftui_render::GpuSurfacePipeline>,
@@ -141,10 +143,26 @@ impl IosAppHost {
             textures: TextureRegistry::new(),
             dispatcher,
             last_first_responder: false,
+            last_synced_text: None,
+            needs_redraw: true,
             last_ime_commands: Vec::new(),
             #[cfg(target_os = "ios")]
             gpu: None,
         }
+    }
+
+    pub fn request_redraw(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    /// Returns whether `CADisplayLink` should remain active for ongoing animations, pending redraws, or timers.
+    pub fn needs_display_link(&self, animating: bool) -> bool {
+        if animating || self.needs_redraw {
+            return true;
+        }
+        let now_ms = craftui_core::monotonic_ms();
+        craftui_reactive::next_timer_delay_ms(now_ms).is_some()
+            || self.tree.next_internal_delay_ms(now_ms).is_some()
     }
 
     /// Build a CraftUI root view inside Rust before handing control to the UIKit CADisplayLink loop.
@@ -159,26 +177,44 @@ impl IosAppHost {
             &self.dispatcher,
         );
         self.tree.set_root(root);
+        self.needs_redraw = true;
     }
 
     pub fn set_safe_area(&mut self, safe_area: IosSafeAreaInsets) {
-        self.tree.metrics.safe_area = safe_area.into();
+        let next: Insets = safe_area.into();
+        if self.tree.metrics.safe_area != next {
+            self.tree.metrics.safe_area = next;
+            self.needs_redraw = true;
+        }
     }
 
     pub fn set_keyboard_frame(&mut self, frame: IosKeyboardFrame) {
-        self.tree.metrics.keyboard_inset = if frame.visible {
+        let next = if frame.visible {
             frame.overlap_height_pt.max(0.0)
         } else {
             0.0
         };
+        if (self.tree.metrics.keyboard_inset - next).abs() > 0.01 {
+            self.tree.metrics.keyboard_inset = next;
+            self.needs_redraw = true;
+        }
     }
 
     pub fn resize_pt(&mut self, width_pt: f32, height_pt: f32, scale_factor: f32) {
-        self.tree.handle_event(&UiEvent::Resize {
-            width: width_pt.max(1.0),
-            height: height_pt.max(1.0),
-            scale_factor: scale_factor.max(1.0),
-        });
+        let w = width_pt.max(1.0);
+        let h = height_pt.max(1.0);
+        let s = scale_factor.max(1.0);
+        if (self.tree.metrics.logical_size.width - w).abs() > 0.01
+            || (self.tree.metrics.logical_size.height - h).abs() > 0.01
+            || (self.tree.metrics.scale_factor - s).abs() > 0.001
+        {
+            self.tree.handle_event(&UiEvent::Resize {
+                width: w,
+                height: h,
+                scale_factor: s,
+            });
+            self.needs_redraw = true;
+        }
         #[cfg(target_os = "ios")]
         if let Some(gpu) = self.gpu.as_mut() {
             let (pw, ph) = self.tree.metrics.physical_size();
@@ -194,7 +230,7 @@ impl IosAppHost {
         y_pt: f32,
         timestamp_ms: u64,
     ) -> bool {
-        self.tree.handle_event(&UiEvent::Pointer(PointerEvent {
+        let handled = self.tree.handle_event(&UiEvent::Pointer(PointerEvent {
             id: PointerId(touch_id),
             phase,
             position: Point::new(x_pt, y_pt),
@@ -202,29 +238,46 @@ impl IosAppHost {
             modifiers: Modifiers::default(),
             is_touch: true,
             timestamp_ms,
-        }))
+        }));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     pub fn push_marked_text(&mut self, marked: &str, cursor_end: usize) -> bool {
-        self.tree.handle_event(&UiEvent::Ime(ImeEvent::Preedit(
+        let handled = self.tree.handle_event(&UiEvent::Ime(ImeEvent::Preedit(
             marked.to_string(),
             Some((cursor_end, cursor_end)),
-        )))
+        )));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     pub fn push_insert_text(&mut self, committed: &str) -> bool {
-        self.tree
-            .handle_event(&UiEvent::Ime(ImeEvent::Commit(committed.to_string())))
+        let handled = self
+            .tree
+            .handle_event(&UiEvent::Ime(ImeEvent::Commit(committed.to_string())));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     pub fn push_delete_backward(&mut self) -> bool {
-        self.tree.handle_event(&UiEvent::Key(KeyEvent {
+        let handled = self.tree.handle_event(&UiEvent::Key(KeyEvent {
             code: KeyCode::Backspace,
             text: None,
             pressed: true,
             repeat: false,
             modifiers: Modifiers::default(),
-        }))
+        }));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     /// Pull the latest frame from a [`CvPixelBufferBridge`] into a CraftUI [`TextureHandle`].
@@ -238,6 +291,7 @@ impl IosAppHost {
             return None;
         }
         let rgba = bgra_frame_to_packed_rgba(&frame);
+        self.needs_redraw = true;
         if let Some(existing) = slot.as_ref() {
             existing
                 .buffer
@@ -253,12 +307,22 @@ impl IosAppHost {
         }
     }
 
-    pub fn display_link_tick(&mut self, dt_sec: f32) -> (bool, Vec<IosImeCommand>) {
-        let _ = craftui_reactive::tick_timers();
-        let _ = self.dispatcher.drain();
+    pub fn display_link_tick_with_redraw(
+        &mut self,
+        dt_sec: f32,
+        now_ms: u64,
+    ) -> (bool, bool, Vec<IosImeCommand>) {
+        let timers = craftui_reactive::tick_timers_at(now_ms);
+        let jobs = self.dispatcher.drain();
+        let blink = self.tree.tick_blink_timers(now_ms);
         let animating = self.tree.tick_animations(dt_sec);
-        let _ = self.tree.layout(self.tree.metrics);
-        self.tree.paint(&mut self.scene);
+        let dirty = self.tree.layout(self.tree.metrics);
+        let should_paint =
+            self.needs_redraw || timers > 0 || jobs > 0 || blink || animating || dirty > 0;
+        if should_paint {
+            self.tree.paint(&mut self.scene);
+            self.needs_redraw = false;
+        }
 
         let mut cmds = Vec::new();
         let focused_text = self.tree.focused.and_then(|id| {
@@ -270,18 +334,22 @@ impl IosAppHost {
         let needs_kb = focused_text.is_some();
         if needs_kb != self.last_first_responder {
             self.last_first_responder = needs_kb;
-            cmds.push(if needs_kb {
-                IosImeCommand::BecomeFirstResponder
+            if needs_kb {
+                cmds.push(IosImeCommand::BecomeFirstResponder);
             } else {
-                IosImeCommand::ResignFirstResponder
-            });
+                self.last_synced_text = None;
+                cmds.push(IosImeCommand::ResignFirstResponder);
+            }
         }
-        if let Some(txt) = focused_text {
+        if let Some(txt) = focused_text
+            && self.last_synced_text.as_ref() != Some(&txt)
+        {
+            self.last_synced_text = Some(txt.clone());
             cmds.push(IosImeCommand::SyncText(txt));
         }
 
         #[cfg(target_os = "ios")]
-        if let Some(gpu) = self.gpu.as_mut() {
+        if should_paint && let Some(gpu) = self.gpu.as_mut() {
             let bg = self.tree.theme().background;
             let sf = self.tree.metrics.scale_factor;
             let _ = gpu.render_frame(
@@ -294,6 +362,12 @@ impl IosAppHost {
         }
 
         self.last_ime_commands = cmds.clone();
+        (animating, should_paint, cmds)
+    }
+
+    pub fn display_link_tick(&mut self, dt_sec: f32) -> (bool, Vec<IosImeCommand>) {
+        let (animating, _did_paint, cmds) =
+            self.display_link_tick_with_redraw(dt_sec, craftui_core::monotonic_ms());
         (animating, cmds)
     }
 }
@@ -342,6 +416,7 @@ pub mod ios_metal {
         let pipeline =
             unsafe { craftui_render::GpuSurfacePipeline::new_unsafe(target, pw, ph, false) }?;
         host.gpu = Some(pipeline);
+        host.needs_redraw = true;
         Ok(())
     }
 }
@@ -655,6 +730,13 @@ mod tests {
             assert!(craftui_ios_app_touch(app, 1, 2, 50.0, 20.0, 30));
             let flags = craftui_ios_app_tick(app, 0.016);
             assert_ne!(flags & 0b10, 0, "expected keyboard requested");
+            // Subsequent idle ticks neither force Metal redraw nor re-emit duplicate SyncText
+            let host_ref = &mut *app;
+            let now_ms = craftui_core::monotonic_ms();
+            host_ref.tree.reset_caret_blink(now_ms);
+            let (anim_idle, painted_idle, cmds_idle) =
+                host_ref.display_link_tick_with_redraw(0.016, now_ms + 50);
+            assert!(!anim_idle && !painted_idle && cmds_idle.is_empty());
             let msg = b"hello";
             assert!(craftui_ios_app_insert_text(app, msg.as_ptr(), msg.len()));
             // Tap Button below TextInput (y around 60)

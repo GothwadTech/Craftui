@@ -480,4 +480,304 @@ mod tests {
         assert_eq!(new_children[1], initial_children[0]);
         assert!(!tree.nodes.contains_key(initial_children[1]));
     }
+
+    #[test]
+    fn scrollview_nested_child_drag_uses_scrollview_viewport() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let sv = tree.scroll_view(
+            cx,
+            Axis::Vertical,
+            LayoutStyle::column().with_size(Length::Dp(300.0), Length::Dp(200.0)),
+        );
+        let col = tree.column(cx);
+        // 15 small rows of 40dp => 600dp total content in a 200dp viewport (max_off = 400dp)
+        let mut first_row = None;
+        for i in 0..15 {
+            let row = tree.container(
+                cx,
+                LayoutStyle::row().with_size(Length::Dp(280.0), Length::Dp(40.0)),
+                BoxStyle::new(),
+            );
+            let lbl = tree.text(cx, format!("Row {i}"), TextStyle::default());
+            tree.append_child(row, lbl);
+            tree.append_child(col, row);
+            if first_row.is_none() {
+                first_row = Some(row);
+            }
+        }
+        tree.append_child(sv, col);
+        tree.set_root(sv);
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(300.0, 200.0),
+            ..Default::default()
+        });
+
+        // Dragging UP by 120dp starting on the 40dp tall child row (max_off for viewport=200 is 400).
+        // Previously BUG-01 used child.height (40) so max_off over-clamped to 600-40 instead of 400!
+        let start = tree.rect(first_row.unwrap()).center();
+        for (idx, dy) in [0.0f32, -25.0, -35.0, -60.0].into_iter().enumerate() {
+            let phase = match idx {
+                0 => PointerPhase::Down,
+                3 => PointerPhase::Move,
+                _ => PointerPhase::Move,
+            };
+            let pos = craftui_core::Point::new(
+                start.x,
+                start.y + [-0.0, -25.0, -60.0, -120.0][idx],
+            );
+            let _ = dy;
+            tree.handle_event(&UiEvent::Pointer(PointerEvent {
+                id: PointerId(1),
+                phase,
+                position: pos,
+                button: Some(PointerButton::Primary),
+                modifiers: Modifiers::default(),
+                is_touch: true,
+                timestamp_ms: idx as u64 * 16,
+            }));
+        }
+        // Now scroll far down past 450dp and ensure it clamps strictly at content_extent (600) - sv.height (200) = 400.0, not 560.0!
+        for step in 1..=10 {
+            tree.handle_event(&UiEvent::Pointer(PointerEvent {
+                id: PointerId(1),
+                phase: PointerPhase::Move,
+                position: craftui_core::Point::new(start.x, start.y - 120.0 - step as f32 * 50.0),
+                button: Some(PointerButton::Primary),
+                modifiers: Modifiers::default(),
+                is_touch: true,
+                timestamp_ms: 80 + step as u64 * 16,
+            }));
+        }
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: craftui_core::Point::new(start.x, start.y - 620.0),
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 300,
+        }));
+        match &tree.nodes.get(sv).unwrap().kind {
+            WidgetKind::ScrollView { offset, .. } => {
+                assert!((*offset - 400.0).abs() < 1.0, "expected max_off 400, got {offset}");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn text_input_undo_redo_word_nav_and_demand_caret_blink() {
+        reset_runtime();
+        let cx = Scope::root();
+        let text_sig = cx.signal("hello world".to_string());
+        let mut tree = WidgetTree::new(cx);
+        let input = tree.text_input(cx, "", "Type...", Some(text_sig));
+        tree.set_root(input);
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(300.0, 100.0),
+            ..Default::default()
+        });
+        tree.focused = Some(input);
+
+        // Idle focused TextInput MUST NOT force continuous 60FPS animation ticks
+        assert!(!tree.tick_animations(1.0 / 60.0));
+        // Demand blink timer arms at now and only fires after 530ms
+        assert!(!tree.tick_blink_timers(1000));
+        assert!(tree.next_internal_delay_ms(1000).is_some_and(|d| d <= 530));
+        assert!(tree.tick_blink_timers(1530));
+        assert!(!tree.tick_blink_timers(1600));
+
+        // Word delete backward ("world" -> "hello ")
+        tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::Backspace,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }));
+        assert_eq!(text_sig.get(), "hello ");
+
+        // Ctrl+Z undo restores "hello world"
+        tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::KeyZ,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }));
+        assert_eq!(text_sig.get(), "hello world");
+
+        // Ctrl+Y redo restores "hello "
+        tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::KeyY,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }));
+        assert_eq!(text_sig.get(), "hello ");
+
+        // Move left 3 chars then externally update bound signal to same length: cursor stays clamped cleanly
+        for _ in 0..3 {
+            tree.handle_event(&UiEvent::Key(KeyEvent {
+                code: KeyCode::ArrowLeft,
+                text: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }));
+        }
+        let cursor_before = match &tree.nodes.get(input).unwrap().kind {
+            WidgetKind::TextInput { editor, .. } => editor.cursor,
+            _ => unreachable!(),
+        };
+        assert_eq!(cursor_before, 3);
+        text_sig.set("hey there!".to_string());
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(300.0, 100.0),
+            ..Default::default()
+        });
+        let cursor_after = match &tree.nodes.get(input).unwrap().kind {
+            WidgetKind::TextInput { editor, .. } => editor.cursor,
+            _ => unreachable!(),
+        };
+        assert_eq!(cursor_after, 3);
+    }
+
+    #[test]
+    fn select_dropdown_scrolls_and_respects_button_children_and_a11y_diff() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let col = tree.column(cx);
+        let sel_sig = cx.signal(0usize);
+        let opts: Vec<String> = (0..20).map(|i| format!("Option {i}")).collect();
+        let sel = tree.select(cx, opts, sel_sig, "Pick");
+
+        let clicks = Rc::new(Cell::new(0usize));
+        let clicks_c = clicks.clone();
+        let btn = tree.button(cx, "", move || clicks_c.set(clicks_c.get() + 1));
+        let ico = tree.icon(cx, "check", 16.0, None);
+        let lbl = tree.text(cx, "Custom Child Button", TextStyle::default());
+        tree.append_child(btn, ico);
+        tree.append_child(btn, lbl);
+
+        tree.append_child(col, sel);
+        tree.append_child(col, btn);
+        tree.set_root(col);
+        let metrics = WindowMetrics {
+            logical_size: Size::new(400.0, 500.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Incremental A11y emits first snapshot, then returns None when unchanged
+        assert!(tree.build_a11y_update().is_some());
+        assert!(tree.build_a11y_update().is_none());
+
+        // Clicking composed Button child still activates parent button without overlap crash
+        let lbl_center = tree.rect(lbl).center();
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: lbl_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: lbl_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 20,
+        }));
+        assert_eq!(clicks.get(), 1);
+        assert!(tree.build_a11y_update().is_some()); // focus changed to btn
+
+        // Open Select, scroll down the dropdown list, and click first visible row (~row 10)
+        let sel_center = tree.rect(sel).center();
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: sel_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 30,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: sel_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 40,
+        }));
+        let drop_pos = craftui_core::Point::new(sel_center.x, tree.rect(sel).max_y() + 20.0);
+        assert!(tree.handle_event(&UiEvent::Scroll(craftui_core::ScrollDelta {
+            x: 0.0,
+            y: -340.0, // scroll down by 10 rows (10 * 34px)
+            position: drop_pos,
+        })));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: drop_pos,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 50,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: drop_pos,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 60,
+        }));
+        assert!(sel_sig.get() >= 9, "expected scrolled option >= 9, got {}", sel_sig.get());
+    }
+
+    #[test]
+    fn property_effect_reassignment_disposes_old_effects() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let sig_old = cx.signal(false);
+        let sig_new = cx.signal(false);
+        let btn = tree.button(cx, "Go", || {});
+        tree.set_disabled(btn, sig_old);
+        let _ = craftui_reactive::drain_dirty_nodes();
+
+        tree.set_disabled(btn, sig_new);
+        let _ = craftui_reactive::drain_dirty_nodes();
+
+        // Updating disposed sig_old should NOT mark btn dirty!
+        sig_old.set(true);
+        let dirty_after_old = craftui_reactive::drain_dirty_nodes();
+        assert!(dirty_after_old.is_empty());
+
+        // Updating active sig_new SHOULD mark btn dirty!
+        sig_new.set(true);
+        let dirty_after_new = craftui_reactive::drain_dirty_nodes();
+        assert!(dirty_after_new.iter().any(|(id, _)| *id == btn));
+    }
 }

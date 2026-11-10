@@ -237,6 +237,7 @@ pub enum WidgetKind {
         options: ReactiveValue<Vec<String>>,
         selected: Signal<usize>,
         open: bool,
+        dropdown_scroll: f32,
         placeholder: String,
         on_change: Option<IndexCallback>,
     },

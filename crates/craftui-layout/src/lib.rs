@@ -5,7 +5,7 @@ use craftui_core::{
 };
 use serde::{Deserialize, Serialize};
 use slotmap::SecondaryMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use taffy::prelude as tp;
 
 /// Container layout mode.
@@ -333,6 +333,9 @@ pub struct LayoutEngine {
     children_map: SecondaryMap<NodeId, Vec<NodeId>>,
     rects: SecondaryMap<NodeId, Rect>,
     content_sizes: SecondaryMap<NodeId, Size>,
+    dirty_styles: HashSet<NodeId>,
+    last_env: Option<(Insets, f32, Direction)>,
+    synced_node_context: SecondaryMap<NodeId, (Direction, bool)>,
 }
 
 impl Default for LayoutEngine {
@@ -351,12 +354,20 @@ impl LayoutEngine {
             children_map: SecondaryMap::new(),
             rects: SecondaryMap::new(),
             content_sizes: SecondaryMap::new(),
+            dirty_styles: HashSet::new(),
+            last_env: None,
+            synced_node_context: SecondaryMap::new(),
         }
     }
 
     pub fn upsert_node(&mut self, node: NodeId, style: LayoutStyle) {
-        self.styles.insert(node, style.clone());
-        if !self.node_map.contains_key(node) {
+        let is_new = !self.node_map.contains_key(node);
+        let style_changed = is_new || self.styles.get(node) != Some(&style);
+        if style_changed {
+            self.styles.insert(node, style);
+            self.dirty_styles.insert(node);
+        }
+        if is_new {
             let taffy_id = self
                 .taffy
                 .new_leaf_with_context(taffy::Style::default(), node)
@@ -365,11 +376,24 @@ impl LayoutEngine {
             self.reverse_map.insert(taffy_id, node);
             self.rects.insert(node, Rect::ZERO);
             self.content_sizes.insert(node, Size::ZERO);
+        } else if style_changed {
+            self.mark_dirty(node);
         }
     }
 
     pub fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
+        if self
+            .children_map
+            .get(parent)
+            .is_some_and(|existing| existing.as_slice() == children)
+        {
+            return;
+        }
         self.children_map.insert(parent, children.to_vec());
+        self.dirty_styles.insert(parent);
+        for &c in children {
+            self.dirty_styles.insert(c);
+        }
         if let Some(&parent_taffy) = self.node_map.get(parent) {
             let taffy_children: Vec<taffy::NodeId> = children
                 .iter()
@@ -384,6 +408,8 @@ impl LayoutEngine {
         self.children_map.remove(node);
         self.rects.remove(node);
         self.content_sizes.remove(node);
+        self.dirty_styles.remove(&node);
+        self.synced_node_context.remove(node);
         if let Some(taffy_id) = self.node_map.remove(node) {
             self.reverse_map.remove(&taffy_id);
             let _ = self.taffy.remove(taffy_id);
@@ -396,7 +422,7 @@ impl LayoutEngine {
         }
     }
 
-    /// Recompute Taffy styles (including safe area and Stack child positioning) and solve layout.
+    /// Recompute Taffy styles (only for dirty nodes or global metric changes) and solve layout.
     #[allow(clippy::too_many_arguments)]
     pub fn compute_layout<F>(
         &mut self,
@@ -410,7 +436,24 @@ impl LayoutEngine {
     ) where
         F: FnMut(NodeId, Constraints) -> Size,
     {
-        self.sync_styles_recursive(root, safe_area, scale_factor, root_direction, false);
+        let env_now = (safe_area, scale_factor, root_direction);
+        let env_changed = self.last_env != Some(env_now);
+        self.last_env = Some(env_now);
+
+        sync_styles_recursive(
+            &mut self.taffy,
+            &self.node_map,
+            &self.styles,
+            &self.children_map,
+            &mut self.dirty_styles,
+            &mut self.synced_node_context,
+            node_params(safe_area, scale_factor, env_changed),
+            root,
+            root_direction,
+            false,
+        );
+        self.dirty_styles.clear();
+
         let Some(&root_taffy) = self.node_map.get(root) else {
             return;
         };
@@ -460,60 +503,16 @@ impl LayoutEngine {
             },
         );
 
-        self.collect_rects_recursive(root, 0.0, 0.0);
-    }
-
-    fn sync_styles_recursive(
-        &mut self,
-        node: NodeId,
-        safe_area: Insets,
-        scale_factor: f32,
-        inherited_dir: Direction,
-        force_absolute: bool,
-    ) {
-        let Some(style) = self.styles.get(node).cloned() else {
-            return;
-        };
-        let eff_dir = style.direction.unwrap_or(inherited_dir);
-        let is_stack = style.mode == LayoutMode::Stack;
-        let taffy_style = style.to_taffy(scale_factor, safe_area, eff_dir, force_absolute);
-        if let Some(&taffy_id) = self.node_map.get(node) {
-            let _ = self.taffy.set_style(taffy_id, taffy_style);
-        }
-        if let Some(children) = self.children_map.get(node).cloned() {
-            for (idx, child) in children.into_iter().enumerate() {
-                // In Stack, children beyond the first (or all children when fixed-size) overlay at (0,0)
-                let child_abs = is_stack && idx > 0;
-                self.sync_styles_recursive(child, safe_area, scale_factor, eff_dir, child_abs);
-            }
-        }
-    }
-
-    fn collect_rects_recursive(&mut self, node: NodeId, parent_x: f32, parent_y: f32) {
-        let Some(&taffy_id) = self.node_map.get(node) else {
-            return;
-        };
-        let Ok(layout) = self.taffy.layout(taffy_id) else {
-            return;
-        };
-        let abs_x = parent_x + layout.location.x;
-        let abs_y = parent_y + layout.location.y;
-        self.rects.insert(
-            node,
-            Rect::new(abs_x, abs_y, layout.size.width, layout.size.height),
+        collect_rects_recursive(
+            &self.taffy,
+            &self.node_map,
+            &self.children_map,
+            &mut self.rects,
+            &mut self.content_sizes,
+            root,
+            0.0,
+            0.0,
         );
-        self.content_sizes.insert(
-            node,
-            Size::new(
-                layout.size.width + layout.scroll_width(),
-                layout.size.height + layout.scroll_height(),
-            ),
-        );
-        if let Some(children) = self.children_map.get(node).cloned() {
-            for child in children {
-                self.collect_rects_recursive(child, abs_x, abs_y);
-            }
-        }
     }
 
     pub fn rect(&self, node: NodeId) -> Rect {
@@ -522,6 +521,117 @@ impl LayoutEngine {
 
     pub fn content_size(&self, node: NodeId) -> Size {
         self.content_sizes.get(node).copied().unwrap_or(Size::ZERO)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SyncEnv {
+    safe_area: Insets,
+    scale_factor: f32,
+    env_changed: bool,
+}
+
+#[inline]
+fn node_params(safe_area: Insets, scale_factor: f32, env_changed: bool) -> SyncEnv {
+    SyncEnv {
+        safe_area,
+        scale_factor,
+        env_changed,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_styles_recursive(
+    taffy: &mut taffy::TaffyTree<NodeId>,
+    node_map: &SecondaryMap<NodeId, taffy::NodeId>,
+    styles: &SecondaryMap<NodeId, LayoutStyle>,
+    children_map: &SecondaryMap<NodeId, Vec<NodeId>>,
+    dirty_styles: &mut HashSet<NodeId>,
+    synced_node_context: &mut SecondaryMap<NodeId, (Direction, bool)>,
+    env: SyncEnv,
+    node: NodeId,
+    inherited_dir: Direction,
+    force_absolute: bool,
+) {
+    let Some(style) = styles.get(node) else {
+        return;
+    };
+    let eff_dir = style.direction.unwrap_or(inherited_dir);
+    let is_stack = style.mode == LayoutMode::Stack;
+    let ctx_now = (eff_dir, force_absolute);
+    let ctx_changed = synced_node_context.get(node) != Some(&ctx_now);
+
+    if env.env_changed || ctx_changed || dirty_styles.contains(&node) {
+        let taffy_style =
+            style.to_taffy(env.scale_factor, env.safe_area, eff_dir, force_absolute);
+        if let Some(&taffy_id) = node_map.get(node) {
+            let _ = taffy.set_style(taffy_id, taffy_style);
+        }
+        synced_node_context.insert(node, ctx_now);
+    }
+
+    if let Some(children) = children_map.get(node) {
+        for (idx, &child) in children.iter().enumerate() {
+            let child_abs = is_stack && idx > 0;
+            sync_styles_recursive(
+                taffy,
+                node_map,
+                styles,
+                children_map,
+                dirty_styles,
+                synced_node_context,
+                env,
+                child,
+                eff_dir,
+                child_abs,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_rects_recursive(
+    taffy: &taffy::TaffyTree<NodeId>,
+    node_map: &SecondaryMap<NodeId, taffy::NodeId>,
+    children_map: &SecondaryMap<NodeId, Vec<NodeId>>,
+    rects: &mut SecondaryMap<NodeId, Rect>,
+    content_sizes: &mut SecondaryMap<NodeId, Size>,
+    node: NodeId,
+    parent_x: f32,
+    parent_y: f32,
+) {
+    let Some(&taffy_id) = node_map.get(node) else {
+        return;
+    };
+    let Ok(layout) = taffy.layout(taffy_id) else {
+        return;
+    };
+    let abs_x = parent_x + layout.location.x;
+    let abs_y = parent_y + layout.location.y;
+    rects.insert(
+        node,
+        Rect::new(abs_x, abs_y, layout.size.width, layout.size.height),
+    );
+    content_sizes.insert(
+        node,
+        Size::new(
+            layout.size.width + layout.scroll_width(),
+            layout.size.height + layout.scroll_height(),
+        ),
+    );
+    if let Some(children) = children_map.get(node) {
+        for &child in children {
+            collect_rects_recursive(
+                taffy,
+                node_map,
+                children_map,
+                rects,
+                content_sizes,
+                child,
+                abs_x,
+                abs_y,
+            );
+        }
     }
 }
 

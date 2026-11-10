@@ -33,8 +33,18 @@ struct DispatcherInner {
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
-/// Platform-safe monotonic millisecond clock helper (falls back to 0 on targets without monotonic `Instant`).
+static CUSTOM_MONOTONIC_MS: std::sync::OnceLock<fn() -> u64> = std::sync::OnceLock::new();
+
+/// Register a platform-specific monotonic clock source (e.g. `performance.now()` on `wasm32`).
+pub fn set_monotonic_ms_provider(provider: fn() -> u64) {
+    let _ = CUSTOM_MONOTONIC_MS.set(provider);
+}
+
+/// Platform-safe monotonic millisecond clock helper (falls back to 0 on targets without monotonic `Instant` unless registered via [`set_monotonic_ms_provider`]).
 pub fn monotonic_ms() -> u64 {
+    if let Some(provider) = CUSTOM_MONOTONIC_MS.get() {
+        return provider();
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();

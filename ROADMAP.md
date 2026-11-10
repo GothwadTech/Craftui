@@ -8,31 +8,31 @@
 ## Part 1: Verified Issue Register (Current Codebase Audit)
 
 ### 1. Performance & Power Bottlenecks
-- [ ] **PERF-01 (Critical): Per-frame text re-shaping & full scene rebuild** — `WidgetTree::paint` calls `scene.clear()` every frame, and `encode_vello_scene` / `VelloCpuBackend::render_premul` calls `TextEngine::build_layout` (full Parley shaping + line-breaking + `Vec<i16>` allocations) for every `DrawText` on every frame (`TextInput` shapes twice per frame).
-- [ ] **PERF-02 (High): Unconditional full-tree Taffy layout sync** — `LayoutEngine::compute_layout` walks and calls `taffy.set_style()` on every node in the tree plus clones `Vec<NodeId>` children lists on every layout pass.
-- [ ] **PERF-03 (High): Unconditional full AccessKit tree rebuild** — `DesktopRunner::render_and_present_window` calls `tree_ref.build_a11y_update()` for the entire tree on every painted frame whenever a11y is active.
-- [ ] **PERF-04 (Critical): Always-on 60fps idle spin loops** — Android (`run_android_app` 16ms polling ignoring `_anim`), Web (`start_web_app` unconditional `requestAnimationFrame` ignoring `_anim`), and Desktop focused `TextInput` (`tick_animations` returning `active = true` continuously for caret blink) waste battery and CPU/GPU even when idle.
+- [x] **PERF-01 (Critical): Per-frame text re-shaping & full scene rebuild** — Bounded 1024-entry `ShapedLayoutCache` added in `craftui-text` and wired across `WidgetTree`, `VelloCpuBackend`, and `GpuSurfacePipeline`; idle frames skip scene rebuilds across Desktop, Web, Android, and iOS.
+- [x] **PERF-02 (High): Unconditional full-tree Taffy layout sync** — `LayoutEngine::compute_layout` now tracks `dirty_styles` and environment changes per node and eliminates per-node child `Vec` clones.
+- [x] **PERF-03 (High): Unconditional full AccessKit tree rebuild** — Added `A11yBridge::build_incremental_update` and `a11y_active` tracking so AccessKit diffs only when state or focus changes while AT is active.
+- [x] **PERF-04 (Critical): Always-on 60fps idle spin loops** — Replaced with 530ms demand-driven caret blink timers, `ControlFlow::Wait`/`WaitUntil` on Desktop, dynamic `poll_events` timeouts on Android, on-demand `requestAnimationFrame` + `setTimeout` on Web, and `needs_redraw` + deduplicated `SyncText` on iOS.
 
 ### 2. "Lightweight" & Footprint Contradictions
 - [ ] **BLOAT-01 (Critical): Unconditional triple renderer bundling** — `craftui-render/Cargo.toml` pulls `vello` (+ `vello_shaders`), `vello_cpu`, `wgpu`, and `tiny-skia` unconditionally with zero feature flags.
 - [ ] **BLOAT-02 (High): `TinySkiaBackend` incomplete** — Silently drops `DrawText`, `DropShadow`, `PushClip`, `PushLayer`, and multi-stop gradients (`_ => {}`).
 - [ ] **BLOAT-03 (High): Compiler & AST interpreter shipped in every app** — `craftui/Cargo.toml` unconditionally depends on `craftui-dsl` (`logos` + `rowan`) and `craftui-runtime`, inflating release and WASM binaries.
-- [ ] **BLOAT-04 (Critical): Zero bundled fallback font** — `TextEngine::new()` loads zero fallback font bytes; WASM and minimal Linux render blank text unless manually registered.
+- [x] **BLOAT-04 (Critical): Zero bundled fallback font** — Embedded permissive 65 KB Bitstream `Vera.ttf` behind default `embedded-fallback-font` feature in `craftui-text` so WASM and minimal Linux always render text out of the box.
 
 ### 3. Visual Quality & "Beautiful UI" Gaps
 - [ ] **VIS-01 (High): Missing Transform2D stack** — `PaintCommand` lacks `PushTransform`/`PopTransform` (`translate`, `scale`, `rotate`, `skew`).
 - [ ] **VIS-02 (High): Missing Backdrop Blur (Glassmorphism) & Blend Modes** — No frosted-glass backdrop pass or blend modes.
 - [ ] **VIS-03 (Medium): Limited `DropShadow` & huge opacity layer bounds** — Shadow uses scalar radius instead of `CornerRadii`, lacks `spread` & `inset`, and GPU `PushLayer` passes `-1e5..1e5` dummy rect bounds; swapchain lacks explicit sRGB surface discipline.
 - [ ] **VIS-04 (Critical): No declarative widget/property animation system** — `.cui` has no `animate` syntax; hover/press/tabs/switch/modal/router snap instantaneously.
-- [ ] **VIS-05 (Medium): Composable widget & control limits** — `Button` cannot contain child widgets (e.g. Icon + Text) and uses hardcoded `Color::WHITE` focus ring (invisible in light themes).
+- [x] **VIS-05 (Medium): Composable widget & control limits** — `Button` renders child subtrees when provided and draws a high-contrast dual focus ring visible in both dark and light themes.
 
 ### 4. Concrete Widget, DSL & Runtime Bugs
-- [ ] **BUG-01 (High): `ScrollView` drag viewport bug** — `WidgetTree::handle_drag` clamps scroll offset using dragged child's `rect` instead of the `ScrollView` (`nid`) viewport rect.
+- [x] **BUG-01 (High): `ScrollView` drag viewport bug** — `WidgetTree::handle_drag` now clamps scroll offset against the `ScrollView` (`nid`) viewport rect instead of the dragged child's rect.
 - [ ] **BUG-02 (High): `for`-loop keys include array index** — `codegen.rs` and `runtime/lib.rs` prefix keys with `"{idx}:"`, breaking keyed reconciliation on list insert/delete/reorder.
 - [ ] **BUG-03 (Critical): Typos silently compile** — Unknown identifiers in `codegen.rs`/`runtime/lib.rs` silently emit string literals (`"typo_var"`) or `Default::default()`. `validator.rs` checks all widgets against one flat `BUILTIN_PROPS` set and only emits `Warning`.
 - [ ] **BUG-04 (High): AOT vs Runtime divergence & static properties** — `codegen.rs` mutates one-way `:` signals on controls instead of enforcing `<=>`; layout/box/font/opacity properties evaluate statically once at build time; `.cui` `Canvas` is an empty stub; `PlatformView` hardcodes `default()`.
 - [ ] **BUG-05 (Medium): Handler statement limits & `cui!` gaps** — `.cui` handlers cannot mutate struct fields (`item.done = true`), `+=`, or `if/else`; `cui!` lacks `if`/`for`/two-way bindings and relies on fragile `theme.<field>` AST heuristics.
-- [ ] **BUG-06 (Medium): Editor & Overlay defects** — `TextInput` `bound_signal` sync jumps cursor to `len()`; `KeyCode` maps only 6 shortcut letters; macOS `Cmd` (`super_key`) shortcuts missing; undo/redo & word jump missing; `Select` dropdown isn't scrollable & hit-tests in `SlotMap` order; `set_box_style` re-invocations leak effects; `HotReloadSession` destroys entire tree on save; `resolver.rs` lets imports shadow entry declarations.
+- [ ] **BUG-06 (Medium): Editor & Overlay defects** — *(Fixed in Phase 1: `sync_external` cursor preservation, `KeyCode` full A-Z/`matches_ascii_letter`, `Cmd`/`Ctrl` shortcuts, undo/redo + word nav/delete, scrollable Z-ordered `Select`, `PropEffectScopes` cleanup; Remaining for Phase 3: state-preserving `HotReloadSession` and `resolver.rs` import priority).*
 
 ### 5. Platform Integration & Tooling Gaps
 - [ ] **PLAT-01 (High): Blocking desktop OS dialogs & clipboard** — Spawning `zenity`/`kdialog`/`osascript`/`powershell`/`wl-paste` synchronously on the UI thread freezes rendering and fails in sandboxes.

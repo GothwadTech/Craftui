@@ -11,7 +11,7 @@ pub mod style;
 pub mod theme;
 
 pub use color::Color;
-pub use dispatch::{TimerHandle, UiDispatcher, monotonic_ms};
+pub use dispatch::{TimerHandle, UiDispatcher, monotonic_ms, set_monotonic_ms_provider};
 pub use error::{CraftError, Result};
 pub use events::{
     ImeEvent, KeyCode, KeyEvent, Modifiers, PointerButton, PointerEvent, PointerId, PointerPhase,

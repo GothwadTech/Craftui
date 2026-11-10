@@ -45,6 +45,28 @@ pub struct Modifiers {
     pub super_key: bool,
 }
 
+impl Modifiers {
+    /// Primary shortcut modifier (`Cmd` on macOS/iOS/browser-Mac, `Ctrl` everywhere else).
+    #[inline]
+    pub fn command(self) -> bool {
+        if cfg!(any(target_os = "macos", target_os = "ios", target_arch = "wasm32")) {
+            self.super_key || self.ctrl
+        } else {
+            self.ctrl
+        }
+    }
+
+    /// Word navigation / deletion modifier (`Alt`/`Option` on macOS/iOS, `Ctrl` elsewhere).
+    #[inline]
+    pub fn word_jump(self) -> bool {
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
+            self.alt
+        } else {
+            self.ctrl
+        }
+    }
+}
+
 /// Platform-neutral logical key codes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KeyCode {
@@ -68,8 +90,35 @@ pub enum KeyCode {
     KeyC,
     KeyV,
     KeyX,
+    KeyY,
     KeyZ,
     Unknown,
+}
+
+impl KeyCode {
+    /// Returns true if this key corresponds to ASCII letter `ch` (case-insensitive),
+    /// matching both named `Key*` variants and [`KeyCode::Character`].
+    #[inline]
+    pub fn matches_ascii_letter(&self, ch: char) -> bool {
+        let lower = ch.to_ascii_lowercase();
+        match self {
+            Self::KeyA => lower == 'a',
+            Self::KeyC => lower == 'c',
+            Self::KeyI => lower == 'i',
+            Self::KeyV => lower == 'v',
+            Self::KeyX => lower == 'x',
+            Self::KeyY => lower == 'y',
+            Self::KeyZ => lower == 'z',
+            Self::Character(s) => {
+                let mut chars = s.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => c.to_ascii_lowercase() == lower,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Keyboard press/release event.

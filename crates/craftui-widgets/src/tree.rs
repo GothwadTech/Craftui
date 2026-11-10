@@ -88,6 +88,18 @@ pub type VirtualItemFactory = Rc<dyn Fn(Scope, usize, &mut WidgetTree) -> NodeId
 
 type DynamicSlotSync = Box<dyn FnMut(NodeId, &mut WidgetTree) -> bool>;
 
+const CARET_BLINK_INTERVAL_MS: u64 = 530;
+
+#[derive(Default)]
+struct PropEffectScopes {
+    box_bg: Option<Scope>,
+    box_border_color: Option<Scope>,
+    divider_color: Option<Scope>,
+    button_fg: Option<Scope>,
+    disabled: Option<Scope>,
+    visible_when: Option<Scope>,
+}
+
 struct VirtualListHost {
     factory: VirtualItemFactory,
     active_items: HashMap<usize, (NodeId, Scope)>,
@@ -115,8 +127,11 @@ pub struct WidgetTree {
     pub clipboard_text: String,
     virtual_hosts: SecondaryMap<NodeId, VirtualListHost>,
     dynamic_hosts: SecondaryMap<NodeId, DynamicSlotSync>,
+    prop_scopes: SecondaryMap<NodeId, PropEffectScopes>,
     theme_spring: Option<(ThemeTokens, ThemeTokens, Spring)>,
-    caret_blink_sec: f32,
+    caret_visible: bool,
+    caret_next_toggle_ms: Option<u64>,
+    last_caret_focused: Option<NodeId>,
 }
 
 impl WidgetTree {
@@ -150,8 +165,11 @@ impl WidgetTree {
             clipboard_text: String::new(),
             virtual_hosts: SecondaryMap::new(),
             dynamic_hosts: SecondaryMap::new(),
+            prop_scopes: SecondaryMap::new(),
             theme_spring: None,
-            caret_blink_sec: 0.0,
+            caret_visible: true,
+            caret_next_toggle_ms: None,
+            last_caret_focused: None,
         }
     }
 
@@ -457,16 +475,142 @@ impl WidgetTree {
         }
         self.virtual_hosts.remove(node_id);
         self.dynamic_hosts.remove(node_id);
+        if let Some(mut scopes) = self.prop_scopes.remove(node_id) {
+            for s in [
+                scopes.box_bg.take(),
+                scopes.box_border_color.take(),
+                scopes.divider_color.take(),
+                scopes.button_fg.take(),
+                scopes.disabled.take(),
+                scopes.visible_when.take(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                s.dispose();
+            }
+        }
         self.layout_engine.remove_node(node_id);
         if node.scope != self.root_scope {
             node.scope.dispose();
         }
         if self.focused == Some(node_id) {
             self.focused = None;
+            self.caret_next_toggle_ms = None;
+            self.last_caret_focused = None;
+            self.caret_visible = true;
         }
         if self.hovered == Some(node_id) {
             self.hovered = None;
         }
+    }
+
+    fn dispose_prop_effect(
+        &mut self,
+        node: NodeId,
+        slot: fn(&mut PropEffectScopes) -> &mut Option<Scope>,
+    ) {
+        if let Some(entry) = self.prop_scopes.get_mut(node)
+            && let Some(old) = slot(entry).take()
+        {
+            old.dispose();
+        }
+    }
+
+    fn reset_prop_effect(
+        &mut self,
+        node: NodeId,
+        slot: fn(&mut PropEffectScopes) -> &mut Option<Scope>,
+    ) -> Option<Scope> {
+        self.dispose_prop_effect(node, slot);
+        let parent_scope = self.nodes.get(node)?.scope;
+        if !self.prop_scopes.contains_key(node) {
+            self.prop_scopes.insert(node, PropEffectScopes::default());
+        }
+        if let Some(scopes) = self.prop_scopes.get_mut(node) {
+            let child = parent_scope.child_scope();
+            *slot(scopes) = Some(child);
+            Some(child)
+        } else {
+            None
+        }
+    }
+
+    pub fn focused_is_text_input(&self) -> bool {
+        self.focused
+            .and_then(|id| self.nodes.get(id))
+            .is_some_and(|n| !n.is_disabled() && matches!(n.kind, WidgetKind::TextInput { .. }))
+    }
+
+    pub fn reset_caret_blink(&mut self, now_ms: u64) {
+        if self.focused_is_text_input() {
+            self.caret_visible = true;
+            self.caret_next_toggle_ms = Some(now_ms.saturating_add(CARET_BLINK_INTERVAL_MS));
+            self.last_caret_focused = self.focused;
+        } else {
+            self.caret_visible = true;
+            self.caret_next_toggle_ms = None;
+            self.last_caret_focused = None;
+        }
+    }
+
+    fn ensure_caret_blink_armed(&mut self, now_ms: u64) {
+        if self.focused_is_text_input() {
+            if self.last_caret_focused != self.focused || self.caret_next_toggle_ms.is_none() {
+                self.reset_caret_blink(now_ms);
+            }
+        } else {
+            self.caret_visible = true;
+            self.caret_next_toggle_ms = None;
+            self.last_caret_focused = None;
+        }
+    }
+
+    /// Advance demand-driven cursor caret blink timers at `now_ms`.
+    /// Returns `true` when visibility toggled and a repaint is required.
+    pub fn tick_blink_timers(&mut self, now_ms: u64) -> bool {
+        self.ensure_caret_blink_armed(now_ms);
+        if let Some(next_ms) = self.caret_next_toggle_ms
+            && now_ms >= next_ms
+        {
+            self.caret_visible = !self.caret_visible;
+            self.caret_next_toggle_ms = Some(now_ms.saturating_add(CARET_BLINK_INTERVAL_MS));
+            if let Some(fid) = self.focused
+                && let Some(n) = self.nodes.get_mut(fid)
+            {
+                n.dirty |= DirtyFlags::PAINT;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Next wake delay (in ms) required by internal blink timers when idle, if any.
+    pub fn next_internal_delay_ms(&self, now_ms: u64) -> Option<u64> {
+        if self.focused_is_text_input() {
+            self.caret_next_toggle_ms.map(|due| due.saturating_sub(now_ms))
+        } else {
+            None
+        }
+    }
+
+    fn node_visual_rect(&self, id: NodeId) -> Rect {
+        let mut off = Point::ZERO;
+        let mut cur = self.nodes.get(id).and_then(|n| n.parent);
+        while let Some(pid) = cur {
+            if let Some(pn) = self.nodes.get(pid) {
+                if let WidgetKind::ScrollView { axis, offset, .. } = &pn.kind {
+                    match axis {
+                        Axis::Vertical => off.y -= *offset,
+                        Axis::Horizontal => off.x -= *offset,
+                    }
+                }
+                cur = pn.parent;
+            } else {
+                break;
+            }
+        }
+        self.layout_engine.rect(id).translate(off.x, off.y)
     }
 
     // === Ergonomic Widget Builders ===
@@ -546,16 +690,27 @@ impl WidgetTree {
 
     pub fn set_divider_color(&mut self, node: NodeId, color: impl Into<ReactiveValue<Color>>) {
         let c = color.into();
-        if let Some(n) = self.nodes.get_mut(node)
-            && let WidgetKind::Divider { color: slot, .. } = &mut n.kind
-        {
-            if c.is_dynamic() {
+        let is_div = self
+            .nodes
+            .get(node)
+            .is_some_and(|n| matches!(n.kind, WidgetKind::Divider { .. }));
+        if !is_div {
+            return;
+        }
+        if c.is_dynamic() {
+            if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.divider_color) {
                 let cc = c.clone();
-                n.scope.effect(move || {
+                eff_scope.effect(move || {
                     let _ = cc.get();
                     mark_node_dirty(node, DirtyFlags::PAINT);
                 });
             }
+        } else {
+            self.dispose_prop_effect(node, |s| &mut s.divider_color);
+        }
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::Divider { color: slot, .. } = &mut n.kind
+        {
             *slot = Some(c);
             n.dirty |= DirtyFlags::PAINT;
         }
@@ -955,6 +1110,7 @@ impl WidgetTree {
                 options: opts_rv,
                 selected,
                 open: false,
+                dropdown_scroll: 0.0,
                 placeholder: placeholder.into(),
                 on_change: None,
             },
@@ -1147,25 +1303,34 @@ impl WidgetTree {
     }
 
     pub fn set_box_style(&mut self, node: NodeId, box_style: BoxStyle) {
-        if let Some(n) = self.nodes.get_mut(node) {
-            if let Some(bg) = box_style.background.clone()
-                && bg.is_dynamic()
-            {
-                let scope = n.scope;
-                scope.effect(move || {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        if let Some(bg) = box_style.background.clone()
+            && bg.is_dynamic()
+        {
+            if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.box_bg) {
+                eff_scope.effect(move || {
                     let _ = bg.get();
                     mark_node_dirty(node, DirtyFlags::PAINT);
                 });
             }
-            if let Some(bc) = box_style.border_color.clone()
-                && bc.is_dynamic()
-            {
-                let scope = n.scope;
-                scope.effect(move || {
+        } else {
+            self.dispose_prop_effect(node, |s| &mut s.box_bg);
+        }
+        if let Some(bc) = box_style.border_color.clone()
+            && bc.is_dynamic()
+        {
+            if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.box_border_color) {
+                eff_scope.effect(move || {
                     let _ = bc.get();
                     mark_node_dirty(node, DirtyFlags::PAINT);
                 });
             }
+        } else {
+            self.dispose_prop_effect(node, |s| &mut s.box_border_color);
+        }
+        if let Some(n) = self.nodes.get_mut(node) {
             n.box_style = box_style;
             n.dirty |= DirtyFlags::PAINT;
         }
@@ -1182,16 +1347,27 @@ impl WidgetTree {
 
     pub fn set_button_foreground(&mut self, node: NodeId, fg: impl Into<ReactiveValue<Color>>) {
         let rv = fg.into();
-        if let Some(n) = self.nodes.get_mut(node)
-            && let WidgetKind::Button { foreground, .. } = &mut n.kind
-        {
-            if rv.is_dynamic() {
+        let is_btn = self
+            .nodes
+            .get(node)
+            .is_some_and(|n| matches!(n.kind, WidgetKind::Button { .. }));
+        if !is_btn {
+            return;
+        }
+        if rv.is_dynamic() {
+            if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.button_fg) {
                 let rv_c = rv.clone();
-                n.scope.effect(move || {
+                eff_scope.effect(move || {
                     let _ = rv_c.get();
                     mark_node_dirty(node, DirtyFlags::PAINT);
                 });
             }
+        } else {
+            self.dispose_prop_effect(node, |s| &mut s.button_fg);
+        }
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::Button { foreground, .. } = &mut n.kind
+        {
             *foreground = Some(rv);
             n.dirty |= DirtyFlags::PAINT;
         }
@@ -1199,14 +1375,21 @@ impl WidgetTree {
 
     pub fn set_disabled(&mut self, node: NodeId, disabled: impl Into<ReactiveValue<bool>>) {
         let rv = disabled.into();
-        if let Some(n) = self.nodes.get_mut(node) {
-            if rv.is_dynamic() {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        if rv.is_dynamic() {
+            if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.disabled) {
                 let rv_c = rv.clone();
-                n.scope.effect(move || {
+                eff_scope.effect(move || {
                     let _ = rv_c.get();
                     mark_node_dirty(node, DirtyFlags::PAINT | DirtyFlags::A11Y);
                 });
             }
+        } else {
+            self.dispose_prop_effect(node, |s| &mut s.disabled);
+        }
+        if let Some(n) = self.nodes.get_mut(node) {
             if let WidgetKind::Button { disabled: d, .. } = &mut n.kind {
                 *d = rv.clone();
             }
@@ -1327,14 +1510,19 @@ impl WidgetTree {
     /// Reactively toggle whether `node` participates in layout and painting.
     pub fn set_visible_when(&mut self, node: NodeId, pred: impl Fn() -> bool + 'static) {
         let rv = ReactiveValue::Dynamic(Rc::new(pred));
-        if let Some(n) = self.nodes.get_mut(node) {
-            let scope = n.scope;
-            n.visible_when = Some(rv.clone());
-            n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-            scope.effect(move || {
-                let _ = rv.get();
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.visible_when) {
+            let rv_c = rv.clone();
+            eff_scope.effect(move || {
+                let _ = rv_c.get();
                 mark_node_dirty(node, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
             });
+        }
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.visible_when = Some(rv);
+            n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
         }
     }
 
@@ -1502,14 +1690,6 @@ impl WidgetTree {
             }
         }
 
-        self.caret_blink_sec = (self.caret_blink_sec + dt_sec) % 1.0;
-        if let Some(focused) = self.focused
-            && let Some(n) = self.nodes.get(focused)
-            && matches!(n.kind, WidgetKind::TextInput { .. })
-        {
-            active = true;
-        }
-
         let ids: Vec<NodeId> = self.nodes.keys().collect();
         for id in ids {
             let rect = self.layout_engine.rect(id);
@@ -1635,9 +1815,7 @@ impl WidgetTree {
                     } => {
                         let next = sig.get_untracked();
                         if editor.text != next {
-                            editor.text = next.clone();
-                            editor.cursor = editor.text.len();
-                            editor.anchor = editor.text.len();
+                            editor.sync_external(&next);
                             node.a11y.value = Some(next);
                             node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                         }
@@ -2028,7 +2206,7 @@ impl WidgetTree {
             return;
         };
         let theme = self.theme_signal.get_untracked();
-        let mut floating_selects: Vec<(Rect, Vec<String>, usize)> = Vec::new();
+        let mut floating_selects: Vec<(Rect, Vec<String>, usize, f32)> = Vec::new();
         let mut active_tooltips: Vec<(Rect, String)> = Vec::new();
         self.paint_node_recursive(
             root,
@@ -2040,7 +2218,7 @@ impl WidgetTree {
         );
 
         // Paint floating Select dropdown popups on top of main UI
-        for (drop_rect, opts, sel_idx) in floating_selects {
+        for (drop_rect, opts, sel_idx, dropdown_scroll) in floating_selects {
             scene.push(PaintCommand::DropShadow {
                 rect: drop_rect,
                 radius: 8.0,
@@ -2051,10 +2229,17 @@ impl WidgetTree {
             });
             scene.fill_rect(drop_rect, theme.surface, CornerRadii::all(8.0));
             scene.stroke_rect(drop_rect, theme.border, 1.0, CornerRadii::all(8.0));
+            let total_h = opts.len() as f32 * 34.0 + 8.0;
+            let max_scroll = (total_h - drop_rect.height).max(0.0);
+            let scroll = dropdown_scroll.clamp(0.0, max_scroll);
+            scene.push(PaintCommand::PushClip {
+                rect: drop_rect.inset(Insets::all(2.0)),
+                radius: CornerRadii::all(6.0),
+            });
             for (i, opt) in opts.iter().enumerate() {
-                let row_y = drop_rect.y + 4.0 + i as f32 * 34.0;
-                if row_y + 34.0 > drop_rect.max_y() {
-                    break;
+                let row_y = drop_rect.y + 4.0 + i as f32 * 34.0 - scroll;
+                if row_y + 32.0 < drop_rect.y || row_y > drop_rect.max_y() {
+                    continue;
                 }
                 let item_r = Rect::new(drop_rect.x + 4.0, row_y, drop_rect.width - 8.0, 32.0);
                 if i == sel_idx {
@@ -2078,6 +2263,19 @@ impl WidgetTree {
                     Some((item_r.width - 20.0).max(20.0)),
                 );
             }
+            if max_scroll > 0.5 {
+                let ratio = (drop_rect.height / total_h).clamp(0.12, 1.0);
+                let track_h = (drop_rect.height - 8.0).max(8.0);
+                let thumb_h = (track_h * ratio).max(16.0);
+                let pos_ratio = (scroll / max_scroll).clamp(0.0, 1.0);
+                let thumb_y = drop_rect.y + 4.0 + (track_h - thumb_h) * pos_ratio;
+                scene.fill_rect(
+                    Rect::new(drop_rect.max_x() - 6.0, thumb_y, 3.5, thumb_h),
+                    theme.text_secondary.with_alpha(0.55),
+                    CornerRadii::all(2.0),
+                );
+            }
+            scene.push(PaintCommand::PopClip);
         }
 
         // Paint active hover tooltips on top of main UI & dropdowns
@@ -2139,7 +2337,7 @@ impl WidgetTree {
         scroll_offset: Point,
         theme: &ThemeTokens,
         scene: &mut PaintScene,
-        floating_selects: &mut Vec<(Rect, Vec<String>, usize)>,
+        floating_selects: &mut Vec<(Rect, Vec<String>, usize, f32)>,
         active_tooltips: &mut Vec<(Rect, String)>,
     ) {
         let Some(node) = self.nodes.get(id) else {
@@ -2241,24 +2439,39 @@ impl WidgetTree {
                 }
                 scene.fill_rect(rect, bg, box_style.radius);
                 if is_focused {
-                    scene.stroke_rect(rect.inflate(2.0, 2.0), Color::WHITE, 1.5, box_style.radius);
+                    scene.stroke_rect(
+                        rect.inflate(1.5, 1.5),
+                        theme.background,
+                        1.5,
+                        box_style.radius,
+                    );
+                    scene.stroke_rect(
+                        rect.inflate(3.5, 3.5),
+                        theme.primary,
+                        2.0,
+                        box_style.radius,
+                    );
                 }
-                let txt = label.get();
-                let fg = if disabled_eff {
-                    theme.text_secondary
-                } else if let Some(ref custom_fg) = foreground {
-                    custom_fg.get()
-                } else {
-                    theme.on_primary
-                };
-                let tstyle = TextStyle::default()
-                    .with_size(15.0)
-                    .with_weight(600.0)
-                    .with_color(fg);
-                let measured = self.text_engine.measure(&txt, &tstyle, None);
-                let tx = rect.x + (rect.width - measured.width) * 0.5;
-                let ty = rect.y + (rect.height - measured.height) * 0.5;
-                scene.draw_text(Point::new(tx, ty), txt, tstyle, None);
+                if children.is_empty() {
+                    let txt = label.get();
+                    if !txt.is_empty() {
+                        let fg = if disabled_eff {
+                            theme.text_secondary
+                        } else if let Some(ref custom_fg) = foreground {
+                            custom_fg.get()
+                        } else {
+                            theme.on_primary
+                        };
+                        let tstyle = TextStyle::default()
+                            .with_size(15.0)
+                            .with_weight(600.0)
+                            .with_color(fg);
+                        let measured = self.text_engine.measure(&txt, &tstyle, None);
+                        let tx = rect.x + (rect.width - measured.width) * 0.5;
+                        let ty = rect.y + (rect.height - measured.height) * 0.5;
+                        scene.draw_text(Point::new(tx, ty), txt, tstyle, None);
+                    }
+                }
             }
             WidgetKind::Image {
                 texture,
@@ -2406,7 +2619,7 @@ impl WidgetTree {
                 if disp.is_empty() {
                     draw_style.color = theme.text_secondary;
                     scene.draw_text(inner.origin(), placeholder, draw_style, wrap_w);
-                    if is_focused && self.caret_blink_sec < 0.55 {
+                    if is_focused && self.caret_visible {
                         scene.fill_rect(
                             Rect::new(inner.x, inner.y, 2.0, font_sz * 1.25),
                             theme.primary,
@@ -2415,7 +2628,9 @@ impl WidgetTree {
                     }
                 } else {
                     draw_style.color = theme.text_primary;
-                    let layout = self.text_engine.build_layout(&disp, &draw_style, wrap_w);
+                    let layout = self
+                        .text_engine
+                        .build_layout_cached(&disp, &draw_style, wrap_w);
                     if let Some((s, e)) = editor.selection_range() {
                         for sr in self.text_engine.selection_rects(&layout, s, e) {
                             scene.fill_rect(
@@ -2426,7 +2641,7 @@ impl WidgetTree {
                         }
                     }
                     scene.draw_text(inner.origin(), &disp, draw_style, wrap_w);
-                    if is_focused && self.caret_blink_sec < 0.55 {
+                    if is_focused && self.caret_visible {
                         let cr = self.text_engine.cursor_rect(&layout, editor.cursor);
                         scene.fill_rect(
                             Rect::new(inner.x + cr.x, inner.y + cr.y, 2.0, cr.height),
@@ -2637,6 +2852,7 @@ impl WidgetTree {
                 options,
                 selected,
                 open,
+                dropdown_scroll,
                 placeholder,
                 ..
             } => {
@@ -2681,7 +2897,7 @@ impl WidgetTree {
                 );
                 if open {
                     let drop_rect = self.select_dropdown_rect(rect, opts.len());
-                    floating_selects.push((drop_rect, opts, sel_idx));
+                    floating_selects.push((drop_rect, opts, sel_idx, dropdown_scroll));
                 }
             }
             WidgetKind::RadioGroup {
@@ -2855,16 +3071,21 @@ impl WidgetTree {
 
     /// Hit-test the deepest interactive/visible node under `point`, respecting open dropdowns, scroll offsets, and `hit_slop`.
     pub fn hit_test(&self, point: Point) -> Option<NodeId> {
-        // Open Select dropdowns capture hits above normal tree nodes
-        for (id, node) in &self.nodes {
-            if !node.layout.hidden
+        let root = self.root?;
+
+        // Open Select dropdowns capture hits above normal tree nodes in topmost paint order
+        let mut order = Vec::new();
+        self.collect_preorder(root, &mut order);
+        for id in order.into_iter().rev() {
+            if let Some(node) = self.nodes.get(id)
+                && !node.layout.hidden
                 && let WidgetKind::Select {
                     open: true,
                     options,
                     ..
                 } = &node.kind
             {
-                let tr = self.layout_engine.rect(id);
+                let tr = self.node_visual_rect(id);
                 let dr = self.select_dropdown_rect(tr, options.get().len());
                 if dr.contains(point) {
                     return Some(id);
@@ -2872,7 +3093,6 @@ impl WidgetTree {
             }
         }
 
-        let root = self.root?;
         self.hit_test_recursive(root, point, Point::ZERO)
     }
 
@@ -3175,7 +3395,7 @@ impl WidgetTree {
     }
 
     fn activate_tap(&mut self, node_id: NodeId, pos: Point) {
-        let rect = self.layout_engine.rect(node_id);
+        let rect = self.node_visual_rect(node_id);
 
         if self.nodes.get(node_id).is_some_and(WidgetNode::is_disabled) {
             return;
@@ -3193,6 +3413,7 @@ impl WidgetTree {
         let mut bool_cb: Option<(BoolCallback, bool)> = None;
         let mut float_cb: Option<(FloatCallback, f32)> = None;
         let mut idx_cb: Option<(IndexCallback, usize)> = None;
+        let mut reset_caret = false;
 
         // Compute popup/dropdown geometry upfront to satisfy borrow checker
         let popup_rect_opt = match self.nodes.get(node_id).map(|n| &n.kind) {
@@ -3256,11 +3477,12 @@ impl WidgetTree {
                     let wrap = if *multiline { Some(inner_w) } else { None };
                     let inner_x = pos.x - (rect.x + 12.0);
                     let inner_y = pos.y - (rect.y + pad_top);
-                    let layout = self
-                        .text_engine
-                        .build_layout(&editor.display_text(), style, wrap);
+                    let layout =
+                        self.text_engine
+                            .build_layout_cached(&editor.display_text(), style, wrap);
                     let byte_idx = self.text_engine.hit_test_point(&layout, inner_x, inner_y);
                     editor.set_cursor_at(byte_idx, false);
+                    reset_caret = true;
                 }
                 WidgetKind::Tabs {
                     tabs,
@@ -3282,6 +3504,7 @@ impl WidgetTree {
                     options,
                     selected,
                     open,
+                    dropdown_scroll,
                     on_change,
                     ..
                 } => {
@@ -3291,7 +3514,8 @@ impl WidgetTree {
                             && dr.contains(pos)
                             && !opts.is_empty()
                         {
-                            let row = ((pos.y - dr.y - 4.0) / 34.0).floor() as isize;
+                            let row =
+                                ((pos.y - dr.y - 4.0 + *dropdown_scroll) / 34.0).floor() as isize;
                             let next = row.clamp(0, (opts.len() - 1) as isize) as usize;
                             selected.set(next);
                             *open = false;
@@ -3303,6 +3527,25 @@ impl WidgetTree {
                         }
                     } else {
                         *open = true;
+                        if let Some(dr) = select_drop_rect_opt {
+                            let total_h = opts.len() as f32 * 34.0 + 8.0;
+                            let max_scroll = (total_h - dr.height).max(0.0);
+                            if max_scroll <= 0.0 {
+                                *dropdown_scroll = 0.0;
+                            } else {
+                                let sel_idx = selected.get_untracked().min(opts.len().saturating_sub(1));
+                                let item_top = sel_idx as f32 * 34.0;
+                                let item_bottom = item_top + 34.0;
+                                let vis_h = (dr.height - 8.0).max(34.0);
+                                let mut next = (*dropdown_scroll).clamp(0.0, max_scroll);
+                                if item_top < next {
+                                    next = item_top;
+                                } else if item_bottom > next + vis_h {
+                                    next = (item_bottom - vis_h).clamp(0.0, max_scroll);
+                                }
+                                *dropdown_scroll = next.clamp(0.0, max_scroll);
+                            }
+                        }
                     }
                     node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                 }
@@ -3358,6 +3601,9 @@ impl WidgetTree {
             }
         }
 
+        if reset_caret {
+            self.reset_caret_blink(craftui_core::monotonic_ms());
+        }
         if let Some((cb, v)) = bool_cb
             && let Ok(mut f) = cb.try_borrow_mut()
         {
@@ -3381,10 +3627,11 @@ impl WidgetTree {
     }
 
     fn handle_drag(&mut self, node_id: NodeId, pos: Point, delta: Point) {
-        let rect = self.layout_engine.rect(node_id);
         let mut cursor = Some(node_id);
         while let Some(nid) = cursor {
             let parent = self.nodes.get(nid).and_then(|n| n.parent);
+            let r = self.node_visual_rect(nid);
+            let layout_r = self.layout_engine.rect(nid);
             if let Some(node) = self.nodes.get_mut(nid) {
                 match &mut node.kind {
                     WidgetKind::Slider {
@@ -3394,7 +3641,6 @@ impl WidgetTree {
                         on_change,
                         ..
                     } => {
-                        let r = self.layout_engine.rect(nid);
                         let track_x = r.x + 8.0;
                         let track_w = (r.width - 16.0).max(1.0);
                         let t = ((pos.x - track_x) / track_w).clamp(0.0, 1.0);
@@ -3415,8 +3661,8 @@ impl WidgetTree {
                     } => {
                         *velocity = 0.0;
                         let view = match axis {
-                            Axis::Vertical => rect.height,
-                            Axis::Horizontal => rect.width,
+                            Axis::Vertical => layout_r.height,
+                            Axis::Horizontal => layout_r.width,
                         };
                         let max_off = (*content_extent - view).max(0.0);
                         let d = match axis {
@@ -3436,10 +3682,9 @@ impl WidgetTree {
                         velocity,
                     } => {
                         *velocity = 0.0;
-                        let r = self.layout_engine.rect(nid);
                         let view = match axis {
-                            Axis::Vertical => r.height,
-                            Axis::Horizontal => r.width,
+                            Axis::Vertical => layout_r.height,
+                            Axis::Horizontal => layout_r.width,
                         };
                         let total_rows = item_count.get().div_ceil((*columns).max(1));
                         let max_off = (total_rows as f32 * *item_extent - view).max(0.0);
@@ -3488,6 +3733,42 @@ impl WidgetTree {
     }
 
     fn handle_scroll(&mut self, pos: Point, dx: f32, dy: f32) -> bool {
+        if let Some(root) = self.root {
+            let mut order = Vec::new();
+            self.collect_preorder(root, &mut order);
+            for id in order.into_iter().rev() {
+                let drop_info = self.nodes.get(id).and_then(|node| {
+                    if !node.layout.hidden
+                        && let WidgetKind::Select {
+                            open: true,
+                            options,
+                            ..
+                        } = &node.kind
+                    {
+                        let count = options.get().len();
+                        let tr = self.node_visual_rect(id);
+                        let dr = self.select_dropdown_rect(tr, count);
+                        if dr.contains(pos) {
+                            return Some((dr, count));
+                        }
+                    }
+                    None
+                });
+                if let Some((dr, count)) = drop_info
+                    && let Some(node) = self.nodes.get_mut(id)
+                    && let WidgetKind::Select {
+                        dropdown_scroll, ..
+                    } = &mut node.kind
+                {
+                    let total_h = count as f32 * 34.0 + 8.0;
+                    let max_scroll = (total_h - dr.height).max(0.0);
+                    *dropdown_scroll = (*dropdown_scroll - dy).clamp(0.0, max_scroll);
+                    node.dirty |= DirtyFlags::PAINT;
+                    return true;
+                }
+            }
+        }
+
         let Some(mut cursor) = self.hit_test(pos).or(self.root) else {
             return false;
         };
@@ -3692,6 +3973,7 @@ impl WidgetTree {
         if let Some(nn) = self.nodes.get_mut(next) {
             nn.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
         }
+        self.reset_caret_blink(craftui_core::monotonic_ms());
         true
     }
 
@@ -3700,8 +3982,8 @@ impl WidgetTree {
             return false;
         }
 
-        // Ctrl+Shift+I toggles Live Inspector Overlay (PRD FR-9.2)
-        if ke.modifiers.ctrl && ke.modifiers.shift && matches!(ke.code, KeyCode::KeyI) {
+        // Ctrl+Shift+I / Cmd+Shift+I toggles Live Inspector Overlay (PRD FR-9.2)
+        if ke.modifiers.command() && ke.modifiers.shift && ke.code.matches_ascii_letter('I') {
             self.inspector.enabled = !self.inspector.enabled;
             return true;
         }
@@ -3722,7 +4004,7 @@ impl WidgetTree {
 
         // Forward keys directly to focused CustomWidget if applicable
         if let Some(WidgetKind::Custom(cw)) = self.nodes.get(focused).map(|n| n.kind.clone()) {
-            let rect = self.layout_engine.rect(focused);
+            let rect = self.node_visual_rect(focused);
             if let Ok(mut guard) = cw.try_borrow_mut()
                 && guard.handle_event(rect, &UiEvent::Key(ke.clone()))
             {
@@ -3733,11 +4015,12 @@ impl WidgetTree {
         let mut text_changed = None;
         let mut submitted = None;
         let mut activated = false;
+        let mut reset_caret = false;
         let mut idx_cb: Option<(IndexCallback, usize)> = None;
         let mut float_cb: Option<(FloatCallback, f32)> = None;
 
         // Read clipboard outside node borrow
-        let paste_clip = if ke.modifiers.ctrl && matches!(ke.code, KeyCode::KeyV) {
+        let paste_clip = if ke.modifiers.command() && ke.code.matches_ascii_letter('V') {
             self.services
                 .read_clipboard()
                 .filter(|s| !s.is_empty())
@@ -3766,31 +4049,60 @@ impl WidgetTree {
                 } => {
                     let prev = editor.text.clone();
                     match &ke.code {
+                        KeyCode::Backspace if ke.modifiers.word_jump() => {
+                            editor.delete_word_backward();
+                        }
                         KeyCode::Backspace => editor.backspace(),
+                        KeyCode::Delete if ke.modifiers.word_jump() => {
+                            editor.delete_word_forward();
+                        }
                         KeyCode::Delete => editor.delete_forward(),
+                        KeyCode::ArrowLeft if ke.modifiers.word_jump() => {
+                            editor.move_word_left(ke.modifiers.shift);
+                        }
                         KeyCode::ArrowLeft => editor.move_left(ke.modifiers.shift),
+                        KeyCode::ArrowRight if ke.modifiers.word_jump() => {
+                            editor.move_word_right(ke.modifiers.shift);
+                        }
                         KeyCode::ArrowRight => editor.move_right(ke.modifiers.shift),
                         KeyCode::ArrowUp if *multiline => editor.move_up(ke.modifiers.shift),
                         KeyCode::ArrowDown if *multiline => editor.move_down(ke.modifiers.shift),
                         KeyCode::Home => editor.move_home(ke.modifiers.shift),
                         KeyCode::End => editor.move_end(ke.modifiers.shift),
-                        KeyCode::KeyA if ke.modifiers.ctrl => editor.select_all(),
-                        KeyCode::KeyC if ke.modifiers.ctrl => {
+                        code if ke.modifiers.command() && code.matches_ascii_letter('A') => {
+                            editor.select_all();
+                        }
+                        code if ke.modifiers.command() && code.matches_ascii_letter('C') => {
                             let sel = editor.selected_text().to_string();
                             copy_clip = Some(sel);
                         }
-                        KeyCode::KeyX if ke.modifiers.ctrl => {
+                        code if ke.modifiers.command() && code.matches_ascii_letter('X') => {
                             let sel = editor.selected_text().to_string();
                             copy_clip = Some(sel);
                             editor.delete_selection();
                         }
-                        KeyCode::KeyV if ke.modifiers.ctrl => {
+                        code if ke.modifiers.command() && code.matches_ascii_letter('V') => {
                             if let Some(ref clip) = paste_clip {
                                 editor.insert_str(clip);
                             }
                         }
+                        code if ke.modifiers.command()
+                            && !ke.modifiers.shift
+                            && code.matches_ascii_letter('Z') =>
+                        {
+                            let _ = editor.undo();
+                        }
+                        code if (ke.modifiers.command()
+                            && ke.modifiers.shift
+                            && code.matches_ascii_letter('Z'))
+                            || (ke.modifiers.ctrl
+                                && !ke.modifiers.shift
+                                && code.matches_ascii_letter('Y')) =>
+                        {
+                            let _ = editor.redo();
+                        }
                         KeyCode::Enter => {
-                            if *multiline && !ke.modifiers.ctrl {
+                            if *multiline && !ke.modifiers.command() {
                                 editor.insert_str("\n");
                             } else {
                                 submitted = Some(editor.text.clone());
@@ -3798,6 +4110,7 @@ impl WidgetTree {
                         }
                         _ => {
                             if let Some(ref txt) = ke.text
+                                && !ke.modifiers.command()
                                 && !ke.modifiers.ctrl
                                 && !ke.modifiers.alt
                                 && !txt.chars().all(|c| c.is_control())
@@ -3814,6 +4127,7 @@ impl WidgetTree {
                         text_changed = Some(editor.text.clone());
                     }
                     node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                    reset_caret = true;
                 }
                 WidgetKind::Button { .. }
                 | WidgetKind::Checkbox { .. }
@@ -3854,18 +4168,45 @@ impl WidgetTree {
                     options,
                     selected,
                     open,
+                    dropdown_scroll,
                     on_change,
                     ..
                 } => {
                     let count = options.get().len();
+                    let drop_h = (count.max(1) as f32 * 34.0 + 8.0).min(240.0);
+                    let total_h = count as f32 * 34.0 + 8.0;
+                    let max_scroll = (total_h - drop_h).max(0.0);
+                    let ensure_sel_visible = |sel: usize, scroll: &mut f32| {
+                        if max_scroll <= 0.0 {
+                            *scroll = 0.0;
+                            return;
+                        }
+                        let item_top = sel as f32 * 34.0;
+                        let item_bottom = item_top + 34.0;
+                        let vis_h = (drop_h - 8.0).max(34.0);
+                        let mut next = (*scroll).clamp(0.0, max_scroll);
+                        if item_top < next {
+                            next = item_top;
+                        } else if item_bottom > next + vis_h {
+                            next = (item_bottom - vis_h).clamp(0.0, max_scroll);
+                        }
+                        *scroll = next.clamp(0.0, max_scroll);
+                    };
                     match ke.code {
                         KeyCode::Enter | KeyCode::Space => {
                             *open = !*open;
+                            if *open && count > 0 {
+                                let cur = selected.get_untracked().min(count - 1);
+                                ensure_sel_visible(cur, dropdown_scroll);
+                            }
                             node.dirty |= DirtyFlags::PAINT;
                         }
                         KeyCode::ArrowDown if count > 0 => {
                             let next = (selected.get_untracked() + 1).min(count - 1);
                             selected.set(next);
+                            if *open {
+                                ensure_sel_visible(next, dropdown_scroll);
+                            }
                             node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                             if let Some(cb) = on_change.clone() {
                                 idx_cb = Some((cb, next));
@@ -3874,6 +4215,9 @@ impl WidgetTree {
                         KeyCode::ArrowUp if count > 0 => {
                             let next = selected.get_untracked().saturating_sub(1);
                             selected.set(next);
+                            if *open {
+                                ensure_sel_visible(next, dropdown_scroll);
+                            }
                             node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                             if let Some(cb) = on_change.clone() {
                                 idx_cb = Some((cb, next));
@@ -3941,13 +4285,17 @@ impl WidgetTree {
             }
         }
 
+        if reset_caret {
+            self.reset_caret_blink(craftui_core::monotonic_ms());
+        }
+
         if let Some(clip) = copy_clip {
             self.clipboard_text = clip.clone();
             self.services.write_clipboard(&clip);
         }
 
         if activated {
-            let center = self.layout_engine.rect(focused).center();
+            let center = self.node_visual_rect(focused).center();
             self.activate_tap(focused, center);
         }
 
@@ -4035,18 +4383,24 @@ impl WidgetTree {
         {
             f(txt);
         }
+        self.reset_caret_blink(craftui_core::monotonic_ms());
         true
     }
 
-    /// Collect AccessKit tree update for screen readers.
+    /// Reset incremental AccessKit cache so the next [`build_a11y_update`](Self::build_a11y_update)
+    /// emits a full initial tree snapshot.
+    pub fn invalidate_a11y(&mut self) {
+        self.a11y_bridge.invalidate();
+    }
+
+    /// Collect incremental AccessKit tree update for screen readers.
+    /// Returns `None` when no accessibility node or focus state changed since the last update.
     pub fn build_a11y_update(&mut self) -> Option<craftui_a11y::accesskit::TreeUpdate> {
         let root = self.root?;
         let mut snaps = Vec::new();
         self.collect_a11y_recursive(root, &mut snaps, &mut HashSet::new());
-        Some(
-            self.a11y_bridge
-                .build_tree_update(root, self.focused, &snaps),
-        )
+        self.a11y_bridge
+            .build_incremental_update(root, self.focused, &snaps)
     }
 
     fn collect_a11y_recursive(
@@ -4082,12 +4436,13 @@ impl WidgetTree {
         };
         match action {
             A11yAction::Click(id) => {
-                let c = self.layout_engine.rect(id).center();
+                let c = self.node_visual_rect(id).center();
                 self.activate_tap(id, c);
                 true
             }
             A11yAction::Focus(id) => {
                 self.focused = Some(id);
+                self.reset_caret_blink(craftui_core::monotonic_ms());
                 true
             }
             A11yAction::SetValue(id, v) => {
@@ -4098,12 +4453,13 @@ impl WidgetTree {
                         ..
                     } = &mut n.kind
                 {
-                    editor.text = v.clone();
-                    editor.cursor = v.len();
-                    editor.anchor = v.len();
+                    editor.sync_external(&v);
+                    n.a11y.value = Some(v.clone());
+                    n.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                     if let Some(sig) = bound_signal {
                         sig.set(v);
                     }
+                    self.reset_caret_blink(craftui_core::monotonic_ms());
                     return true;
                 }
                 false

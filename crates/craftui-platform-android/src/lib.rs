@@ -72,6 +72,7 @@ pub struct AndroidHost {
     back_handler: Option<Box<dyn FnMut() -> bool>>,
     last_ime_visible: bool,
     last_synced_ime_state: Option<(String, usize, usize)>,
+    needs_redraw: bool,
 }
 
 impl AndroidHost {
@@ -94,7 +95,29 @@ impl AndroidHost {
             back_handler: None,
             last_ime_visible: false,
             last_synced_ime_state: None,
+            needs_redraw: true,
         }
+    }
+
+    pub fn request_redraw(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    /// Suggested poll timeout for demand-driven Android event loops.
+    pub fn next_poll_timeout(&self, animating: bool, has_gpu: bool) -> Option<std::time::Duration> {
+        if animating || self.needs_redraw {
+            return Some(if has_gpu {
+                std::time::Duration::ZERO
+            } else {
+                std::time::Duration::from_millis(16)
+            });
+        }
+        let now_ms = craftui_core::monotonic_ms();
+        let mut min_delay = craftui_reactive::next_timer_delay_ms(now_ms);
+        if let Some(caret_delay) = self.tree.next_internal_delay_ms(now_ms) {
+            min_delay = Some(min_delay.map_or(caret_delay, |cur| cur.min(caret_delay)));
+        }
+        min_delay.map(|ms| std::time::Duration::from_millis(ms.max(1)))
     }
 
     /// Register a hardware Back button handler (e.g. `move || router.pop()`).
@@ -124,6 +147,7 @@ impl AndroidHost {
         let bottom = bottom_px / sf;
         self.tree.metrics.safe_area = Insets::new(top, right, 0.0, left);
         self.tree.metrics.keyboard_inset = bottom;
+        self.needs_redraw = true;
     }
 
     pub fn push_touch(
@@ -136,7 +160,7 @@ impl AndroidHost {
     ) -> bool {
         let sf = self.tree.metrics.scale_factor.max(1.0);
         let pos = Point::new(raw_x_px / sf, raw_y_px / sf);
-        self.tree.handle_event(&UiEvent::Pointer(PointerEvent {
+        let handled = self.tree.handle_event(&UiEvent::Pointer(PointerEvent {
             id: PointerId(pointer_id as u64),
             phase,
             position: pos,
@@ -144,7 +168,11 @@ impl AndroidHost {
             modifiers: Modifiers::default(),
             is_touch: true,
             timestamp_ms,
-        }))
+        }));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     /// Translate and dispatch Android key events, including `Back`, `Enter`, directional D-pad keys, and text input keys.
@@ -168,18 +196,21 @@ impl AndroidHost {
                 modifiers,
             };
             if self.tree.handle_event(&UiEvent::Key(esc)) {
+                self.needs_redraw = true;
                 return true;
             }
             // 2. Pop custom registered Back handler / Router.
             if let Some(ref mut cb) = self.back_handler
                 && cb()
             {
+                self.needs_redraw = true;
                 return true;
             }
             // 3. Fallback to Router<String> in root context if present.
             if let Some(router) = self.scope.use_context::<Router<String>>()
                 && router.pop()
             {
+                self.needs_redraw = true;
                 return true;
             }
             return false;
@@ -209,18 +240,27 @@ impl AndroidHost {
             AndroidKeyCode::Back | AndroidKeyCode::Other => (KeyCode::Unknown, None),
         };
 
-        self.tree.handle_event(&UiEvent::Key(KeyEvent {
+        let handled = self.tree.handle_event(&UiEvent::Key(KeyEvent {
             code: craft_code,
             text,
             pressed,
             repeat,
             modifiers,
-        }))
+        }));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     pub fn push_ime_commit(&mut self, text: impl Into<String>) -> bool {
-        self.tree
-            .handle_event(&UiEvent::Ime(ImeEvent::Commit(text.into())))
+        let handled = self
+            .tree
+            .handle_event(&UiEvent::Ime(ImeEvent::Commit(text.into())));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     /// Update or allocate a CraftUI [`TextureHandle`] from an external Android [`ExternalSurfaceTextureBridge`].
@@ -233,6 +273,7 @@ impl AndroidHost {
         if w == 0 || h == 0 || rgba.len() != (w as usize) * (h as usize) * 4 {
             return None;
         }
+        self.needs_redraw = true;
         if let Some(existing) = slot.as_ref() {
             existing.buffer.replace_rgba(w, h, rgba);
             Some(existing.id)
@@ -244,12 +285,21 @@ impl AndroidHost {
         }
     }
 
-    pub fn step_frame(&mut self, dt_sec: f32) -> (bool, Vec<AndroidImeCommand>) {
-        let _ = craftui_reactive::tick_timers();
-        let _ = self.dispatcher.drain();
+    /// Advance reactive timers, animations, layout, and paint when dirty or animating.
+    /// Returns `(animating, did_paint, cmds)`.
+    pub fn step_frame_with_redraw(&mut self, dt_sec: f32) -> (bool, bool, Vec<AndroidImeCommand>) {
+        let now_ms = craftui_core::monotonic_ms();
+        let timers = craftui_reactive::tick_timers();
+        let jobs = self.dispatcher.drain();
+        let blink = self.tree.tick_blink_timers(now_ms);
         let animating = self.tree.tick_animations(dt_sec);
-        let _dirty = self.tree.layout(self.tree.metrics);
-        self.tree.paint(&mut self.scene);
+        let dirty = self.tree.layout(self.tree.metrics);
+        let should_paint =
+            self.needs_redraw || timers > 0 || jobs > 0 || blink || animating || dirty > 0;
+        if should_paint {
+            self.tree.paint(&mut self.scene);
+            self.needs_redraw = false;
+        }
 
         let mut cmds = Vec::new();
         let focused_input = self.tree.focused.and_then(|id| {
@@ -267,12 +317,12 @@ impl AndroidHost {
         let ime_needed = focused_input.is_some();
         if ime_needed != self.last_ime_visible {
             self.last_ime_visible = ime_needed;
-            cmds.push(if ime_needed {
-                AndroidImeCommand::ShowSoftInput
+            if ime_needed {
+                cmds.push(AndroidImeCommand::ShowSoftInput);
             } else {
                 self.last_synced_ime_state = None;
-                AndroidImeCommand::HideSoftInput
-            });
+                cmds.push(AndroidImeCommand::HideSoftInput);
+            }
         }
         if let Some((text, selection_start, selection_end)) = focused_input {
             let next_state = (text.clone(), selection_start, selection_end);
@@ -286,6 +336,11 @@ impl AndroidHost {
             }
         }
 
+        (animating, should_paint, cmds)
+    }
+
+    pub fn step_frame(&mut self, dt_sec: f32) -> (bool, Vec<AndroidImeCommand>) {
+        let (animating, _painted, cmds) = self.step_frame_with_redraw(dt_sec);
         (animating, cmds)
     }
 }
@@ -403,11 +458,14 @@ pub mod android_runtime {
         let mut last_tick = Instant::now();
         let start = Instant::now();
         let mut running = true;
+        let mut animating = false;
 
         while running {
-            let timeout = Some(Duration::from_millis(16));
+            let timeout = host.next_poll_timeout(animating, gpu.is_some());
             app.poll_events(timeout, |event| match event {
-                PollEvent::Wake | PollEvent::Timeout => {}
+                PollEvent::Wake | PollEvent::Timeout => {
+                    host.request_redraw();
+                }
                 PollEvent::Main(main_ev) => match main_ev {
                     MainEvent::InitWindow { .. } => {
                         if let Some(nw) = app.native_window() {
@@ -418,6 +476,7 @@ pub mod android_runtime {
                                 height: h as f32 / density,
                                 scale_factor: density,
                             });
+                            host.request_redraw();
                             if let Some(nn) = NonNull::new(nw.ptr().as_ptr().cast()) {
                                 let tgt = AndroidSurfaceTarget::new(nn);
                                 let raw_target = wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -451,6 +510,7 @@ pub mod android_runtime {
                                 height: h as f32 / density,
                                 scale_factor: density,
                             });
+                            host.request_redraw();
                         }
                     }
                     MainEvent::InputAvailable => {
@@ -502,8 +562,10 @@ pub mod android_runtime {
                                 }
                                 InputEvent::TextEvent(ts) => {
                                     let state: TextInputState = ts.clone();
-                                    host.tree
-                                        .handle_event(&UiEvent::Ime(ImeEvent::Commit(state.text)));
+                                    if host.tree.handle_event(&UiEvent::Ime(ImeEvent::Commit(state.text)))
+                                    {
+                                        host.request_redraw();
+                                    }
                                     InputStatus::Handled
                                 }
                                 _ => InputStatus::Unhandled,
@@ -525,7 +587,8 @@ pub mod android_runtime {
             let dt = (now - last_tick).as_secs_f32().clamp(0.001, 0.05);
             last_tick = now;
 
-            let (_anim, cmds) = host.step_frame(dt);
+            let (still_anim, did_paint, cmds) = host.step_frame_with_redraw(dt);
+            animating = still_anim;
             for cmd in cmds {
                 match cmd {
                     AndroidImeCommand::ShowSoftInput => app.show_soft_input(true),
@@ -546,7 +609,7 @@ pub mod android_runtime {
                     }
                 }
             }
-            if let Some(g) = gpu.as_mut() {
+            if did_paint && let Some(g) = gpu.as_mut() {
                 let bg = host.tree.theme().background;
                 let _ = g.render_frame(
                     &host.scene,
@@ -693,6 +756,11 @@ mod tests {
             Modifiers::default()
         ));
         assert_eq!(tab_idx.get(), 1);
+
+        // Demand-driven idle check: once painted and non-animating, poll timeout blocks (`None`)
+        let (anim_idle, painted_now, _) = host.step_frame_with_redraw(0.016);
+        assert!(!anim_idle && painted_now);
+        assert_eq!(host.next_poll_timeout(false, true), None);
 
         // External SurfaceTexture upload + PlatformViewHole emitted in scene
         let mut bridge = DummyExternalSurface { dirty: true };

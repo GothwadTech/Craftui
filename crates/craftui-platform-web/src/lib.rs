@@ -157,6 +157,7 @@ pub struct WebAppHost {
     route_bridge: Option<RouteBridge>,
     last_synced_hash: Option<String>,
     pub clipboard_cache: Arc<Mutex<String>>,
+    needs_redraw: bool,
 }
 
 impl WebAppHost {
@@ -182,7 +183,20 @@ impl WebAppHost {
             route_bridge: None,
             last_synced_hash: None,
             clipboard_cache,
+            needs_redraw: true,
         }
+    }
+
+    pub fn request_redraw(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    pub fn handle_ui_event(&mut self, ev: &UiEvent) -> bool {
+        let handled = self.tree.handle_event(ev);
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
     }
 
     /// Resolve a [`RouteBridge`] from explicit attachment or `Scope` context (`RouteBridge` or `Router<String>`).
@@ -218,6 +232,9 @@ impl WebAppHost {
         }
         let route = BrowserRouteSync::hash_to_route(hash);
         let changed = bridge.navigate(&route);
+        if changed {
+            self.needs_redraw = true;
+        }
         self.last_synced_hash = Some(BrowserRouteSync::route_to_hash(&bridge.current_route()));
         changed
     }
@@ -238,11 +255,17 @@ impl WebAppHost {
         let w = css_width.max(1.0);
         let h = css_height.max(1.0);
         let s = dpr.max(1.0);
-        self.tree.handle_event(&UiEvent::Resize {
-            width: w,
-            height: h,
-            scale_factor: s,
-        });
+        if (self.tree.metrics.logical_size.width - w).abs() > 0.01
+            || (self.tree.metrics.logical_size.height - h).abs() > 0.01
+            || (self.tree.metrics.scale_factor - s).abs() > 0.001
+        {
+            self.tree.handle_event(&UiEvent::Resize {
+                width: w,
+                height: h,
+                scale_factor: s,
+            });
+            self.needs_redraw = true;
+        }
         self.tree.metrics.physical_size()
     }
 
@@ -269,11 +292,24 @@ impl WebAppHost {
         }
     }
 
-    pub fn step_frame(&mut self, dt_sec: f32) -> bool {
-        let _ = self.dispatcher.drain();
+    /// Advance one UI frame at `now_ms`, painting only when dirty, animating, or blink toggled.
+    pub fn step_frame_with_redraw(&mut self, dt_sec: f32, now_ms: u64) -> (bool, bool) {
+        let timers = craftui_reactive::tick_timers_at(now_ms);
+        let jobs = self.dispatcher.drain();
+        let blink = self.tree.tick_blink_timers(now_ms);
         let anim = self.tree.tick_animations(dt_sec);
-        let _ = self.tree.layout(self.tree.metrics);
-        self.tree.paint(&mut self.scene);
+        let dirty = self.tree.layout(self.tree.metrics);
+        let should_paint =
+            self.needs_redraw || timers > 0 || jobs > 0 || blink || anim || dirty > 0;
+        if should_paint {
+            self.tree.paint(&mut self.scene);
+            self.needs_redraw = false;
+        }
+        (anim, should_paint)
+    }
+
+    pub fn step_frame(&mut self, dt_sec: f32) -> bool {
+        let (anim, _) = self.step_frame_with_redraw(dt_sec, craftui_core::monotonic_ms());
         anim
     }
 
@@ -298,6 +334,7 @@ impl WebAppHost {
 
 /// Convert browser `KeyboardEvent.key` string into a CraftUI [`KeyEvent`].
 pub fn dom_key_to_craft(key: &str, pressed: bool, repeat: bool, modifiers: Modifiers) -> KeyEvent {
+    let cmd = modifiers.command();
     let code = match key {
         "Enter" => KeyCode::Enter,
         "Tab" => KeyCode::Tab,
@@ -313,12 +350,13 @@ pub fn dom_key_to_craft(key: &str, pressed: bool, repeat: bool, modifiers: Modif
         "End" => KeyCode::End,
         "PageUp" => KeyCode::PageUp,
         "PageDown" => KeyCode::PageDown,
-        "i" | "I" if modifiers.ctrl && modifiers.shift => KeyCode::KeyI,
-        "a" | "A" if modifiers.ctrl => KeyCode::KeyA,
-        "c" | "C" if modifiers.ctrl => KeyCode::KeyC,
-        "v" | "V" if modifiers.ctrl => KeyCode::KeyV,
-        "x" | "X" if modifiers.ctrl => KeyCode::KeyX,
-        "z" | "Z" if modifiers.ctrl => KeyCode::KeyZ,
+        "i" | "I" if cmd && modifiers.shift => KeyCode::KeyI,
+        "a" | "A" if cmd => KeyCode::KeyA,
+        "c" | "C" if cmd => KeyCode::KeyC,
+        "v" | "V" if cmd => KeyCode::KeyV,
+        "x" | "X" if cmd => KeyCode::KeyX,
+        "y" | "Y" if modifiers.ctrl => KeyCode::KeyY,
+        "z" | "Z" if cmd => KeyCode::KeyZ,
         s if s.chars().count() == 1 => KeyCode::Character(s.to_string()),
         _ => KeyCode::Unknown,
     };
@@ -479,10 +517,10 @@ pub fn dom_composition_to_ime(phase_end: bool, data: String) -> UiEvent {
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_runner {
     use super::*;
-    use craftui_core::NodeId;
+    use craftui_core::{NodeId, set_monotonic_ms_provider};
     use craftui_render::GpuSurfacePipeline;
     use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
+    use std::rc::{Rc, Weak};
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
     use web_sys::{
@@ -492,15 +530,83 @@ pub mod wasm_runner {
         WheelEvent as DomWheelEvent,
     };
 
+    thread_local! {
+        static ACTIVE_SCHEDULERS: RefCell<Vec<Weak<WebScheduler>>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn browser_now_ms() -> u64 {
+        web_sys::window()
+            .and_then(|w| w.performance())
+            .map(|p| p.now().max(0.0) as u64)
+            .unwrap_or(0)
+    }
+
     enum WebRenderBackend {
         Pending,
         Gpu(GpuSurfacePipeline),
         Canvas2d(CanvasRenderingContext2d),
     }
 
+    struct WebScheduler {
+        window: web_sys::Window,
+        raf_scheduled: Cell<bool>,
+        timeout_id: Cell<Option<i32>>,
+        raf_cb: RefCell<Option<Closure<dyn FnMut(f64)>>>,
+        timer_cb: RefCell<Option<Closure<dyn FnMut()>>>,
+    }
+
+    impl WebScheduler {
+        fn new(window: web_sys::Window) -> Rc<Self> {
+            Rc::new(Self {
+                window,
+                raf_scheduled: Cell::new(false),
+                timeout_id: Cell::new(None),
+                raf_cb: RefCell::new(None),
+                timer_cb: RefCell::new(None),
+            })
+        }
+
+        fn request_frame(&self) {
+            if let Some(tid) = self.timeout_id.take() {
+                self.window.clear_timeout_with_handle(tid);
+            }
+            if self.raf_scheduled.get() {
+                return;
+            }
+            if let Some(ref closure) = *self.raf_cb.borrow() {
+                self.raf_scheduled.set(true);
+                let _ = self
+                    .window
+                    .request_animation_frame(closure.as_ref().unchecked_ref());
+            }
+        }
+
+        fn schedule_wake_after(&self, delay_ms: u64) {
+            if self.raf_scheduled.get() {
+                return;
+            }
+            if let Some(tid) = self.timeout_id.take() {
+                self.window.clear_timeout_with_handle(tid);
+            }
+            if let Some(ref tcb) = *self.timer_cb.borrow() {
+                let ms = delay_ms.clamp(1, i32::MAX as u64) as i32;
+                if let Ok(id) = self
+                    .window
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        tcb.as_ref().unchecked_ref(),
+                        ms,
+                    )
+                {
+                    self.timeout_id.set(Some(id));
+                }
+            }
+        }
+    }
+
     fn obtain_2d_context(
         canvas_slot: &Rc<RefCell<HtmlCanvasElement>>,
         host: &Rc<RefCell<WebAppHost>>,
+        scheduler: &Rc<WebScheduler>,
     ) -> Option<CanvasRenderingContext2d> {
         let existing = canvas_slot.borrow().clone();
         if let Ok(Some(ctx)) = existing.get_context("2d")
@@ -515,7 +621,7 @@ pub mod wasm_runner {
             fresh_canvas.set_width(existing.width());
             fresh_canvas.set_height(existing.height());
             let _ = existing.replace_with_with_node_1(&fresh_canvas);
-            let _ = attach_pointer_listeners(&fresh_canvas, host.clone());
+            let _ = attach_pointer_listeners(&fresh_canvas, host.clone(), scheduler.clone());
             *canvas_slot.borrow_mut() = fresh_canvas.clone();
             if let Ok(Some(ctx)) = fresh_canvas.get_context("2d") {
                 return ctx.dyn_into::<CanvasRenderingContext2d>().ok();
@@ -547,7 +653,21 @@ pub mod wasm_runner {
         let css_w = (rect.width() as f32).max(320.0);
         let css_h = (rect.height() as f32).max(240.0);
 
-        let dispatcher = UiDispatcher::new();
+        set_monotonic_ms_provider(browser_now_ms);
+        let scheduler = WebScheduler::new(window.clone());
+        let sched_weak = Rc::downgrade(&scheduler);
+        ACTIVE_SCHEDULERS.with(|list| {
+            let mut list = list.borrow_mut();
+            list.retain(|w| w.strong_count() > 0);
+            list.push(sched_weak);
+        });
+        let dispatcher = UiDispatcher::with_waker(|| {
+            ACTIVE_SCHEDULERS.with(|list| {
+                for sched in list.borrow().iter().filter_map(|w| w.upgrade()) {
+                    sched.request_frame();
+                }
+            });
+        });
         let mut host = WebAppHost::new(dispatcher.clone(), css_w, css_h, dpr);
         let (pw, ph) = host.resize_css(css_w, css_h, dpr);
         canvas.set_width(pw);
@@ -581,22 +701,25 @@ pub mod wasm_runner {
         let last_hidden_val = Rc::new(RefCell::new(String::new()));
         let is_composing = Rc::new(Cell::new(false));
 
-        attach_pointer_listeners(&canvas, host_rc.clone())?;
+        attach_pointer_listeners(&canvas, host_rc.clone(), scheduler.clone())?;
         attach_keyboard_ime_listeners(
             &window,
             &hidden_input,
             host_rc.clone(),
             last_hidden_val.clone(),
             is_composing.clone(),
+            scheduler.clone(),
         )?;
 
         if config.sync_url_hash {
             let h_hash = host_rc.clone();
+            let sched_hash = scheduler.clone();
             let hash_cb = Closure::wrap(Box::new(move |_ev: HashChangeEvent| {
                 if let Some(win) = web_sys::window()
                     && let Ok(hash) = win.location().hash()
+                    && h_hash.borrow_mut().apply_url_hash(&hash)
                 {
-                    h_hash.borrow_mut().apply_url_hash(&hash);
+                    sched_hash.request_frame();
                 }
             }) as Box<dyn FnMut(HashChangeEvent)>);
             window
@@ -604,16 +727,29 @@ pub mod wasm_runner {
             hash_cb.forget();
         }
 
+        {
+            let h_res = host_rc.clone();
+            let sched_res = scheduler.clone();
+            let resize_cb = Closure::wrap(Box::new(move |_ev: web_sys::Event| {
+                h_res.borrow_mut().request_redraw();
+                sched_res.request_frame();
+            }) as Box<dyn FnMut(web_sys::Event)>);
+            window
+                .add_event_listener_with_callback("resize", resize_cb.as_ref().unchecked_ref())?;
+            resize_cb.forget();
+        }
+
         let backend_slot: Rc<RefCell<WebRenderBackend>> =
             Rc::new(RefCell::new(WebRenderBackend::Pending));
         if config.force_2d_fallback {
-            if let Some(c2d) = obtain_2d_context(&canvas_slot, &host_rc) {
+            if let Some(c2d) = obtain_2d_context(&canvas_slot, &host_rc, &scheduler) {
                 *backend_slot.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
             }
         } else {
             let backend_async = backend_slot.clone();
             let canvas_async = canvas_slot.clone();
             let host_async = host_rc.clone();
+            let sched_async = scheduler.clone();
             let canvas_for_wgpu = canvas.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 match GpuSurfacePipeline::new_async(
@@ -639,16 +775,27 @@ pub mod wasm_runner {
                         tracing::warn!(
                             "WebGPU/WebGL2 async init failed ({err}); falling back to 2D canvas"
                         );
-                        if let Some(c2d) = obtain_2d_context(&canvas_async, &host_async) {
+                        if let Some(c2d) = obtain_2d_context(&canvas_async, &host_async, &sched_async) {
                             *backend_async.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
                         }
                     }
                 }
+                host_async.borrow_mut().request_redraw();
+                sched_async.request_frame();
             });
         }
 
-        let raf_cb: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
-        let raf_cb_clone = raf_cb.clone();
+        {
+            let sched_timer = scheduler.clone();
+            let h_timer = host_rc.clone();
+            *scheduler.timer_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+                sched_timer.timeout_id.set(None);
+                h_timer.borrow_mut().request_redraw();
+                sched_timer.request_frame();
+            }) as Box<dyn FnMut()>));
+        }
+
+        let sched_raf = scheduler.clone();
         let canvas_raf = canvas_slot;
         let window_raf = window.clone();
         let doc_raf = document;
@@ -656,7 +803,8 @@ pub mod wasm_runner {
         let sync_hash = config.sync_url_hash;
         let mut last_ts_ms = window.performance().map(|p| p.now()).unwrap_or(0.0);
 
-        *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move |ts: f64| {
+        *scheduler.raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move |ts: f64| {
+            sched_raf.raf_scheduled.set(false);
             let dt_ms = (ts - last_ts_ms).max(1.0);
             last_ts_ms = ts;
             let dt_sec = ((dt_ms as f32) / 1000.0).clamp(0.001, 0.05);
@@ -664,7 +812,6 @@ pub mod wasm_runner {
                 .performance()
                 .map(|p| p.now() as u64)
                 .unwrap_or(ts.max(0.0) as u64);
-            let _ = craftui_reactive::tick_timers_at(now_ms);
 
             let mut h = host_rc.borrow_mut();
             let dpr_now = window_raf.device_pixel_ratio() as f32;
@@ -674,9 +821,10 @@ pub mod wasm_runner {
             if cur_canvas.width() != pw || cur_canvas.height() != ph {
                 cur_canvas.set_width(pw);
                 cur_canvas.set_height(ph);
+                h.request_redraw();
             }
 
-            let _anim = h.step_frame(dt_sec);
+            let (anim, did_paint) = h.step_frame_with_redraw(dt_sec, now_ms);
 
             if sync_hash && let Some(new_hash) = h.take_pending_hash_update() {
                 let _ = window_raf.location().set_hash(&new_hash);
@@ -700,47 +848,56 @@ pub mod wasm_runner {
                 }
             }
 
-            match &mut *backend_slot.borrow_mut() {
-                WebRenderBackend::Pending => {}
-                WebRenderBackend::Gpu(gpu) => {
-                    gpu.resize(pw, ph);
-                    let bg = h.tree.theme().background;
-                    let host_ref = &mut *h;
-                    let _ = gpu.render_frame(
-                        &host_ref.scene,
-                        dpr_now,
-                        bg,
-                        &host_ref.textures,
-                        &mut host_ref.tree.text_engine,
-                    );
-                }
-                WebRenderBackend::Canvas2d(ctx_2d) => {
-                    let (w, h_px, rgba) = h.render_rgba_2d();
-                    if let Ok(img) = ImageData::new_with_u8_clamped_array_and_sh(
-                        wasm_bindgen::Clamped(&rgba),
-                        w,
-                        h_px,
-                    ) {
-                        let _ = ctx_2d.put_image_data(&img, 0.0, 0.0);
+            if did_paint {
+                match &mut *backend_slot.borrow_mut() {
+                    WebRenderBackend::Pending => {}
+                    WebRenderBackend::Gpu(gpu) => {
+                        gpu.resize(pw, ph);
+                        let bg = h.tree.theme().background;
+                        let host_ref = &mut *h;
+                        let _ = gpu.render_frame(
+                            &host_ref.scene,
+                            dpr_now,
+                            bg,
+                            &host_ref.textures,
+                            &mut host_ref.tree.text_engine,
+                        );
+                    }
+                    WebRenderBackend::Canvas2d(ctx_2d) => {
+                        let (w, h_px, rgba) = h.render_rgba_2d();
+                        if let Ok(img) = ImageData::new_with_u8_clamped_array_and_sh(
+                            wasm_bindgen::Clamped(&rgba),
+                            w,
+                            h_px,
+                        ) {
+                            let _ = ctx_2d.put_image_data(&img, 0.0, 0.0);
+                        }
                     }
                 }
             }
 
-            if let Some(ref closure) = *raf_cb_clone.borrow() {
-                let _ = window_raf.request_animation_frame(closure.as_ref().unchecked_ref());
+            if anim {
+                sched_raf.request_frame();
+            } else {
+                let mut min_delay = craftui_reactive::next_timer_delay_ms(now_ms);
+                if let Some(d) = h.tree.next_internal_delay_ms(now_ms) {
+                    min_delay = Some(min_delay.map_or(d, |cur| cur.min(d)));
+                }
+                if let Some(delay) = min_delay {
+                    sched_raf.schedule_wake_after(delay);
+                }
             }
         }) as Box<dyn FnMut(f64)>));
 
-        if let Some(ref closure) = *raf_cb.borrow() {
-            window.request_animation_frame(closure.as_ref().unchecked_ref())?;
-        }
-        std::mem::forget(raf_cb);
+        scheduler.request_frame();
+        std::mem::forget(scheduler);
         Ok(())
     }
 
     fn attach_pointer_listeners(
         canvas: &HtmlCanvasElement,
         host: Rc<RefCell<WebAppHost>>,
+        scheduler: Rc<WebScheduler>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         for (ev_name, phase) in [
             ("pointerdown", PointerPhase::Down),
@@ -750,6 +907,7 @@ pub mod wasm_runner {
         ] {
             let h_c = host.clone();
             let c_el = canvas.clone();
+            let sched_c = scheduler.clone();
             let cb = Closure::wrap(Box::new(move |e: DomPointerEvent| {
                 let bcr = c_el.get_bounding_client_rect();
                 let mods = Modifiers {
@@ -770,7 +928,9 @@ pub mod wasm_runner {
                     mods,
                     e.time_stamp() as u64,
                 );
-                h_c.borrow_mut().tree.handle_event(&ev);
+                if h_c.borrow_mut().handle_ui_event(&ev) {
+                    sched_c.request_frame();
+                }
             }) as Box<dyn FnMut(DomPointerEvent)>);
             canvas.add_event_listener_with_callback(ev_name, cb.as_ref().unchecked_ref())?;
             cb.forget();
@@ -778,6 +938,7 @@ pub mod wasm_runner {
 
         let h_w = host;
         let c_w = canvas.clone();
+        let sched_w = scheduler;
         let wheel_cb = Closure::wrap(Box::new(move |e: DomWheelEvent| {
             let bcr = c_w.get_bounding_client_rect();
             let ev = dom_wheel_event(
@@ -788,7 +949,9 @@ pub mod wasm_runner {
                 e.delta_x() as f32,
                 e.delta_y() as f32,
             );
-            h_w.borrow_mut().tree.handle_event(&ev);
+            if h_w.borrow_mut().handle_ui_event(&ev) {
+                sched_w.request_frame();
+            }
         }) as Box<dyn FnMut(DomWheelEvent)>);
         canvas.add_event_listener_with_callback("wheel", wheel_cb.as_ref().unchecked_ref())?;
         wheel_cb.forget();
@@ -801,9 +964,11 @@ pub mod wasm_runner {
         host: Rc<RefCell<WebAppHost>>,
         last_hidden_val: Rc<RefCell<String>>,
         is_composing: Rc<Cell<bool>>,
+        scheduler: Rc<WebScheduler>,
     ) -> Result<(), wasm_bindgen::JsValue> {
         for (ev_name, pressed) in [("keydown", true), ("keyup", false)] {
             let h_c = host.clone();
+            let sched_k = scheduler.clone();
             let cb = Closure::wrap(Box::new(move |e: DomKeyboardEvent| {
                 let mods = Modifiers {
                     shift: e.shift_key(),
@@ -812,7 +977,9 @@ pub mod wasm_runner {
                     super_key: e.meta_key(),
                 };
                 let ke = dom_key_to_craft(&e.key(), pressed, e.repeat(), mods);
-                h_c.borrow_mut().tree.handle_event(&UiEvent::Key(ke));
+                if h_c.borrow_mut().handle_ui_event(&UiEvent::Key(ke)) {
+                    sched_k.request_frame();
+                }
             }) as Box<dyn FnMut(DomKeyboardEvent)>);
             window.add_event_listener_with_callback(ev_name, cb.as_ref().unchecked_ref())?;
             cb.forget();
@@ -829,9 +996,12 @@ pub mod wasm_runner {
         comp_start.forget();
 
         let h_comp_upd = host.clone();
+        let sched_comp_upd = scheduler.clone();
         let comp_upd = Closure::wrap(Box::new(move |e: CompositionEvent| {
             let ev = dom_composition_to_ime(false, e.data().unwrap_or_default());
-            h_comp_upd.borrow_mut().tree.handle_event(&ev);
+            if h_comp_upd.borrow_mut().handle_ui_event(&ev) {
+                sched_comp_upd.request_frame();
+            }
         }) as Box<dyn FnMut(CompositionEvent)>);
         hidden_input.add_event_listener_with_callback(
             "compositionupdate",
@@ -843,14 +1013,18 @@ pub mod wasm_runner {
         let comp_flag_end = is_composing.clone();
         let hidden_comp = hidden_input.clone();
         let last_val_comp = last_hidden_val.clone();
+        let sched_comp_end = scheduler.clone();
         let comp_end = Closure::wrap(Box::new(move |e: CompositionEvent| {
             comp_flag_end.set(false);
             let ev = dom_composition_to_ime(true, e.data().unwrap_or_default());
             let mut guard = h_comp_end.borrow_mut();
-            guard.tree.handle_event(&ev);
+            let changed = guard.handle_ui_event(&ev);
             let synced = guard.hidden_ime_state().value;
             hidden_comp.set_value(&synced);
             *last_val_comp.borrow_mut() = synced;
+            if changed {
+                sched_comp_end.request_frame();
+            }
         }) as Box<dyn FnMut(CompositionEvent)>);
         hidden_input.add_event_listener_with_callback(
             "compositionend",
@@ -863,6 +1037,7 @@ pub mod wasm_runner {
         let hidden_inp = hidden_input.clone();
         let comp_flag_inp = is_composing;
         let last_val_inp = last_hidden_val;
+        let sched_inp = scheduler;
         let on_input = Closure::wrap(Box::new(move |e: web_sys::Event| {
             if comp_flag_inp.get() {
                 return;
@@ -880,8 +1055,12 @@ pub mod wasm_runner {
             let events = dom_input_to_events(&prev, &current, &input_type, data.as_deref());
             *last_val_inp.borrow_mut() = current;
             let mut guard = h_input.borrow_mut();
+            let mut changed = false;
             for ev in events {
-                guard.tree.handle_event(&ev);
+                changed |= guard.handle_ui_event(&ev);
+            }
+            if changed {
+                sched_inp.request_frame();
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
         hidden_input
@@ -974,5 +1153,26 @@ mod tests {
         let (rw, rh, rgba) = host.render_rgba_2d();
         assert_eq!((rw, rh), (800, 600));
         assert_eq!(rgba.len(), 800 * 600 * 4);
+
+        // Demand-driven Web frame check: idle focused TextInput does not animate continuously,
+        // and only triggers redraw at blink interval boundaries.
+        host.tree.reset_caret_blink(1000);
+        let (anim0, _painted0) = host.step_frame_with_redraw(0.016, 1000);
+        assert!(!anim0);
+        let (anim1, painted1) = host.step_frame_with_redraw(0.016, 1100);
+        assert!(!anim1 && !painted1);
+        let (anim2, painted2) = host.step_frame_with_redraw(0.016, 1600);
+        assert!(!anim2 && painted2);
+
+        let ky = dom_key_to_craft(
+            "y",
+            true,
+            false,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ky.code, KeyCode::KeyY);
     }
 }
