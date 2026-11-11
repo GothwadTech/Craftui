@@ -203,6 +203,9 @@ impl IpcRouter {
 pub struct TailwindTokens {
     pub is_row: bool,
     pub is_column: bool,
+    pub align_center: bool,
+    pub justify_between: bool,
+    pub justify_center: bool,
     pub padding: Option<Insets>,
     pub gap: Option<f32>,
     pub background: Option<Color>,
@@ -220,12 +223,37 @@ impl TailwindTokens {
     pub fn parse(classes: &str) -> Self {
         let mut tokens = Self::default();
         for class in classes.split_whitespace() {
+            // 1. Arbitrary Hex Colors e.g. bg-[#0E2938], text-[#00BCD4]
+            if let Some(hex) = class.strip_prefix("bg-[").and_then(|s| s.strip_suffix(']')) {
+                if let Some(c) = Color::from_hex(hex) {
+                    tokens.background = Some(c);
+                    continue;
+                }
+            }
+            if let Some(hex) = class.strip_prefix("text-[").and_then(|s| s.strip_suffix(']')) {
+                if let Some(c) = Color::from_hex(hex) {
+                    tokens.text_color = Some(c);
+                    continue;
+                }
+            }
+
             match class {
                 "flex" => {}
                 "flex-col" => tokens.is_column = true,
                 "flex-row" => tokens.is_row = true,
+                "items-center" => tokens.align_center = true,
+                "justify-between" => tokens.justify_between = true,
+                "justify-center" => tokens.justify_center = true,
                 "w-full" => tokens.width = Some(Length::Pct(100.0)),
                 "h-full" => tokens.height = Some(Length::Pct(100.0)),
+                "w-10" => tokens.width = Some(Length::Px(40.0)),
+                "w-12" => tokens.width = Some(Length::Px(48.0)),
+                "w-14" => tokens.width = Some(Length::Px(56.0)),
+                "w-16" => tokens.width = Some(Length::Px(64.0)),
+                "h-10" => tokens.height = Some(Length::Px(40.0)),
+                "h-12" => tokens.height = Some(Length::Px(48.0)),
+                "h-14" => tokens.height = Some(Length::Px(56.0)),
+                "h-16" => tokens.height = Some(Length::Px(64.0)),
                 "rounded-none" => tokens.radius = Some(CornerRadii::ZERO),
                 "rounded-sm" => tokens.radius = Some(CornerRadii::all(4.0)),
                 "rounded" | "rounded-md" => tokens.radius = Some(CornerRadii::all(8.0)),
@@ -248,6 +276,7 @@ impl TailwindTokens {
                 "shadow" | "shadow-md" => tokens.shadow = Some(BoxShadow::drop(0.0, 2.0, 6.0, 0.0, Color::rgba(0, 0, 0, 50))),
                 "shadow-lg" => tokens.shadow = Some(BoxShadow::drop(0.0, 4.0, 12.0, 0.0, Color::rgba(0, 0, 0, 70))),
                 "shadow-xl" => tokens.shadow = Some(BoxShadow::drop(0.0, 8.0, 20.0, 0.0, Color::rgba(0, 0, 0, 90))),
+                "teal-glow" => tokens.shadow = Some(BoxShadow::drop(0.0, 4.0, 20.0, 0.0, Color::rgba(0, 188, 212, 90))),
                 // Padding
                 "p-1" => tokens.padding = Some(Insets::all(4.0)),
                 "p-2" => tokens.padding = Some(Insets::all(8.0)),
@@ -256,6 +285,15 @@ impl TailwindTokens {
                 "p-5" => tokens.padding = Some(Insets::all(20.0)),
                 "p-6" => tokens.padding = Some(Insets::all(24.0)),
                 "p-8" => tokens.padding = Some(Insets::all(32.0)),
+                "px-2" => tokens.padding = Some(Insets::new(0.0, 8.0, 0.0, 8.0)),
+                "px-3" => tokens.padding = Some(Insets::new(0.0, 12.0, 0.0, 12.0)),
+                "px-4" => tokens.padding = Some(Insets::new(0.0, 16.0, 0.0, 16.0)),
+                "py-1" => tokens.padding = Some(Insets::new(4.0, 0.0, 4.0, 0.0)),
+                "py-2" => tokens.padding = Some(Insets::new(8.0, 0.0, 8.0, 0.0)),
+                "py-3" => tokens.padding = Some(Insets::new(12.0, 0.0, 12.0, 0.0)),
+                "py-4" => tokens.padding = Some(Insets::new(16.0, 0.0, 16.0, 0.0)),
+                "pt-3" => tokens.padding = Some(Insets::new(12.0, 0.0, 0.0, 0.0)),
+                "pb-24" => tokens.padding = Some(Insets::new(0.0, 0.0, 96.0, 0.0)),
                 // Gap
                 "gap-1" => tokens.gap = Some(4.0),
                 "gap-2" => tokens.gap = Some(8.0),
@@ -268,16 +306,25 @@ impl TailwindTokens {
                 "bg-slate-900" => tokens.background = Some(Color::rgb(15, 23, 42)),
                 "bg-slate-800" => tokens.background = Some(Color::rgb(30, 41, 59)),
                 "bg-slate-700" => tokens.background = Some(Color::rgb(51, 65, 85)),
+                "bg-zinc-900" => tokens.background = Some(Color::rgb(24, 24, 27)),
+                "bg-zinc-800" => tokens.background = Some(Color::rgb(39, 39, 42)),
                 "bg-blue-600" => tokens.background = Some(Color::rgb(37, 99, 235)),
                 "bg-blue-500" => tokens.background = Some(Color::rgb(59, 130, 246)),
+                "bg-teal-500" => tokens.background = Some(Color::rgb(20, 184, 166)),
+                "bg-teal-600" => tokens.background = Some(Color::rgb(13, 148, 136)),
                 "bg-emerald-600" => tokens.background = Some(Color::rgb(5, 150, 105)),
                 "bg-red-600" => tokens.background = Some(Color::rgb(220, 38, 38)),
                 "bg-white" => tokens.background = Some(Color::WHITE),
                 "bg-black" => tokens.background = Some(Color::BLACK),
                 "text-white" => tokens.text_color = Some(Color::WHITE),
+                "text-black" => tokens.text_color = Some(Color::BLACK),
                 "text-slate-400" => tokens.text_color = Some(Color::rgb(148, 163, 184)),
+                "text-slate-300" => tokens.text_color = Some(Color::rgb(203, 213, 225)),
                 "text-slate-200" => tokens.text_color = Some(Color::rgb(226, 232, 240)),
                 "text-blue-400" => tokens.text_color = Some(Color::rgb(96, 165, 250)),
+                "text-teal-400" => tokens.text_color = Some(Color::rgb(45, 212, 191)),
+                "text-cyan-400" => tokens.text_color = Some(Color::rgb(34, 211, 238)),
+                "text-amber-400" => tokens.text_color = Some(Color::rgb(251, 191, 36)),
                 "text-red-400" => tokens.text_color = Some(Color::rgb(248, 113, 113)),
                 _ => {}
             }

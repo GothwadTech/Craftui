@@ -2191,11 +2191,90 @@ class MainActivity : GameActivity() {{
         init {{
             System.loadLibrary("{rust_lib_name}")
         }}
+        var instance: MainActivity? = null
+
+        @JvmStatic
+        fun launchCameraFromNative() {{
+            instance?.launchCameraWithPermission()
+        }}
+
+        @JvmStatic
+        fun launchGalleryFromNative() {{
+            instance?.launchGalleryWithPermission()
+        }}
     }}
 
     private var pendingPermRequestId: Long = 0L
     private var pendingFileRequestId: Long = 0L
     private var lastReportedInsetsKey: String = ""
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {{ isGranted ->
+        if (isGranted) {{
+            openCameraIntent()
+        }}
+    }}
+
+    private val galleryPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {{ isGranted ->
+        if (isGranted) {{
+            openGalleryIntent()
+        }}
+    }}
+
+    private val takePictureLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) {{ _ ->
+    }}
+
+    private val pickImageLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) {{ _ ->
+    }}
+
+    fun launchCameraWithPermission() {{
+        runOnUiThread {{
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {{
+                openCameraIntent()
+            }} else {{
+                cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+            }}
+        }}
+    }}
+
+    fun launchGalleryWithPermission() {{
+        runOnUiThread {{
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {{
+                openGalleryIntent()
+            }} else if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {{
+                openGalleryIntent()
+            }} else {{
+                galleryPermissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            }}
+        }}
+    }}
+
+    private fun openCameraIntent() {{
+        try {{
+            takePictureLauncher.launch(null)
+        }} catch (_: Exception) {{
+            val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+            if (intent.resolveActivity(packageManager) != null) {{
+                startActivity(intent)
+            }}
+        }}
+    }}
+
+    private fun openGalleryIntent() {{
+        try {{
+            pickImageLauncher.launch("image/*")
+        }} catch (_: Exception) {{
+            val intent = Intent(Intent.ACTION_PICK, android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            startActivity(intent)
+        }}
+    }}
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -2220,6 +2299,7 @@ class MainActivity : GameActivity() {{
 
     override fun onCreate(savedInstanceState: Bundle?) {{
         super.onCreate(savedInstanceState)
+        instance = this
         WindowCompat.setDecorFitsSystemWindows(window, false)
         ViewCompat.setOnApplyWindowInsetsListener(window.decorView) {{ _, insets ->
             val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
@@ -2994,7 +3074,22 @@ fn run_build(
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("dist").join(default_sub))
     };
-    let manifest_opt = load_active_manifest(Path::new("."))?;
+    let mut manifest_opt = load_active_manifest(Path::new("."))?;
+    if manifest_opt.is_none() {
+        if let Some(pkg) = package {
+            let candidate1 = Path::new("examples").join(pkg).join("craftui.toml");
+            let candidate2 = Path::new("examples")
+                .join(pkg.trim_start_matches("craftui-example-"))
+                .join("craftui.toml");
+            let candidate3 = Path::new("packages").join(pkg).join("craftui.toml");
+            for cand in [candidate1, candidate2, candidate3] {
+                if cand.is_file() {
+                    manifest_opt = Some(AppManifest::load_file(&cand)?);
+                    break;
+                }
+            }
+        }
+    }
     let app_display = manifest_opt
         .as_ref()
         .map(|m| m.app.name.clone())

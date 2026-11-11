@@ -1,0 +1,127 @@
+export component ScanAppHtmlView {
+    in-out property <int> active_tab: 0;
+    in-out property <string> doc_title: "Scanned_Doc_001.pdf";
+    in-out property <string> status_message: "ScanApp Ready — HTML & Tailwind Syntax Active";
+
+    callback on_capture_photo();
+    callback on_import_gallery();
+    callback on_theme_toggle();
+
+    div {
+        class: "flex flex-col w-full h-full bg-black p-4 gap-4";
+
+        // Top App Bar in Pure HTML Semantic Syntax
+        header {
+            class: "flex flex-row justify-between items-center w-full py-1";
+            button {
+                class: "w-10 h-10 rounded-full bg-[#0E2938]";
+                Icon { svg: "user"; }
+            }
+            div {
+                class: "flex flex-row items-center gap-2";
+                span {
+                    class: "text-xl font-bold text-[#00BCD4]";
+                    text: "ScanApp";
+                }
+            }
+            div {
+                class: "flex flex-row items-center gap-3";
+                button {
+                    class: "w-8 h-8 rounded-full";
+                    on_tap => { on_theme_toggle(); }
+                    Icon { svg: "sun"; }
+                }
+                button {
+                    class: "w-8 h-8 rounded-full";
+                    Icon { svg: "search"; }
+                }
+            }
+        }
+
+        // 8-Tool Action Grid (2 Rows x 4 Columns)
+        section {
+            class: "flex flex-col w-full gap-3";
+            div {
+                class: "flex flex-row justify-between items-center w-full";
+                button {
+                    class: "flex flex-col items-center gap-2";
+                    on_tap => { on_capture_photo(); }
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#0E3B43] shadow-md";
+                        Icon { svg: "camera"; }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "Smart Scan";
+                    }
+                }
+                button {
+                    class: "flex flex-col items-center gap-2";
+                    on_tap => { on_import_gallery(); }
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#1E3A68] shadow-md";
+                        Icon { svg: "image"; }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "Import Photos";
+                    }
+                }
+                button {
+                    class: "flex flex-col items-center gap-2";
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#452A14] shadow-md";
+                        Icon { svg: "upload"; }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "Import Files";
+                    }
+                }
+                button {
+                    class: "flex flex-col items-center gap-2";
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#0E2F38] shadow-md";
+                        Icon { svg: "badge_id"; }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "ID Card";
+                    }
+                }
+            }
+        }
+
+        // Recent Docs Section
+        section {
+            class: "flex flex-col w-full gap-3";
+            div {
+                class: "flex flex-row justify-between items-center w-full";
+                span {
+                    class: "text-lg font-bold text-white";
+                    text: "Recent Docs";
+                }
+            }
+            div {
+                class: "flex flex-row items-center justify-between w-full p-3 bg-zinc-900 rounded-xl";
+                div {
+                    class: "flex flex-row items-center gap-3";
+                    div {
+                        class: "w-12 h-14 bg-slate-800 rounded-md";
+                    }
+                    div {
+                        class: "flex flex-col gap-1";
+                        span {
+                            class: "text-sm font-semibold text-white";
+                            text: "New Doc 11-09-2026 21.45";
+                        }
+                        span {
+                            class: "text-xs text-slate-400";
+                            text: "09/11/26 21:46 • 3 Pages";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

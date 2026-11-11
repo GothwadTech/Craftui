@@ -57,6 +57,11 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "input",
     "nav",
     "section",
+    "header",
+    "footer",
+    "main",
+    "article",
+    "aside",
 ];
 
 pub const COMMON_PROPS: &[&str] = &[
@@ -245,6 +250,11 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "div"
             | "section"
             | "nav"
+            | "header"
+            | "footer"
+            | "main"
+            | "article"
+            | "aside"
             | "span"
             | "button"
     )
@@ -418,7 +428,7 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "HtmlView" => {
             out.extend_from_slice(&["src", "html", "url"]);
         }
-        "div" | "section" | "nav" => {
+        "div" | "section" | "nav" | "header" | "footer" | "main" | "article" | "aside" => {
             out.extend_from_slice(CONTAINER_PROPS);
         }
         "span" | "p" | "h1" | "h2" | "h3" => {

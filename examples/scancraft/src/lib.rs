@@ -378,7 +378,8 @@ fn call_activity_static_method(method: &str) {
     unsafe {
         let ctx = ndk_context::android_context();
         let vm = ctx.vm() as *mut jni::sys::JavaVM;
-        if vm.is_null() {
+        let app_ctx = ctx.context() as jni::sys::jobject;
+        if vm.is_null() || app_ctx.is_null() {
             return;
         }
         let mut env: *mut jni::sys::JNIEnv = std::ptr::null_mut();
@@ -389,19 +390,56 @@ fn call_activity_static_method(method: &str) {
         let clear_fn = (**env).v1_4.ExceptionClear;
         clear_fn(env);
 
-        let Ok(c_class) = std::ffi::CString::new("dev/craftui/app/MainActivity") else { return; };
-        let find_class_fn = (**env).v1_4.FindClass;
-        let class = find_class_fn(env, c_class.as_ptr());
-        if class.is_null() {
+        // 1. Get ClassLoader from application context
+        let get_obj_class = (**env).v1_4.GetObjectClass;
+        let app_cls = get_obj_class(env, app_ctx);
+        if app_cls.is_null() {
             return;
         }
+
+        let Ok(c_get_cl) = std::ffi::CString::new("getClassLoader") else { return; };
+        let Ok(c_get_cl_sig) = std::ffi::CString::new("()Ljava/lang/ClassLoader;") else { return; };
+        let get_method = (**env).v1_4.GetMethodID;
+        let get_cl_method = get_method(env, app_cls, c_get_cl.as_ptr(), c_get_cl_sig.as_ptr());
+        if get_cl_method.is_null() {
+            return;
+        }
+
+        let call_obj_method = (**env).v1_4.CallObjectMethod;
+        let class_loader = call_obj_method(env, app_ctx, get_cl_method);
+        if class_loader.is_null() {
+            return;
+        }
+
+        // 2. Load dev.craftui.app.MainActivity via classLoader.loadClass(...)
+        let cl_cls = get_obj_class(env, class_loader);
+        let Ok(c_load_cls) = std::ffi::CString::new("loadClass") else { return; };
+        let Ok(c_load_cls_sig) = std::ffi::CString::new("(Ljava/lang/String;)Ljava/lang/Class;") else { return; };
+        let load_cls_method = get_method(env, cl_cls, c_load_cls.as_ptr(), c_load_cls_sig.as_ptr());
+        if load_cls_method.is_null() {
+            return;
+        }
+
+        let Ok(c_act_name) = std::ffi::CString::new("dev.craftui.app.MainActivity") else { return; };
+        let new_string_utf = (**env).v1_4.NewStringUTF;
+        let act_name_str = new_string_utf(env, c_act_name.as_ptr());
+        if act_name_str.is_null() {
+            return;
+        }
+
+        let main_act_cls = call_obj_method(env, class_loader, load_cls_method, act_name_str) as jni::sys::jclass;
+        if main_act_cls.is_null() {
+            return;
+        }
+
+        // 3. Invoke MainActivity.<method>()
         let Ok(c_method) = std::ffi::CString::new(method) else { return; };
         let Ok(c_sig) = std::ffi::CString::new("()V") else { return; };
-        let get_method_fn = (**env).v1_4.GetStaticMethodID;
-        let method_id = get_method_fn(env, class, c_method.as_ptr(), c_sig.as_ptr());
+        let get_static_method = (**env).v1_4.GetStaticMethodID;
+        let method_id = get_static_method(env, main_act_cls, c_method.as_ptr(), c_sig.as_ptr());
         if !method_id.is_null() {
-            let call_fn = (**env).v1_4.CallStaticVoidMethod;
-            call_fn(env, class, method_id);
+            let call_static_void = (**env).v1_4.CallStaticVoidMethod;
+            call_static_void(env, main_act_cls, method_id);
         }
     }
 }

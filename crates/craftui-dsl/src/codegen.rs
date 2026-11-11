@@ -1227,7 +1227,7 @@ fn emit_element(
                 "{indent}let {var} = {tr}.html_view({cx}, {src_rv}, {html_rv}, None);"
             );
         }
-        "div" | "section" | "nav" => {
+        "div" | "section" | "nav" | "header" | "footer" | "main" | "article" | "aside" => {
             let class_str = find_prop(el, &["class"])
                 .and_then(|p| match &p.value {
                     Expr::String(s) => Some(s.as_str()),
@@ -1241,18 +1241,38 @@ fn emit_element(
             }
         }
         "span" | "p" | "h1" | "h2" | "h3" => {
-            let (default_size, default_weight) = match el.kind.as_str() {
+            let (mut default_size, mut default_weight) = match el.kind.as_str() {
                 "h1" => (28.0f32, 700.0f32),
                 "h2" => (24.0f32, 700.0f32),
                 "h3" => (20.0f32, 600.0f32),
                 _ => (15.0f32, 400.0f32),
             };
+            let mut style_chain = String::new();
+            if let Some(class_prop) = find_prop(el, &["class"]) {
+                if let Expr::String(s) = &class_prop.value {
+                    let tw = craftui_core::TailwindTokens::parse(s);
+                    if let Some(sz) = tw.font_size {
+                        default_size = sz;
+                    }
+                    if let Some(wt) = tw.font_weight {
+                        default_weight = wt;
+                    }
+                    if let Some(c) = tw.text_color {
+                        let (r, g, b, a) = (c.r, c.g, c.b, c.a);
+                        style_chain.push_str(&format!(".with_color(Color::rgba({r}, {g}, {b}, {a}))"));
+                    }
+                }
+            }
+            if let Some(cp) = find_prop(el, &["color"]) {
+                let col_expr = expr_to_typed_rust(&cp.value, "Color", ctx);
+                style_chain.push_str(&format!(".with_color({col_expr})"));
+            }
             let content_expr = find_prop(el, &["text", "content"])
                 .map(|p| expr_to_reactive_string(&p.value, ctx))
                 .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
             let _ = writeln!(
                 out,
-                "{indent}let {var} = {{ let __st = TextStyle::default().with_size({default_size}).with_weight({default_weight}); {tr}.text({cx}, {content_expr}, __st) }};"
+                "{indent}let {var} = {{ let __st = TextStyle::default().with_size({default_size}).with_weight({default_weight}){style_chain}; {tr}.text({cx}, {content_expr}, __st) }};"
             );
         }
         "button" => {
@@ -1541,6 +1561,14 @@ fn emit_common_props_and_events(
             } else if tw.is_row {
                 layout_init_stmts.push("ls.mode = LayoutMode::Row;".into());
             }
+            if tw.align_center {
+                layout_init_stmts.push("ls.align_items = Alignment::Center;".into());
+            }
+            if tw.justify_between {
+                layout_init_stmts.push("ls.justify_content = Justify::SpaceBetween;".into());
+            } else if tw.justify_center {
+                layout_init_stmts.push("ls.justify_content = Justify::Center;".into());
+            }
             if let Some(pad) = tw.padding {
                 layout_init_stmts.push(format!(
                     "ls.padding = Insets::new({}f32, {}f32, {}f32, {}f32);",
@@ -1551,13 +1579,25 @@ fn emit_common_props_and_events(
                 layout_init_stmts.push(format!("ls.gap_x = {gap}f32; ls.gap_y = {gap}f32;"));
             }
             if let Some(w) = tw.width {
-                if let craftui_core::Length::Pct(pct) = w {
-                    layout_init_stmts.push(format!("ls.width = Length::Pct({pct}f32);"));
+                match w {
+                    craftui_core::Length::Pct(pct) => {
+                        layout_init_stmts.push(format!("ls.width = Length::Pct({pct}f32);"));
+                    }
+                    craftui_core::Length::Px(px) => {
+                        layout_init_stmts.push(format!("ls.width = Length::Px({px}f32);"));
+                    }
+                    _ => {}
                 }
             }
             if let Some(h) = tw.height {
-                if let craftui_core::Length::Pct(pct) = h {
-                    layout_init_stmts.push(format!("ls.height = Length::Pct({pct}f32);"));
+                match h {
+                    craftui_core::Length::Pct(pct) => {
+                        layout_init_stmts.push(format!("ls.height = Length::Pct({pct}f32);"));
+                    }
+                    craftui_core::Length::Px(px) => {
+                        layout_init_stmts.push(format!("ls.height = Length::Px({px}f32);"));
+                    }
+                    _ => {}
                 }
             }
             if let Some(bg) = tw.background {
