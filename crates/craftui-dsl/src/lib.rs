@@ -267,8 +267,16 @@ export component Phase3Demo {
 }
 "#;
         let parsed = parse(src);
-        assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
-        assert_eq!(parsed.cst.text().to_string(), src, "lossless CST round-trip failed");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        assert_eq!(
+            parsed.cst.text().to_string(),
+            src,
+            "lossless CST round-trip failed"
+        );
 
         let sem_diags = validate(&parsed.file);
         assert!(sem_diags.is_empty(), "semantic diags: {sem_diags:?}");
@@ -293,7 +301,10 @@ export component Phase3Demo {
         let trans_op_pos = rust_code
             .find("AnimatableProp::Opacity")
             .expect("opacity transition generated");
-        assert!(bind_op_pos < trans_op_pos, "set_transition must come after initial set_opacity/bind_dynamic_prop");
+        assert!(
+            bind_op_pos < trans_op_pos,
+            "set_transition must come after initial set_opacity/bind_dynamic_prop"
+        );
 
         // Strict compile-time Severity::Error checks
         let invalid = r#"export component Bad {
@@ -322,14 +333,52 @@ export component Phase3Demo {
             .filter(|d| d.severity == Severity::Error)
             .map(|d| d.message.as_str())
             .collect();
-        assert!(err_msgs.iter().any(|m| m.contains("unknown component or widget")), "{err_msgs:?}");
-        assert!(err_msgs.iter().any(|m| m.contains("unknown property 'unknown_prop'")), "{err_msgs:?}");
-        assert!(err_msgs.iter().any(|m| m.contains("leaf widget 'Text' cannot contain")), "{err_msgs:?}");
-        assert!(err_msgs.iter().any(|m| m.contains("unknown event handler 'on_fake'")), "{err_msgs:?}");
-        assert!(err_msgs.iter().any(|m| m.contains("cannot mutate read-only 'in property' 'ro'")), "{err_msgs:?}");
-        assert!(err_msgs.iter().any(|m| m.contains("cannot be animated")), "{err_msgs:?}");
-        assert!(err_msgs.iter().any(|m| m.contains("does not support two-way binding")), "{err_msgs:?}");
-        assert!(err_msgs.iter().any(|m| m.contains("read-only 'in property' 'ro'")), "{err_msgs:?}");
+        assert!(
+            err_msgs
+                .iter()
+                .any(|m| m.contains("unknown component or widget")),
+            "{err_msgs:?}"
+        );
+        assert!(
+            err_msgs
+                .iter()
+                .any(|m| m.contains("unknown property 'unknown_prop'")),
+            "{err_msgs:?}"
+        );
+        assert!(
+            err_msgs
+                .iter()
+                .any(|m| m.contains("leaf widget 'Text' cannot contain")),
+            "{err_msgs:?}"
+        );
+        assert!(
+            err_msgs
+                .iter()
+                .any(|m| m.contains("unknown event handler 'on_fake'")),
+            "{err_msgs:?}"
+        );
+        assert!(
+            err_msgs
+                .iter()
+                .any(|m| m.contains("cannot mutate read-only 'in property' 'ro'")),
+            "{err_msgs:?}"
+        );
+        assert!(
+            err_msgs.iter().any(|m| m.contains("cannot be animated")),
+            "{err_msgs:?}"
+        );
+        assert!(
+            err_msgs
+                .iter()
+                .any(|m| m.contains("does not support two-way binding")),
+            "{err_msgs:?}"
+        );
+        assert!(
+            err_msgs
+                .iter()
+                .any(|m| m.contains("read-only 'in property' 'ro'")),
+            "{err_msgs:?}"
+        );
     }
 
     #[test]
@@ -392,7 +441,11 @@ export component Phase3Demo {
 }
 "#;
         let parsed = parse(src);
-        assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
         let diags = validate(&parsed.file);
         assert!(diags.is_empty(), "semantic diags: {diags:?}");
 

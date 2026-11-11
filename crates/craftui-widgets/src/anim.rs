@@ -127,7 +127,9 @@ impl AnimatedFloat {
     }
 
     pub fn set_target(&mut self, target: f32) {
-        if (target - self.target).abs() <= 1e-4 && (!self.animating || (target - self.value).abs() <= 1e-4) {
+        if (target - self.target).abs() <= 1e-4
+            && (!self.animating || (target - self.value).abs() <= 1e-4)
+        {
             return;
         }
         self.target = target;

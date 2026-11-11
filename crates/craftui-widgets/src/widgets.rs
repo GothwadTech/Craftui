@@ -339,6 +339,28 @@ pub enum WidgetKind {
         on_dismiss: Option<ToastDismissCallback>,
         manager: Option<ToastManager>,
     },
+    SegmentedControl {
+        items: ReactiveValue<Vec<String>>,
+        selected: Signal<usize>,
+        on_change: Option<IndexCallback>,
+    },
+    Accordion {
+        title: ReactiveValue<String>,
+        expanded: Signal<bool>,
+        on_change: Option<BoolCallback>,
+    },
+    DataTable {
+        columns: ReactiveValue<Vec<String>>,
+        rows: ReactiveValue<Vec<Vec<String>>>,
+        selected: Signal<usize>,
+        sort_column: Option<usize>,
+        sort_ascending: bool,
+        scroll_offset: f32,
+        striped: bool,
+        row_height: f32,
+        on_select: Option<IndexCallback>,
+        on_sort: Option<IndexCallback>,
+    },
     Overlay {
         open: ReactiveValue<bool>,
         on_close: Option<TapHandler>,

@@ -251,7 +251,7 @@ fn mount_showcase_app_inner(
     }
 
     {
-        let svc_file = services;
+        let svc_file = services.clone();
         let scr_file = screen.clone();
         screen.set_on_open_file(move || {
             let req = FileDialogRequest::open("Open CraftUI Asset or .cui Screen").with_filter(
@@ -280,10 +280,146 @@ fn mount_showcase_app_inner(
         screen.set_on_toast_dismiss(move |id| {
             if id > 0 {
                 toast_mgr.dismiss(id as u64);
-                scr_dismiss.last_action.set(format!("Dismissed toast #{id}"));
+                scr_dismiss
+                    .last_action
+                    .set(format!("Dismissed toast #{id}"));
             }
         });
     }
+
+    let mobile_perm_list = [
+        Permission::Camera,
+        Permission::LocationWhenInUse,
+        Permission::Notifications,
+        Permission::Biometrics,
+        Permission::StorageRead,
+        Permission::Vibrate,
+    ];
+
+    let update_perm_table = {
+        let svc = services.clone();
+        let scr = screen.clone();
+        let perms = mobile_perm_list.clone();
+        move || {
+            let rows: Vec<Vec<String>> = perms
+                .iter()
+                .map(|p| {
+                    let cap = match p {
+                        Permission::Camera => "Camera",
+                        Permission::LocationWhenInUse => "Location",
+                        Permission::Notifications => "Notifications",
+                        Permission::Biometrics => "Biometrics",
+                        Permission::StorageRead => "Storage Access",
+                        Permission::Vibrate => "Haptics & Vibration",
+                        _ => "Custom",
+                    };
+                    let st = svc.check_permission(p);
+                    vec![cap.to_string(), p.key().into_owned(), format!("{st:?}")]
+                })
+                .collect();
+            scr.mobile_perm_rows.set(rows);
+        }
+    };
+    update_perm_table();
+
+    {
+        let svc = services.clone();
+        let scr = screen.clone();
+        let update_fn = update_perm_table.clone();
+        let perms = mobile_perm_list;
+        screen.set_on_request_permission(move || {
+            let sel = scr.perm_table_selected.get_untracked();
+            let idx = (sel.max(0) as usize).min(perms.len().saturating_sub(1));
+            let target = &perms[idx];
+            let outcome = svc.request_permission(target);
+            let key = target.key();
+            scr.last_action
+                .set(format!("Permission {key} -> {outcome:?}"));
+            toast_mgr.push(
+                "Permission Updated",
+                format!("{key}: {outcome:?}"),
+                if outcome.is_granted() {
+                    ToastSeverity::Success
+                } else {
+                    ToastSeverity::Warning
+                },
+                3500,
+            );
+            update_fn();
+        });
+    }
+
+    {
+        let svc = services.clone();
+        let scr = screen.clone();
+        screen.set_on_trigger_haptic(move || {
+            let ok = svc.trigger_haptic(HapticStyle::Medium);
+            scr.last_action.set(format!("Haptic triggered: {ok}"));
+            toast_mgr.push(
+                "Haptic Feedback",
+                if ok {
+                    "Tactile impulse dispatched"
+                } else {
+                    "Haptics unsupported on this host"
+                },
+                ToastSeverity::Info,
+                2500,
+            );
+        });
+    }
+
+    {
+        let svc = services.clone();
+        let scr = screen.clone();
+        screen.set_on_share_payload(move || {
+            let payload =
+                SharePayload::text("CraftUI: Lightweight, beautiful cross-platform UI framework")
+                    .with_title("CraftUI Framework")
+                    .with_url("https://github.com/craftui/craftui");
+            let ok = svc.share(&payload);
+            scr.last_action.set(format!("Native share invoked: {ok}"));
+            toast_mgr.push(
+                "Native Share",
+                if ok {
+                    "Opened OS share sheet"
+                } else {
+                    "Share unavailable on this host"
+                },
+                ToastSeverity::Info,
+                3000,
+            );
+        });
+    }
+
+    cx.effect({
+        let scr = screen.clone();
+        let svc = services.clone();
+        move || {
+            let seg = scr.mobile_segment.get();
+            match seg {
+                1 => {
+                    let info = svc.device_info();
+                    let net = svc.network_status();
+                    let bat = svc.battery_state();
+                    let bat_str = bat
+                        .level_pct
+                        .map(|p| format!("{p}%"))
+                        .unwrap_or_else(|| "N/A".into());
+                    scr.last_action.set(format!(
+                        "Device: {} {} | Network: {:?} | Battery: {} (charging: {})",
+                        info.os, info.model, net, bat_str, bat.charging
+                    ));
+                }
+                2 => {
+                    scr.last_action.set(
+                        "OS Capabilities: Safe-area insets, SAF pickers, Keystore secrets"
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    });
 
     let top_bar = {
         let r_nav = router;
@@ -596,13 +732,8 @@ mod tests {
         reset_runtime();
         let cx = Scope::root();
         let mut tree = WidgetTree::new(cx);
-        let (root, _, _, screen, _) = mount_showcase_app_inner(
-            cx,
-            &mut tree,
-            None,
-            PlatformServices::in_memory(),
-            None,
-        );
+        let (root, _, _, screen, _) =
+            mount_showcase_app_inner(cx, &mut tree, None, PlatformServices::in_memory(), None);
         tree.set_root(root);
 
         let metrics = WindowMetrics {
@@ -612,7 +743,9 @@ mod tests {
         tree.layout(metrics);
 
         // Header Badge exists with configured label/icon and non-zero layout rect
-        let header_badge_id = tree.node_by_id("header_badge").expect("header_badge missing");
+        let header_badge_id = tree
+            .node_by_id("header_badge")
+            .expect("header_badge missing");
         let header_badge_rect = tree.rect(header_badge_id);
         assert!(header_badge_rect.width > 40.0 && header_badge_rect.height > 14.0);
         if let WidgetKind::Badge { label, icon, .. } =
@@ -625,9 +758,15 @@ mod tests {
         }
 
         // SplitPane lays out both panes side-by-side with >= min_first / min_second width
-        let split_id = tree.node_by_id("controls_split").expect("controls_split missing");
-        let left_id = tree.node_by_id("controls_left").expect("controls_left missing");
-        let right_id = tree.node_by_id("controls_right").expect("controls_right missing");
+        let split_id = tree
+            .node_by_id("controls_split")
+            .expect("controls_split missing");
+        let left_id = tree
+            .node_by_id("controls_left")
+            .expect("controls_left missing");
+        let right_id = tree
+            .node_by_id("controls_right")
+            .expect("controls_right missing");
         let split_rect = tree.rect(split_id);
         let left_rect = tree.rect(left_id);
         let right_rect = tree.rect(right_id);
@@ -677,7 +816,9 @@ mod tests {
         assert!((new_right.width - 220.0).abs() <= 1.0);
 
         // Tab 0 Spinner advances phase cleanly while active and stops ticking when gated off
-        let spinner_id = tree.node_by_id("controls_spinner").expect("controls_spinner missing");
+        let spinner_id = tree
+            .node_by_id("controls_spinner")
+            .expect("controls_spinner missing");
         let spinner_rect = tree.rect(spinner_id);
         assert!(spinner_rect.width >= 18.0 && spinner_rect.height >= 18.0);
         let phase0 = match &tree.nodes.get(spinner_id).unwrap().kind {
@@ -712,7 +853,9 @@ mod tests {
         // Switch to Tab 1 (Virtual Data) and verify VirtualList + Badge status pills render
         screen.active_tab.set(1);
         tree.layout(metrics);
-        let vlist_id = tree.node_by_id("virtual_data_list").expect("virtual_data_list missing");
+        let vlist_id = tree
+            .node_by_id("virtual_data_list")
+            .expect("virtual_data_list missing");
         let vlist_rect = tree.rect(vlist_id);
         assert!(vlist_rect.width > 800.0 && vlist_rect.height >= 280.0);
         let badge_labels: Vec<String> = tree
@@ -739,13 +882,8 @@ mod tests {
             MockFileDialog::new(vec![PathBuf::from("/tmp/design_tokens.cui")], None),
         );
         let disp = UiDispatcher::new();
-        let (root, _, _, screen, toast_mgr) = mount_showcase_app_inner(
-            cx,
-            &mut tree,
-            None,
-            services.clone(),
-            Some(disp.clone()),
-        );
+        let (root, _, _, screen, toast_mgr) =
+            mount_showcase_app_inner(cx, &mut tree, None, services.clone(), Some(disp.clone()));
         tree.set_root(root);
 
         let metrics = WindowMetrics {
@@ -755,17 +893,24 @@ mod tests {
         tree.layout(metrics);
 
         // Click Tab 2 ("Glass & Split") directly via Tabs widget
-        let tabs_id = tree.node_by_id("showcase_tabs").expect("showcase_tabs missing");
+        let tabs_id = tree
+            .node_by_id("showcase_tabs")
+            .expect("showcase_tabs missing");
         let tabs_rect = tree.rect(tabs_id);
         click_at(
             &mut tree,
-            Point::new(tabs_rect.x + tabs_rect.width * (2.5 / 4.0), tabs_rect.center().y),
+            Point::new(
+                tabs_rect.x + tabs_rect.width * (2.5 / 5.0),
+                tabs_rect.center().y,
+            ),
         );
         tree.layout(metrics);
         assert_eq!(screen.active_tab.get(), 2);
 
         // GlassStatCard verifies blur, shadows, pointer cursor, spring hover scale, and tap callback
-        let card_id = tree.node_by_id("glass_card_engine").expect("glass_card_engine missing");
+        let card_id = tree
+            .node_by_id("glass_card_engine")
+            .expect("glass_card_engine missing");
         let card_rect = tree.rect(card_id);
         assert!(card_rect.width > 200.0 && card_rect.height > 70.0);
         {
@@ -797,7 +942,9 @@ mod tests {
         assert!(screen.last_action.get().contains("Render Engine"));
 
         // Tab 2 Spinner advances smoothly
-        let glass_spin = tree.node_by_id("glass_spinner").expect("glass_spinner missing");
+        let glass_spin = tree
+            .node_by_id("glass_spinner")
+            .expect("glass_spinner missing");
         let gphase0 = match &tree.nodes.get(glass_spin).unwrap().kind {
             WidgetKind::Spinner { phase, .. } => *phase,
             _ => panic!("glass_spinner should be Spinner"),
@@ -812,7 +959,9 @@ mod tests {
         let before_toast_rgba = render_tree_rgba(&mut tree, 960, 700);
 
         // Notify Toast button pushes a ToastItem onto ToastHost & visibly renders
-        let notify_id = tree.node_by_id("notify_toast_btn").expect("notify_toast_btn missing");
+        let notify_id = tree
+            .node_by_id("notify_toast_btn")
+            .expect("notify_toast_btn missing");
         let notify_pt = tree.rect(notify_id).center();
         assert_eq!(tree.cursor_at(notify_pt), CursorIcon::Pointer);
         click_at(&mut tree, notify_pt);
@@ -823,7 +972,9 @@ mod tests {
         assert_ne!(before_toast_rgba, after_toast_rgba);
 
         // Copy Summary button writes clipboard via PlatformServices and adds a toast
-        let copy_id = tree.node_by_id("copy_summary_btn").expect("copy_summary_btn missing");
+        let copy_id = tree
+            .node_by_id("copy_summary_btn")
+            .expect("copy_summary_btn missing");
         let copy_pt = tree.rect(copy_id).center();
         click_at(&mut tree, copy_pt);
         tree.layout(metrics);
@@ -833,7 +984,9 @@ mod tests {
         assert_eq!(toast_mgr.len(), 2);
 
         // Open File Dialog button runs worker off UI thread and delivers result onto dispatcher
-        let open_id = tree.node_by_id("open_file_btn").expect("open_file_btn missing");
+        let open_id = tree
+            .node_by_id("open_file_btn")
+            .expect("open_file_btn missing");
         let open_pt = tree.rect(open_id).center();
         click_at(&mut tree, open_pt);
         for _ in 0..100 {
@@ -848,7 +1001,9 @@ mod tests {
         assert_eq!(toast_mgr.len(), 3);
 
         // Clicking ToastHost close button fires on_dismiss and removes toast
-        let toast_host_id = tree.node_by_id("showcase_toasts").expect("showcase_toasts missing");
+        let toast_host_id = tree
+            .node_by_id("showcase_toasts")
+            .expect("showcase_toasts missing");
         let th_rect = tree.rect(toast_host_id);
         let card_w = (th_rect.width - 32.0).clamp(180.0, 340.0);
         let card_x = th_rect.max_x() - 16.0 - card_w;
@@ -863,17 +1018,26 @@ mod tests {
         // Switch to Tab 3 ("Overlays") & verify Modal (blur 12), BottomSheet (blur 14), PopupMenu
         click_at(
             &mut tree,
-            Point::new(tabs_rect.x + tabs_rect.width * (3.5 / 4.0), tabs_rect.center().y),
+            Point::new(
+                tabs_rect.x + tabs_rect.width * (3.5 / 5.0),
+                tabs_rect.center().y,
+            ),
         );
         tree.layout(metrics);
         assert_eq!(screen.active_tab.get(), 3);
 
-        let modal_id = tree.node_by_id("showcase_modal").expect("showcase_modal missing");
-        let sheet_id = tree.node_by_id("showcase_sheet").expect("showcase_sheet missing");
+        let modal_id = tree
+            .node_by_id("showcase_modal")
+            .expect("showcase_modal missing");
+        let sheet_id = tree
+            .node_by_id("showcase_sheet")
+            .expect("showcase_sheet missing");
         assert!((tree.nodes.get(modal_id).unwrap().box_style.backdrop_blur - 12.0).abs() < 1e-3);
         assert!((tree.nodes.get(sheet_id).unwrap().box_style.backdrop_blur - 14.0).abs() < 1e-3);
 
-        let open_modal_btn = tree.node_by_id("open_modal_btn").expect("open_modal_btn missing");
+        let open_modal_btn = tree
+            .node_by_id("open_modal_btn")
+            .expect("open_modal_btn missing");
         let open_modal_pt = tree.rect(open_modal_btn).center();
         click_at(&mut tree, open_modal_pt);
         tree.layout(metrics);
@@ -881,19 +1045,24 @@ mod tests {
         let modal_rgba = render_tree_rgba(&mut tree, 960, 700);
         assert!(modal_rgba.iter().any(|&b| b > 40));
 
-        let close_modal_btn = tree.node_by_id("close_modal_btn").expect("close_modal_btn missing");
+        let close_modal_btn = tree
+            .node_by_id("close_modal_btn")
+            .expect("close_modal_btn missing");
         let close_modal_pt = tree.rect(close_modal_btn).center();
         click_at(&mut tree, close_modal_pt);
         tree.layout(metrics);
         assert!(!screen.show_modal.get());
 
-        let open_sheet_btn = tree.node_by_id("open_sheet_btn").expect("open_sheet_btn missing");
+        let open_sheet_btn = tree
+            .node_by_id("open_sheet_btn")
+            .expect("open_sheet_btn missing");
         let open_sheet_pt = tree.rect(open_sheet_btn).center();
         click_at(&mut tree, open_sheet_pt);
         tree.layout(metrics);
         assert!(screen.show_sheet.get());
-        let dismiss_sheet_btn =
-            tree.node_by_id("dismiss_sheet_btn").expect("dismiss_sheet_btn missing");
+        let dismiss_sheet_btn = tree
+            .node_by_id("dismiss_sheet_btn")
+            .expect("dismiss_sheet_btn missing");
         let dismiss_sheet_pt = tree.rect(dismiss_sheet_btn).center();
         click_at(&mut tree, dismiss_sheet_pt);
         tree.layout(metrics);
@@ -915,5 +1084,44 @@ mod tests {
         }));
         tree.layout(metrics);
         assert!(!screen.show_menu.get());
+
+        // Switch to Tab 4 ("Mobile & Native") & verify SafeArea, SegmentedControl, Accordion, DataTable
+        click_at(
+            &mut tree,
+            Point::new(
+                tabs_rect.x + tabs_rect.width * (4.5 / 5.0),
+                tabs_rect.center().y,
+            ),
+        );
+        tree.layout(metrics);
+        assert_eq!(screen.active_tab.get(), 4);
+
+        let mobile_panel = tree
+            .node_by_id("mobile_tab_panel")
+            .expect("mobile_tab_panel missing");
+        assert!(tree.rect(mobile_panel).width > 400.0);
+
+        // Click Request Selected button -> triggers on_request_permission -> updates permission table & pushes toast
+        let req_btn = tree
+            .node_by_id("req_perm_btn")
+            .expect("req_perm_btn missing");
+        let req_pt = tree.rect(req_btn).center();
+        click_at(&mut tree, req_pt);
+        tree.layout(metrics);
+        assert!(screen.last_action.get().contains("Permission"));
+
+        // Click Trigger Haptic button -> dispatches haptic feedback
+        let haptic_btn = tree.node_by_id("haptic_btn").expect("haptic_btn missing");
+        let haptic_pt = tree.rect(haptic_btn).center();
+        click_at(&mut tree, haptic_pt);
+        tree.layout(metrics);
+        assert!(screen.last_action.get().contains("Haptic triggered"));
+
+        // Click Share Link button -> invokes native OS share sheet
+        let share_btn = tree.node_by_id("share_btn").expect("share_btn missing");
+        let share_pt = tree.rect(share_btn).center();
+        click_at(&mut tree, share_pt);
+        tree.layout(metrics);
+        assert!(screen.last_action.get().contains("Native share invoked"));
     }
 }

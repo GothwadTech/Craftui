@@ -211,7 +211,10 @@ pub enum Stmt {
         then_branch: Vec<Stmt>,
         else_branch: Vec<Stmt>,
     },
-    Call { callee: String, args: Vec<Expr> },
+    Call {
+        callee: String,
+        args: Vec<Expr>,
+    },
     Expr(Expr),
 }
 

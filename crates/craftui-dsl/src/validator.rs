@@ -28,6 +28,9 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "Slider",
     "Tabs",
     "TabBar",
+    "SegmentedControl",
+    "Accordion",
+    "DataTable",
     "Select",
     "Dropdown",
     "RadioGroup",
@@ -152,7 +155,6 @@ pub const BUILTIN_PROPS: &[&str] = &[
     "placeholder",
     "multiline",
     "direction",
-    "columns",
     "thickness",
     "title",
     "active",
@@ -160,6 +162,11 @@ pub const BUILTIN_PROPS: &[&str] = &[
     "tabs",
     "options",
     "items",
+    "columns",
+    "rows",
+    "striped",
+    "row_height",
+    "expanded",
     "model",
     "item_count",
     "count",
@@ -188,6 +195,8 @@ pub const BUILTIN_EVENTS: &[&str] = &[
     "on_close",
     "on_dismiss",
     "on_select",
+    "on_toggle",
+    "on_sort",
     "on_hover",
     "on_double_tap",
     "on_long_press",
@@ -217,6 +226,7 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "Modal"
             | "BottomSheet"
             | "SplitPane"
+            | "Accordion"
             | "Button"
     )
 }
@@ -306,8 +316,22 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "Checkbox" | "Switch" => {
             out.extend_from_slice(&["checked", "value", "label", "text"]);
         }
-        "Tabs" | "TabBar" => {
+        "Tabs" | "TabBar" | "SegmentedControl" => {
             out.extend_from_slice(&["tabs", "items", "options", "active", "selected", "value"]);
+        }
+        "Accordion" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["title", "label", "text", "expanded", "open"]);
+        }
+        "DataTable" => {
+            out.extend_from_slice(&[
+                "columns",
+                "rows",
+                "items",
+                "selected",
+                "striped",
+                "row_height",
+            ]);
         }
         "Select" | "Dropdown" => {
             out.extend_from_slice(&[
@@ -340,7 +364,13 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         }
         "SplitPane" => {
             out.extend_from_slice(CONTAINER_PROPS);
-            out.extend_from_slice(&["direction", "ratio", "min_first", "min_second", "divider_size"]);
+            out.extend_from_slice(&[
+                "direction",
+                "ratio",
+                "min_first",
+                "min_second",
+                "divider_size",
+            ]);
         }
         "ToastHost" => {
             out.push("items");
@@ -358,9 +388,11 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
     match kind {
         "Slider" | "Checkbox" | "Switch" | "SplitPane" => out.push("on_change"),
         "TextInput" | "TextArea" => out.extend_from_slice(&["on_change", "on_submit"]),
-        "Tabs" | "TabBar" | "Select" | "Dropdown" | "RadioGroup" => {
+        "Tabs" | "TabBar" | "SegmentedControl" | "Select" | "Dropdown" | "RadioGroup" => {
             out.extend_from_slice(&["on_change", "on_select"]);
         }
+        "Accordion" => out.extend_from_slice(&["on_change", "on_toggle"]),
+        "DataTable" => out.extend_from_slice(&["on_select", "on_change", "on_sort"]),
         "PopupMenu" => out.extend_from_slice(&["on_select", "on_change", "on_close"]),
         "ToastHost" => out.push("on_dismiss"),
         "Modal" | "BottomSheet" => out.push("on_close"),
@@ -375,7 +407,9 @@ fn widget_supports_two_way(kind: &str, prop: &str) -> bool {
         "Slider" => prop == "value",
         "SplitPane" => prop == "ratio",
         "Checkbox" | "Switch" => matches!(prop, "checked" | "value"),
-        "Tabs" | "TabBar" => matches!(prop, "active" | "selected" | "value"),
+        "Tabs" | "TabBar" | "SegmentedControl" => matches!(prop, "active" | "selected" | "value"),
+        "Accordion" => matches!(prop, "expanded" | "open"),
+        "DataTable" => prop == "selected",
         "Select" | "Dropdown" | "RadioGroup" => matches!(prop, "selected" | "value"),
         "Modal" | "BottomSheet" | "PopupMenu" => matches!(prop, "open" | "visible"),
         _ => false,
@@ -418,8 +452,11 @@ pub fn validate_file_with_symbols(
         BUILTIN_WIDGETS.iter().map(|s| (*s).to_string()).collect();
     known_components.extend(imported_symbols.iter().cloned());
 
-    let struct_map: HashMap<&str, &StructDecl> =
-        merged.structs.iter().map(|s| (s.name.as_str(), s)).collect();
+    let struct_map: HashMap<&str, &StructDecl> = merged
+        .structs
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
     let enum_map: HashMap<&str, &EnumDecl> =
         merged.enums.iter().map(|e| (e.name.as_str(), e)).collect();
     let comp_map: HashMap<&str, &ComponentDecl> = merged
@@ -533,7 +570,13 @@ pub fn validate_file_with_symbols(
                 });
             }
             if let Some(ref expr) = prop.default_value {
-                validate_expr(expr, Some(prop.name.as_str()), prop.span, &init_ctx, &mut diags);
+                validate_expr(
+                    expr,
+                    Some(prop.name.as_str()),
+                    prop.span,
+                    &init_ctx,
+                    &mut diags,
+                );
             }
         }
 
@@ -786,11 +829,33 @@ fn populate_handler_locals(
             locals.insert("value".into(), TypeExpr::Named("string".into()));
             locals.insert("text".into(), TypeExpr::Named("string".into()));
         }
-        ("Tabs" | "TabBar" | "Select" | "Dropdown" | "RadioGroup" | "PopupMenu", "on_change" | "on_select") => {
+        (
+            "Tabs" | "TabBar" | "SegmentedControl" | "Select" | "Dropdown" | "RadioGroup"
+            | "PopupMenu",
+            "on_change" | "on_select",
+        ) => {
             locals.insert("index".into(), TypeExpr::Named("int".into()));
             locals.insert("idx".into(), TypeExpr::Named("int".into()));
             locals.insert("selected".into(), TypeExpr::Named("int".into()));
             locals.insert("active".into(), TypeExpr::Named("int".into()));
+            locals.insert("value".into(), TypeExpr::Named("int".into()));
+        }
+        ("Accordion", "on_change" | "on_toggle") => {
+            locals.insert("expanded".into(), TypeExpr::Named("bool".into()));
+            locals.insert("open".into(), TypeExpr::Named("bool".into()));
+            locals.insert("value".into(), TypeExpr::Named("bool".into()));
+        }
+        ("DataTable", "on_select" | "on_change") => {
+            locals.insert("index".into(), TypeExpr::Named("int".into()));
+            locals.insert("idx".into(), TypeExpr::Named("int".into()));
+            locals.insert("selected".into(), TypeExpr::Named("int".into()));
+            locals.insert("value".into(), TypeExpr::Named("int".into()));
+        }
+        ("DataTable", "on_sort") => {
+            locals.insert("column".into(), TypeExpr::Named("int".into()));
+            locals.insert("col".into(), TypeExpr::Named("int".into()));
+            locals.insert("index".into(), TypeExpr::Named("int".into()));
+            locals.insert("idx".into(), TypeExpr::Named("int".into()));
             locals.insert("value".into(), TypeExpr::Named("int".into()));
         }
         _ => {}
@@ -816,7 +881,9 @@ fn validate_animate_spec(spec: &AnimateSpec, ctx: &ScopeCtx<'_>, diags: &mut Vec
                     diags.push(Diagnostic {
                         span: spec.span,
                         severity: Severity::Error,
-                        message: "animate 'duration' expects a duration (e.g. 180ms or 0.2s) or number".into(),
+                        message:
+                            "animate 'duration' expects a duration (e.g. 180ms or 0.2s) or number"
+                                .into(),
                     });
                 }
             }
@@ -834,8 +901,8 @@ fn validate_animate_spec(spec: &AnimateSpec, ctx: &ScopeCtx<'_>, diags: &mut Vec
                     diags.push(Diagnostic {
                         span: spec.span,
                         severity: Severity::Error,
-                        message:
-                            "animate 'easing' must be Linear, EaseIn, EaseOut, or EaseInOut".into(),
+                        message: "animate 'easing' must be Linear, EaseIn, EaseOut, or EaseInOut"
+                            .into(),
                     });
                 }
             }
@@ -1355,7 +1422,9 @@ fn validate_expr(
                         diags.push(Diagnostic {
                             span,
                             severity: Severity::Error,
-                            message: format!("unknown SafeArea member '{field}' (expected 'insets')"),
+                            message: format!(
+                                "unknown SafeArea member '{field}' (expected 'insets')"
+                            ),
                         });
                     }
                     return;
@@ -1428,7 +1497,9 @@ fn validate_expr(
                         diags.push(Diagnostic {
                             span,
                             severity: Severity::Error,
-                            message: format!("unknown field '{fname}' in struct literal 'ToastItem'"),
+                            message: format!(
+                                "unknown field '{fname}' in struct literal 'ToastItem'"
+                            ),
                         });
                     }
                 }

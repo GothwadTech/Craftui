@@ -1,6 +1,4 @@
-use crate::anim::{
-    AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, TransitionCurve,
-};
+use crate::anim::{AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, TransitionCurve};
 use crate::gesture::{GestureArena, RecognizedGesture, ScrollPhysics};
 use crate::inspector::InspectorState;
 use crate::router::{Router, RouterTransition};
@@ -50,6 +48,8 @@ pub struct WidgetNode {
     pub disabled: Option<ReactiveValue<bool>>,
     cached_text: String,
     cached_style: TextStyle,
+    taffy_collapsed_override: bool,
+    taffy_hidden_by_parent: bool,
 }
 
 impl WidgetNode {
@@ -80,6 +80,8 @@ impl WidgetNode {
             disabled: None,
             cached_text: String::new(),
             cached_style: TextStyle::default(),
+            taffy_collapsed_override: false,
+            taffy_hidden_by_parent: false,
         }
     }
 
@@ -137,7 +139,9 @@ struct NodeAnimState {
 
 impl NodeAnimState {
     fn is_animating(&self) -> bool {
-        self.opacity.as_ref().is_some_and(AnimatedFloat::is_animating)
+        self.opacity
+            .as_ref()
+            .is_some_and(AnimatedFloat::is_animating)
             || self
                 .translate_x
                 .as_ref()
@@ -146,8 +150,14 @@ impl NodeAnimState {
                 .translate_y
                 .as_ref()
                 .is_some_and(AnimatedFloat::is_animating)
-            || self.scale_x.as_ref().is_some_and(AnimatedFloat::is_animating)
-            || self.scale_y.as_ref().is_some_and(AnimatedFloat::is_animating)
+            || self
+                .scale_x
+                .as_ref()
+                .is_some_and(AnimatedFloat::is_animating)
+            || self
+                .scale_y
+                .as_ref()
+                .is_some_and(AnimatedFloat::is_animating)
             || self
                 .rotation
                 .as_ref()
@@ -208,6 +218,9 @@ enum ControlVisualAnim {
     Tabs {
         active_t: AnimatedFloat,
     },
+    SegmentedControl {
+        active_t: AnimatedFloat,
+    },
     Slider {
         frac_t: AnimatedFloat,
         hover_t: AnimatedFloat,
@@ -226,7 +239,9 @@ impl ControlVisualAnim {
             Self::Button { hover_t, press_t } => hover_t.is_animating() || press_t.is_animating(),
             Self::Switch { knob_t } => knob_t.is_animating(),
             Self::Checkbox { check_t } => check_t.is_animating(),
-            Self::Tabs { active_t } => active_t.is_animating(),
+            Self::Tabs { active_t } | Self::SegmentedControl { active_t } => {
+                active_t.is_animating()
+            }
             Self::Slider {
                 frac_t,
                 hover_t,
@@ -246,7 +261,7 @@ impl ControlVisualAnim {
             }
             Self::Switch { knob_t } => knob_t.step(dt_sec),
             Self::Checkbox { check_t } => check_t.step(dt_sec),
-            Self::Tabs { active_t } => active_t.step(dt_sec),
+            Self::Tabs { active_t } | Self::SegmentedControl { active_t } => active_t.step(dt_sec),
             Self::Slider {
                 frac_t,
                 hover_t,
@@ -447,6 +462,14 @@ impl WidgetTree {
                     TransitionCurve::spring(360.0, 30.0),
                 ),
             }),
+            WidgetKind::SegmentedControl { selected, .. } => {
+                Some(ControlVisualAnim::SegmentedControl {
+                    active_t: AnimatedFloat::new(
+                        selected.get_untracked() as f32,
+                        TransitionCurve::spring(360.0, 30.0),
+                    ),
+                })
+            }
             WidgetKind::Slider {
                 value, min, max, ..
             } => {
@@ -510,6 +533,17 @@ impl WidgetTree {
                 let count = tabs.get().len();
                 if count > 0 {
                     active_t.set_target(active.get_untracked().min(count - 1) as f32);
+                }
+            }
+            (
+                WidgetKind::SegmentedControl {
+                    items, selected, ..
+                },
+                ControlVisualAnim::SegmentedControl { active_t },
+            ) => {
+                let count = items.get().len();
+                if count > 0 {
+                    active_t.set_target(selected.get_untracked().min(count - 1) as f32);
                 }
             }
             (
@@ -793,6 +827,53 @@ impl WidgetTree {
                     });
                 }
             }
+            WidgetKind::SegmentedControl {
+                items, selected, ..
+            } => {
+                selected.bind_node(id, DirtyFlags::PAINT | DirtyFlags::A11Y);
+                let items = items.clone();
+                if items.is_dynamic() {
+                    scope.effect(move || {
+                        let _ = items.get();
+                        mark_node_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                    });
+                }
+            }
+            WidgetKind::Accordion {
+                title, expanded, ..
+            } => {
+                expanded.bind_node(
+                    id,
+                    DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::A11Y,
+                );
+                let title = title.clone();
+                if title.is_dynamic() {
+                    scope.effect(move || {
+                        let _ = title.get();
+                        mark_node_dirty(
+                            id,
+                            DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::A11Y,
+                        );
+                    });
+                }
+            }
+            WidgetKind::DataTable {
+                columns,
+                rows,
+                selected,
+                ..
+            } => {
+                selected.bind_node(id, DirtyFlags::PAINT | DirtyFlags::A11Y);
+                let columns = columns.clone();
+                let rows = rows.clone();
+                if columns.is_dynamic() || rows.is_dynamic() {
+                    scope.effect(move || {
+                        let _ = columns.get();
+                        let _ = rows.get();
+                        mark_node_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                    });
+                }
+            }
             _ => {}
         }
 
@@ -969,7 +1050,8 @@ impl WidgetTree {
     /// Next wake delay (in ms) required by internal blink timers when idle, if any.
     pub fn next_internal_delay_ms(&self, now_ms: u64) -> Option<u64> {
         if self.focused_is_text_input() {
-            self.caret_next_toggle_ms.map(|due| due.saturating_sub(now_ms))
+            self.caret_next_toggle_ms
+                .map(|due| due.saturating_sub(now_ms))
         } else {
             None
         }
@@ -1535,6 +1617,129 @@ impl WidgetTree {
         id
     }
 
+    pub fn segmented_control(
+        &mut self,
+        scope: Scope,
+        items: impl Into<ReactiveValue<Vec<String>>>,
+        selected: Signal<usize>,
+    ) -> NodeId {
+        let id = self.spawn_node(
+            "SegmentedControl",
+            WidgetKind::SegmentedControl {
+                items: items.into(),
+                selected,
+                on_change: None,
+            },
+            LayoutStyle::row().with_height(Length::Dp(36.0)),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.box_style.radius = CornerRadii::all(10.0);
+            n.a11y.role = A11yRole::TabList;
+            n.a11y.numeric_value = Some(selected.get_untracked() as f64);
+            n.a11y.focusable = true;
+        }
+        id
+    }
+
+    pub fn accordion(
+        &mut self,
+        scope: Scope,
+        title: impl Into<ReactiveValue<String>>,
+        expanded: Signal<bool>,
+    ) -> NodeId {
+        let title_rv = title.into();
+        let lbl = title_rv.get();
+        let is_exp = expanded.get_untracked();
+        let mut layout = LayoutStyle::column();
+        layout.header_top_inset = 44.0;
+        let id = self.spawn_node(
+            "Accordion",
+            WidgetKind::Accordion {
+                title: title_rv,
+                expanded,
+                on_change: None,
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.box_style.radius = CornerRadii::all(10.0);
+            n.a11y.role = A11yRole::Button;
+            n.a11y.label = Some(lbl);
+            n.a11y.checked = Some(is_exp);
+            n.a11y.focusable = true;
+        }
+        id
+    }
+
+    pub fn data_table(
+        &mut self,
+        scope: Scope,
+        columns: impl Into<ReactiveValue<Vec<String>>>,
+        rows: impl Into<ReactiveValue<Vec<Vec<String>>>>,
+        selected: Signal<usize>,
+    ) -> NodeId {
+        let id = self.spawn_node(
+            "DataTable",
+            WidgetKind::DataTable {
+                columns: columns.into(),
+                rows: rows.into(),
+                selected,
+                sort_column: None,
+                sort_ascending: true,
+                scroll_offset: 0.0,
+                striped: true,
+                row_height: 36.0,
+                on_select: None,
+                on_sort: None,
+            },
+            LayoutStyle::column(),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.box_style.radius = CornerRadii::all(8.0);
+            n.box_style.clip = true;
+            n.a11y.role = A11yRole::List;
+            n.a11y.numeric_value = Some(selected.get_untracked() as f64);
+            n.a11y.focusable = true;
+        }
+        id
+    }
+
+    pub fn set_data_table_options(
+        &mut self,
+        node: NodeId,
+        striped_opt: Option<bool>,
+        row_height_opt: Option<f32>,
+    ) {
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::DataTable {
+                striped,
+                row_height,
+                ..
+            } = &mut n.kind
+        {
+            if let Some(s) = striped_opt {
+                *striped = s;
+            }
+            if let Some(rh) = row_height_opt {
+                *row_height = rh.clamp(24.0, 96.0);
+                n.dirty |= DirtyFlags::LAYOUT;
+                self.layout_engine.mark_dirty(node);
+            }
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_on_sort(&mut self, node: NodeId, cb: impl FnMut(usize) + 'static) {
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::DataTable { on_sort, .. } = &mut n.kind
+        {
+            *on_sort = Some(Rc::new(RefCell::new(cb)));
+        }
+    }
+
     pub fn popup_menu(
         &mut self,
         scope: Scope,
@@ -1681,11 +1886,7 @@ impl WidgetTree {
         }
     }
 
-    pub fn badge(
-        &mut self,
-        scope: Scope,
-        label: impl Into<ReactiveValue<String>>,
-    ) -> NodeId {
+    pub fn badge(&mut self, scope: Scope, label: impl Into<ReactiveValue<String>>) -> NodeId {
         let rv = label.into();
         let text = rv.get();
         let id = self.spawn_node(
@@ -1994,11 +2195,33 @@ impl WidgetTree {
         id
     }
 
-    pub fn set_layout(&mut self, node: NodeId, layout: LayoutStyle) {
+    fn effective_taffy_layout(n: &WidgetNode) -> LayoutStyle {
+        let mut st = n.layout.clone();
+        if n.taffy_collapsed_override {
+            st.height = Length::Dp(44.0);
+            st.min_height = Length::Dp(44.0);
+            st.max_height = Length::Dp(44.0);
+            st.padding.top = 0.0;
+            st.padding.bottom = 0.0;
+        }
+        if n.taffy_hidden_by_parent {
+            st.hidden = true;
+        }
+        st
+    }
+
+    pub fn set_layout(&mut self, node: NodeId, mut layout: LayoutStyle) {
         if let Some(n) = self.nodes.get_mut(node) {
-            n.layout = layout.clone();
+            if matches!(n.kind, WidgetKind::SafeArea) {
+                layout.safe_area = true;
+            }
+            if matches!(n.kind, WidgetKind::Accordion { .. }) {
+                layout.header_top_inset = 44.0;
+            }
+            n.layout = layout;
             n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
-            self.layout_engine.upsert_node(node, layout);
+            let eff = Self::effective_taffy_layout(n);
+            self.layout_engine.upsert_node(node, eff);
             self.layout_engine.mark_dirty(node);
         }
     }
@@ -2137,10 +2360,14 @@ impl WidgetTree {
             return;
         };
         let initial_opacity = n.box_style.opacity;
-        let initial_bg = n.box_style.background.as_ref().and_then(|rv| match rv.get() {
-            Brush::Solid(c) => Some(c),
-            _ => None,
-        });
+        let initial_bg = n
+            .box_style
+            .background
+            .as_ref()
+            .and_then(|rv| match rv.get() {
+                Brush::Solid(c) => Some(c),
+                _ => None,
+            });
         let initial_bc = n
             .box_style
             .border_color
@@ -2393,9 +2620,15 @@ impl WidgetTree {
             .map(|n| n.box_style.transform)
             .unwrap_or(Transform2D::IDENTITY);
         let anim = self.node_anims.get(id);
-        let sx = anim.and_then(|a| a.scale_x.as_ref()).map_or(1.0, |v| v.value);
-        let sy = anim.and_then(|a| a.scale_y.as_ref()).map_or(1.0, |v| v.value);
-        let rot = anim.and_then(|a| a.rotation.as_ref()).map_or(0.0, |v| v.value);
+        let sx = anim
+            .and_then(|a| a.scale_x.as_ref())
+            .map_or(1.0, |v| v.value);
+        let sy = anim
+            .and_then(|a| a.scale_y.as_ref())
+            .map_or(1.0, |v| v.value);
+        let rot = anim
+            .and_then(|a| a.rotation.as_ref())
+            .map_or(0.0, |v| v.value);
         let tx = anim
             .and_then(|a| a.translate_x.as_ref())
             .map_or(0.0, |v| v.value);
@@ -2436,6 +2669,9 @@ impl WidgetTree {
             | WidgetKind::Checkbox { .. }
             | WidgetKind::Switch { .. }
             | WidgetKind::Tabs { .. }
+            | WidgetKind::SegmentedControl { .. }
+            | WidgetKind::Accordion { .. }
+            | WidgetKind::DataTable { .. }
             | WidgetKind::Select { .. }
             | WidgetKind::RadioGroup { .. } => CursorIcon::Pointer,
             WidgetKind::TextInput { .. } => CursorIcon::Text,
@@ -2479,12 +2715,11 @@ impl WidgetTree {
                 };
             }
         }
-        if self.control_anims.values().any(|anim| {
-            matches!(
-                anim,
-                ControlVisualAnim::Slider { dragging: true, .. }
-            )
-        }) {
+        if self
+            .control_anims
+            .values()
+            .any(|anim| matches!(anim, ControlVisualAnim::Slider { dragging: true, .. }))
+        {
             return CursorIcon::Grabbing;
         }
 
@@ -2537,13 +2772,26 @@ impl WidgetTree {
                                     Axis::Vertical => CursorIcon::ResizeVertical,
                                 };
                             }
+                        } else if let WidgetKind::Accordion { .. } = &n.kind {
+                            if let Some(pt) = point_opt {
+                                let local_pt = self.screen_to_node_local_point(nid, pt);
+                                let base_rect = self.node_visual_rect(nid);
+                                if local_pt.y <= base_rect.y + 44.0 {
+                                    return CursorIcon::Pointer;
+                                }
+                                return CursorIcon::Default;
+                            }
+                            return CursorIcon::Pointer;
                         } else if let WidgetKind::ToastHost { items, .. } = &n.kind {
                             if let Some(pt) = point_opt {
                                 let local_pt = self.screen_to_node_local_point(nid, pt);
                                 let base_rect = self.node_visual_rect(nid);
                                 let (_, closes) =
                                     Self::toast_card_rects(base_rect, items.get().len());
-                                if closes.iter().any(|cr| cr.inflate(6.0, 6.0).contains(local_pt)) {
+                                if closes
+                                    .iter()
+                                    .any(|cr| cr.inflate(6.0, 6.0).contains(local_pt))
+                                {
                                     return CursorIcon::Pointer;
                                 }
                             }
@@ -2681,7 +2929,9 @@ impl WidgetTree {
         if let Some(n) = self.nodes.get_mut(node) {
             let rc: BoolCallback = Rc::new(RefCell::new(cb));
             match &mut n.kind {
-                WidgetKind::Checkbox { on_change, .. } | WidgetKind::Switch { on_change, .. } => {
+                WidgetKind::Checkbox { on_change, .. }
+                | WidgetKind::Switch { on_change, .. }
+                | WidgetKind::Accordion { on_change, .. } => {
                     *on_change = Some(rc);
                 }
                 _ => {}
@@ -2693,8 +2943,7 @@ impl WidgetTree {
         if let Some(n) = self.nodes.get_mut(node) {
             let rc: FloatCallback = Rc::new(RefCell::new(cb));
             match &mut n.kind {
-                WidgetKind::Slider { on_change, .. }
-                | WidgetKind::SplitPane { on_change, .. } => {
+                WidgetKind::Slider { on_change, .. } | WidgetKind::SplitPane { on_change, .. } => {
                     *on_change = Some(rc);
                 }
                 _ => {}
@@ -2707,11 +2956,13 @@ impl WidgetTree {
             let rc: IndexCallback = Rc::new(RefCell::new(cb));
             match &mut n.kind {
                 WidgetKind::Tabs { on_change, .. }
+                | WidgetKind::SegmentedControl { on_change, .. }
                 | WidgetKind::Select { on_change, .. }
                 | WidgetKind::RadioGroup { on_change, .. } => {
                     *on_change = Some(rc);
                 }
-                WidgetKind::PopupMenu { on_select, .. } => {
+                WidgetKind::DataTable { on_select, .. }
+                | WidgetKind::PopupMenu { on_select, .. } => {
                     *on_select = Some(rc);
                 }
                 _ => {}
@@ -3151,7 +3402,7 @@ impl WidgetTree {
             let Some(node) = self.nodes.get(nid) else {
                 return true;
             };
-            if node.layout.hidden {
+            if node.layout.hidden || node.taffy_hidden_by_parent {
                 return true;
             }
             if node
@@ -3164,6 +3415,11 @@ impl WidgetTree {
             match &node.kind {
                 WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. }
                     if craftui_reactive::untrack(|| !open.get()) =>
+                {
+                    return true;
+                }
+                WidgetKind::Accordion { expanded, .. }
+                    if nid != id && craftui_reactive::untrack(|| !expanded.get()) =>
                 {
                     return true;
                 }
@@ -3406,6 +3662,18 @@ impl WidgetTree {
                     WidgetKind::Tabs { active, .. } => {
                         node.a11y.numeric_value = Some(active.get_untracked() as f64);
                     }
+                    WidgetKind::SegmentedControl { selected, .. } => {
+                        node.a11y.numeric_value = Some(selected.get_untracked() as f64);
+                    }
+                    WidgetKind::Accordion {
+                        title, expanded, ..
+                    } => {
+                        node.a11y.label = Some(title.get());
+                        node.a11y.checked = Some(expanded.get_untracked());
+                    }
+                    WidgetKind::DataTable { selected, .. } => {
+                        node.a11y.numeric_value = Some(selected.get_untracked() as f64);
+                    }
                     WidgetKind::Select {
                         options, selected, ..
                     } => {
@@ -3424,7 +3692,8 @@ impl WidgetTree {
                     }
                     WidgetKind::ToastHost { items, .. } => {
                         let list = items.get();
-                        node.a11y.value = list.last().map(|t| format!("{}: {}", t.title, t.message));
+                        node.a11y.value =
+                            list.last().map(|t| format!("{}: {}", t.title, t.message));
                     }
                     WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. } => {
                         let should_show = open.get();
@@ -3442,7 +3711,7 @@ impl WidgetTree {
                     _ => {}
                 }
                 if layout_changed {
-                    let st = node.layout.clone();
+                    let st = Self::effective_taffy_layout(node);
                     self.layout_engine.upsert_node(id, st);
                     self.layout_engine.mark_dirty(id);
                 }
@@ -3454,6 +3723,8 @@ impl WidgetTree {
         let Some(root) = self.root else {
             return dirty_count;
         };
+
+        self.sync_accordions();
 
         // Pass 1: solve layout
         self.solve_taffy(root, metrics);
@@ -3589,6 +3860,44 @@ impl WidgetTree {
                             })
                             .sum();
                         Size::new(total_w.max(160.0), 40.0)
+                    }
+                    WidgetKind::SegmentedControl { items, .. } => {
+                        let list = items.get();
+                        let total_w: f32 = list
+                            .iter()
+                            .map(|t| {
+                                text_engine
+                                    .measure(t, &TextStyle::default().with_size(13.5), None)
+                                    .width
+                                    + 24.0
+                            })
+                            .sum();
+                        Size::new(total_w.max(140.0), 36.0)
+                    }
+                    WidgetKind::Accordion {
+                        title, expanded, ..
+                    } => {
+                        let title_w = text_engine
+                            .measure(
+                                &title.get(),
+                                &TextStyle::default().with_size(14.0).with_weight(600.0),
+                                None,
+                            )
+                            .width;
+                        let h = if expanded.get_untracked() { 0.0 } else { 44.0 };
+                        Size::new((title_w + 52.0).max(180.0), h)
+                    }
+                    WidgetKind::DataTable {
+                        columns,
+                        rows,
+                        row_height,
+                        ..
+                    } => {
+                        let col_count = columns.get().len().max(1);
+                        let row_count = rows.get().len();
+                        let w = (col_count as f32 * 120.0).max(240.0);
+                        let h = 38.0 + (row_count as f32 * *row_height).min(320.0).max(*row_height);
+                        Size::new(w, h)
                     }
                     WidgetKind::Select { .. } => Size::new(180.0, 40.0),
                     WidgetKind::RadioGroup { options, axis, .. } => {
@@ -3790,9 +4099,12 @@ impl WidgetTree {
         let first_px = (usable * ratio.clamp(0.0, 1.0)).clamp(min_f, max_f);
         let second_px = (usable - first_px).max(0.0);
         let div_rect = match axis {
-            Axis::Horizontal => {
-                Rect::new(inner_rect.x + first_px, inner_rect.y, div, inner_rect.height)
-            }
+            Axis::Horizontal => Rect::new(
+                inner_rect.x + first_px,
+                inner_rect.y,
+                div,
+                inner_rect.height,
+            ),
             Axis::Vertical => {
                 Rect::new(inner_rect.x, inner_rect.y + first_px, inner_rect.width, div)
             }
@@ -3902,6 +4214,75 @@ impl WidgetTree {
             }
         }
         changed
+    }
+
+    fn sync_accordions(&mut self) {
+        let mut collapsed_set = HashSet::new();
+        let mut collapsed_children = HashSet::new();
+        let all_ids: Vec<NodeId> = self.nodes.keys().collect();
+        for &id in &all_ids {
+            if let Some(n) = self.nodes.get(id)
+                && let WidgetKind::Accordion { expanded, .. } = &n.kind
+                && !expanded.get_untracked()
+            {
+                collapsed_set.insert(id);
+                for &c in &n.children {
+                    collapsed_children.insert(c);
+                }
+            }
+        }
+        for id in all_ids {
+            let want_collapsed = collapsed_set.contains(&id);
+            let want_hidden = collapsed_children.contains(&id);
+            let mut changed = false;
+            let mut eff_opt = None;
+            if let Some(n) = self.nodes.get_mut(id) {
+                if n.taffy_collapsed_override != want_collapsed {
+                    n.taffy_collapsed_override = want_collapsed;
+                    changed = true;
+                }
+                if n.taffy_hidden_by_parent != want_hidden {
+                    n.taffy_hidden_by_parent = want_hidden;
+                    changed = true;
+                }
+                if changed {
+                    n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+                    eff_opt = Some(Self::effective_taffy_layout(n));
+                }
+            }
+            if let Some(eff) = eff_opt {
+                self.layout_engine.upsert_node(id, eff);
+                self.layout_engine.mark_dirty(id);
+            }
+        }
+    }
+
+    fn data_table_sorted_indices(
+        rows: &[Vec<String>],
+        sort_column: Option<usize>,
+        sort_ascending: bool,
+    ) -> Vec<usize> {
+        let mut indices: Vec<usize> = (0..rows.len()).collect();
+        if let Some(col) = sort_column {
+            indices.sort_by(|&a, &b| {
+                let sa = rows
+                    .get(a)
+                    .and_then(|r| r.get(col))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let sb = rows
+                    .get(b)
+                    .and_then(|r| r.get(col))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let ord = match (sa.trim().parse::<f64>(), sb.trim().parse::<f64>()) {
+                    (Ok(na), Ok(nb)) => na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal),
+                    _ => sa.to_lowercase().cmp(&sb.to_lowercase()),
+                };
+                if sort_ascending { ord } else { ord.reverse() }
+            });
+        }
+        indices
     }
 
     fn toast_card_rects(container_rect: Rect, count: usize) -> (Vec<Rect>, Vec<Rect>) {
@@ -4085,7 +4466,12 @@ impl WidgetTree {
         let min_y = a.y.min(b.y);
         let max_x = a.max_x().max(b.max_x());
         let max_y = a.max_y().max(b.max_y());
-        Rect::new(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+        Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x).max(0.0),
+            (max_y - min_y).max(0.0),
+        )
     }
 
     #[inline]
@@ -4108,7 +4494,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.layout.hidden {
+        if node.layout.hidden || node.taffy_hidden_by_parent {
             return;
         }
         match &node.kind {
@@ -4141,7 +4527,12 @@ impl WidgetTree {
         };
         *bounds = Self::union_rects(*bounds, mapped);
 
-        if node.box_style.clip {
+        if node.box_style.clip
+            || matches!(
+                &node.kind,
+                WidgetKind::Accordion { expanded, .. } if !expanded.get_untracked()
+            )
+        {
             return;
         }
         let mut child_scroll = scroll_offset;
@@ -4173,7 +4564,12 @@ impl WidgetTree {
         }
         if !box_style.clip {
             for &child in children {
-                self.accumulate_subtree_bounds(child, child_offset, Transform2D::IDENTITY, &mut bounds);
+                self.accumulate_subtree_bounds(
+                    child,
+                    child_offset,
+                    Transform2D::IDENTITY,
+                    &mut bounds,
+                );
             }
         }
         bounds
@@ -4204,7 +4600,7 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.layout.hidden {
+        if node.layout.hidden || node.taffy_hidden_by_parent {
             return;
         }
         let rect = self
@@ -4359,7 +4755,10 @@ impl WidgetTree {
                     Some(ControlVisualAnim::Button { hover_t, press_t }) => {
                         (hover_t.value.clamp(0.0, 1.0), press_t.value.clamp(0.0, 1.0))
                     }
-                    _ => (if hovered { 1.0 } else { 0.0 }, if pressed { 1.0 } else { 0.0 }),
+                    _ => (
+                        if hovered { 1.0 } else { 0.0 },
+                        if pressed { 1.0 } else { 0.0 },
+                    ),
                 };
                 let bg_brush = if disabled_eff {
                     Brush::Solid(theme.surface_variant)
@@ -4408,12 +4807,7 @@ impl WidgetTree {
                         1.5,
                         box_style.radius,
                     );
-                    scene.stroke_rect(
-                        rect.inflate(3.5, 3.5),
-                        theme.primary,
-                        2.0,
-                        box_style.radius,
-                    );
+                    scene.stroke_rect(rect.inflate(3.5, 3.5), theme.primary, 2.0, box_style.radius);
                 }
                 if children.is_empty() {
                     let txt = label.get();
@@ -4611,7 +5005,13 @@ impl WidgetTree {
                 let is_on = checked.get_untracked();
                 let check_t = match &ctrl_anim {
                     Some(ControlVisualAnim::Checkbox { check_t }) => check_t.value.clamp(0.0, 1.0),
-                    _ => if is_on { 1.0 } else { 0.0 },
+                    _ => {
+                        if is_on {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
                 };
                 let box_rect = Rect::new(rect.x, rect.y + (rect.height - 20.0) * 0.5, 20.0, 20.0);
                 let fill = theme.surface.lerp(theme.primary, check_t);
@@ -4653,7 +5053,13 @@ impl WidgetTree {
                 let is_on = checked.get_untracked();
                 let knob_t = match &ctrl_anim {
                     Some(ControlVisualAnim::Switch { knob_t }) => knob_t.value,
-                    _ => if is_on { 1.0 } else { 0.0 },
+                    _ => {
+                        if is_on {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
                 };
                 let track = Rect::new(rect.x, rect.y + (rect.height - 24.0) * 0.5, 44.0, 24.0);
                 let track_col = theme
@@ -4757,12 +5163,7 @@ impl WidgetTree {
                     let halo_r = 9.0 + 4.0 * hover_t.max(drag_t) + 2.0 * drag_t;
                     let halo_alpha = (0.14 * hover_t + 0.18 * drag_t).clamp(0.0, 0.28);
                     scene.fill_rect(
-                        Rect::new(
-                            kx_center - halo_r,
-                            cy - halo_r,
-                            halo_r * 2.0,
-                            halo_r * 2.0,
-                        ),
+                        Rect::new(kx_center - halo_r, cy - halo_r, halo_r * 2.0, halo_r * 2.0),
                         theme.primary.with_alpha(halo_alpha),
                         CornerRadii::all(halo_r),
                     );
@@ -4959,6 +5360,300 @@ impl WidgetTree {
                         1.2,
                         CornerRadii::all(6.0),
                     );
+                }
+            }
+            WidgetKind::SegmentedControl {
+                items, selected, ..
+            } => {
+                let list = items.get();
+                let count = list.len().max(1);
+                let sel_idx = selected.get_untracked().min(count - 1);
+                let anim_idx = match &ctrl_anim {
+                    Some(ControlVisualAnim::SegmentedControl { active_t }) => {
+                        active_t.value.clamp(0.0, (count - 1) as f32)
+                    }
+                    _ => sel_idx as f32,
+                };
+                let track_rad = if box_style.radius == CornerRadii::ZERO {
+                    CornerRadii::all(10.0)
+                } else {
+                    box_style.radius
+                };
+                if box_style.background.is_none() {
+                    scene.fill_rect(rect, theme.surface_variant, track_rad);
+                }
+                let seg_w = (rect.width - 6.0).max(4.0) / count as f32;
+                let pill_r = Rect::new(
+                    rect.x + 3.0 + anim_idx * seg_w,
+                    rect.y + 3.0,
+                    seg_w,
+                    (rect.height - 6.0).max(4.0),
+                );
+                scene.drop_shadow(
+                    pill_r,
+                    CornerRadii::all(8.0),
+                    BoxShadow::drop(0.0, 1.5, 4.0, 0.0, Color::rgba(0, 0, 0, 48)),
+                );
+                scene.fill_rect(pill_r, theme.surface, CornerRadii::all(8.0));
+                scene.stroke_rect(
+                    pill_r,
+                    theme.border.with_alpha(0.6),
+                    1.0,
+                    CornerRadii::all(8.0),
+                );
+                for (i, title) in list.iter().enumerate() {
+                    let sr = Rect::new(
+                        rect.x + 3.0 + i as f32 * seg_w,
+                        rect.y + 3.0,
+                        seg_w,
+                        (rect.height - 6.0).max(4.0),
+                    );
+                    let act_weight = (1.0 - (anim_idx - i as f32).abs()).clamp(0.0, 1.0);
+                    let tst = TextStyle::default()
+                        .with_size(13.5)
+                        .with_weight(if act_weight > 0.5 { 600.0 } else { 500.0 })
+                        .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
+                    let measured = self.text_engine.measure(title, &tst, None);
+                    scene.draw_text(
+                        Point::new(
+                            sr.x + (sr.width - measured.width).max(0.0) * 0.5,
+                            sr.y + (sr.height - measured.height).max(0.0) * 0.5,
+                        ),
+                        title,
+                        tst,
+                        Some((sr.width - 8.0).max(12.0)),
+                    );
+                }
+                if is_focused {
+                    scene.stroke_rect(rect.inflate(1.5, 1.5), theme.primary, 1.5, track_rad);
+                }
+            }
+            WidgetKind::Accordion {
+                title, expanded, ..
+            } => {
+                let is_exp = expanded.get_untracked();
+                let card_rad = if box_style.radius == CornerRadii::ZERO {
+                    CornerRadii::all(10.0)
+                } else {
+                    box_style.radius
+                };
+                if box_style.background.is_none() {
+                    scene.fill_rect(rect, theme.surface, card_rad);
+                }
+                if box_style.border.is_none() {
+                    scene.stroke_rect(rect, theme.border, 1.0, card_rad);
+                }
+                let header_h = 44.0f32.min(rect.height);
+                let header_r = Rect::new(rect.x, rect.y, rect.width, header_h);
+                if is_exp {
+                    scene.fill_rect(
+                        Rect::new(
+                            rect.x + 1.0,
+                            rect.y + 1.0,
+                            (rect.width - 2.0).max(0.0),
+                            (header_h - 2.0).max(0.0),
+                        ),
+                        theme.surface_variant.with_alpha(0.32),
+                        CornerRadii::all(8.0),
+                    );
+                    scene.fill_rect(
+                        Rect::new(
+                            rect.x + 12.0,
+                            rect.y + header_h - 1.0,
+                            (rect.width - 24.0).max(0.0),
+                            1.0,
+                        ),
+                        theme.border,
+                        CornerRadii::ZERO,
+                    );
+                }
+                let t_str = title.get();
+                let tst = TextStyle::default()
+                    .with_size(14.0)
+                    .with_weight(600.0)
+                    .with_color(theme.text_primary);
+                let measured = self.text_engine.measure(&t_str, &tst, None);
+                scene.draw_text(
+                    Point::new(
+                        rect.x + 14.0,
+                        rect.y + (header_h - measured.height).max(0.0) * 0.5,
+                    ),
+                    t_str,
+                    tst,
+                    Some((rect.width - 52.0).max(20.0)),
+                );
+                let chev_r = Rect::new(
+                    rect.max_x() - 28.0,
+                    rect.y + (header_h - 16.0) * 0.5,
+                    16.0,
+                    16.0,
+                );
+                let _ = paint_svg_icon(
+                    scene,
+                    chev_r,
+                    if is_exp { "chevron_up" } else { "chevron_down" },
+                    theme.text_secondary,
+                );
+                if is_focused {
+                    scene.stroke_rect(header_r, theme.primary, 1.6, card_rad);
+                }
+                paint_children = is_exp;
+            }
+            WidgetKind::DataTable {
+                columns,
+                rows,
+                selected,
+                sort_column,
+                sort_ascending,
+                scroll_offset,
+                striped,
+                row_height,
+                ..
+            } => {
+                let cols = columns.get();
+                let row_list = rows.get();
+                let tbl_rad = if box_style.radius == CornerRadii::ZERO {
+                    CornerRadii::all(8.0)
+                } else {
+                    box_style.radius
+                };
+                if box_style.background.is_none() {
+                    scene.fill_rect(rect, theme.surface, tbl_rad);
+                }
+                scene.push(PaintCommand::PushClip {
+                    rect,
+                    radius: tbl_rad,
+                });
+                let header_h = 38.0f32.min(rect.height);
+                let header_r = Rect::new(rect.x, rect.y, rect.width, header_h);
+                scene.fill_rect(header_r, theme.surface_variant, CornerRadii::ZERO);
+                scene.fill_rect(
+                    Rect::new(rect.x, rect.y + header_h - 1.0, rect.width, 1.0),
+                    theme.border,
+                    CornerRadii::ZERO,
+                );
+                let col_count = cols.len().max(1);
+                let col_w = (rect.width / col_count as f32).max(40.0);
+                for (ci, col_title) in cols.iter().enumerate() {
+                    let cx = rect.x + ci as f32 * col_w;
+                    let is_sorted = sort_column == Some(ci);
+                    let hst = TextStyle::default()
+                        .with_size(12.5)
+                        .with_weight(600.0)
+                        .with_color(if is_sorted {
+                            theme.primary
+                        } else {
+                            theme.text_secondary
+                        });
+                    let measured = self.text_engine.measure(col_title, &hst, None);
+                    scene.draw_text(
+                        Point::new(
+                            cx + 12.0,
+                            rect.y + (header_h - measured.height).max(0.0) * 0.5,
+                        ),
+                        col_title,
+                        hst,
+                        Some((col_w - if is_sorted { 34.0 } else { 20.0 }).max(16.0)),
+                    );
+                    if is_sorted {
+                        let chev = Rect::new(
+                            cx + col_w - 20.0,
+                            rect.y + (header_h - 12.0) * 0.5,
+                            12.0,
+                            12.0,
+                        );
+                        let _ = paint_svg_icon(
+                            scene,
+                            chev,
+                            if sort_ascending {
+                                "chevron_up"
+                            } else {
+                                "chevron_down"
+                            },
+                            theme.primary,
+                        );
+                    }
+                }
+                let body_rect = Rect::new(
+                    rect.x,
+                    rect.y + header_h,
+                    rect.width,
+                    (rect.height - header_h).max(0.0),
+                );
+                scene.push(PaintCommand::PushClip {
+                    rect: body_rect,
+                    radius: CornerRadii::ZERO,
+                });
+                let sorted =
+                    Self::data_table_sorted_indices(&row_list, sort_column, sort_ascending);
+                let total_h = sorted.len() as f32 * row_height;
+                let max_scroll = (total_h - body_rect.height).max(0.0);
+                let scroll = scroll_offset.clamp(0.0, max_scroll);
+                let sel_orig = selected.get_untracked();
+                for (vis_i, &orig_i) in sorted.iter().enumerate() {
+                    let ry = body_rect.y + vis_i as f32 * row_height - scroll;
+                    if ry + row_height < body_rect.y || ry > body_rect.max_y() {
+                        continue;
+                    }
+                    let row_r = Rect::new(body_rect.x, ry, body_rect.width, row_height);
+                    let is_sel = orig_i == sel_orig;
+                    if is_sel {
+                        scene.fill_rect(row_r, theme.primary.with_alpha(0.16), CornerRadii::ZERO);
+                    } else if striped && vis_i % 2 == 1 {
+                        scene.fill_rect(
+                            row_r,
+                            theme.surface_variant.with_alpha(0.32),
+                            CornerRadii::ZERO,
+                        );
+                    }
+                    scene.fill_rect(
+                        Rect::new(row_r.x, row_r.max_y() - 1.0, row_r.width, 1.0),
+                        theme.border.with_alpha(0.45),
+                        CornerRadii::ZERO,
+                    );
+                    if let Some(cells) = row_list.get(orig_i) {
+                        for (ci, cell) in cells.iter().take(col_count).enumerate() {
+                            let cx = rect.x + ci as f32 * col_w;
+                            let cst = TextStyle::default()
+                                .with_size(13.0)
+                                .with_weight(if is_sel { 500.0 } else { 400.0 })
+                                .with_color(if is_sel {
+                                    theme.primary
+                                } else {
+                                    theme.text_primary
+                                });
+                            let measured = self.text_engine.measure(cell, &cst, None);
+                            scene.draw_text(
+                                Point::new(
+                                    cx + 12.0,
+                                    row_r.y + (row_r.height - measured.height).max(0.0) * 0.5,
+                                ),
+                                cell,
+                                cst,
+                                Some((col_w - 20.0).max(16.0)),
+                            );
+                        }
+                    }
+                }
+                if max_scroll > 0.5 && body_rect.height > 8.0 {
+                    let ratio = (body_rect.height / total_h).clamp(0.12, 1.0);
+                    let track_h = (body_rect.height - 8.0).max(8.0);
+                    let thumb_h = (track_h * ratio).max(16.0);
+                    let pos_ratio = (scroll / max_scroll).clamp(0.0, 1.0);
+                    let thumb_y = body_rect.y + 4.0 + (track_h - thumb_h) * pos_ratio;
+                    scene.fill_rect(
+                        Rect::new(body_rect.max_x() - 6.0, thumb_y, 3.5, thumb_h),
+                        theme.text_secondary.with_alpha(0.55),
+                        CornerRadii::all(2.0),
+                    );
+                }
+                scene.push(PaintCommand::PopClip);
+                scene.push(PaintCommand::PopClip);
+                if box_style.border.is_none() {
+                    scene.stroke_rect(rect, theme.border, 1.0, tbl_rad);
+                }
+                if is_focused {
+                    scene.stroke_rect(rect.inflate(1.5, 1.5), theme.primary, 1.5, tbl_rad);
                 }
             }
             WidgetKind::PopupMenu { items, anchor, .. } => {
@@ -5246,7 +5941,8 @@ impl WidgetTree {
             }
         }
 
-        let eff_border_col = anim_border.or_else(|| box_style.border_color.as_ref().map(ReactiveValue::get));
+        let eff_border_col =
+            anim_border.or_else(|| box_style.border_color.as_ref().map(ReactiveValue::get));
         if let Some(border) = box_style.border
             && border.width > 0.0
         {
@@ -5261,17 +5957,23 @@ impl WidgetTree {
                     radius: box_style.radius,
                 });
             }
-            let (child_xf_for_sub, pushed_overlay_anim) = if let Some((ov_xf, ov_op)) = extra_overlay_anim {
-                let mut child_bounds = rect;
-                for &child in &children {
-                    self.accumulate_subtree_bounds(child, child_offset, Transform2D::IDENTITY, &mut child_bounds);
-                }
-                scene.push_transform(ov_xf);
-                scene.push_layer(child_bounds, ov_op, BlendMode::Normal);
-                (node_xform * ov_xf, true)
-            } else {
-                (node_xform, false)
-            };
+            let (child_xf_for_sub, pushed_overlay_anim) =
+                if let Some((ov_xf, ov_op)) = extra_overlay_anim {
+                    let mut child_bounds = rect;
+                    for &child in &children {
+                        self.accumulate_subtree_bounds(
+                            child,
+                            child_offset,
+                            Transform2D::IDENTITY,
+                            &mut child_bounds,
+                        );
+                    }
+                    scene.push_transform(ov_xf);
+                    scene.push_layer(child_bounds, ov_op, BlendMode::Normal);
+                    (node_xform * ov_xf, true)
+                } else {
+                    (node_xform, false)
+                };
             for child in children {
                 self.paint_node_recursive(
                     child,
@@ -5366,7 +6068,7 @@ impl WidgetTree {
 
     fn hit_test_recursive(&self, id: NodeId, point: Point, scroll_offset: Point) -> Option<NodeId> {
         let node = self.nodes.get(id)?;
-        if node.layout.hidden {
+        if node.layout.hidden || node.taffy_hidden_by_parent {
             return None;
         }
         match &node.kind {
@@ -5426,10 +6128,16 @@ impl WidgetTree {
             }
         }
 
-        // Topmost Z-order children first
-        for &child in node.children.iter().rev() {
-            if let Some(hit) = self.hit_test_recursive(child, local_point, child_offset) {
-                return Some(hit);
+        let skip_children = matches!(
+            &node.kind,
+            WidgetKind::Accordion { expanded, .. } if !expanded.get_untracked()
+        );
+        if !skip_children {
+            // Topmost Z-order children first
+            for &child in node.children.iter().rev() {
+                if let Some(hit) = self.hit_test_recursive(child, local_point, child_offset) {
+                    return Some(hit);
+                }
             }
         }
 
@@ -5442,17 +6150,23 @@ impl WidgetTree {
                         || node.on_hover.is_some()
                         || node.on_pinch_rotate.is_some())
             }
+            WidgetKind::Accordion { .. } => {
+                let header_r = Rect::new(
+                    base_rect.x,
+                    base_rect.y,
+                    base_rect.width,
+                    44.0_f32.min(base_rect.height),
+                )
+                .inflate(node.box_style.hit_slop, node.box_style.hit_slop);
+                header_r.contains(local_point)
+            }
             WidgetKind::ToastHost { items, .. } => {
                 let (cards, _) = Self::toast_card_rects(base_rect, items.get().len());
                 cards.iter().any(|c| c.contains(local_point))
             }
             _ => rect.contains(local_point) && self.is_interactive(node),
         };
-        if hit_self {
-            Some(id)
-        } else {
-            None
-        }
+        if hit_self { Some(id) } else { None }
     }
 
     fn is_interactive(&self, node: &WidgetNode) -> bool {
@@ -5475,6 +6189,9 @@ impl WidgetTree {
                     | WidgetKind::Switch { .. }
                     | WidgetKind::Slider { .. }
                     | WidgetKind::Tabs { .. }
+                    | WidgetKind::SegmentedControl { .. }
+                    | WidgetKind::Accordion { .. }
+                    | WidgetKind::DataTable { .. }
                     | WidgetKind::Select { .. }
                     | WidgetKind::RadioGroup { .. }
                     | WidgetKind::PopupMenu { .. }
@@ -5836,8 +6553,10 @@ impl WidgetTree {
         let mut bool_cb: Option<(BoolCallback, bool)> = None;
         let mut float_cb: Option<(FloatCallback, f32)> = None;
         let mut idx_cb: Option<(IndexCallback, usize)> = None;
+        let mut sort_cb: Option<(IndexCallback, usize)> = None;
         let mut dismiss_cb: Option<(ToastDismissCallback, u64)> = None;
         let mut reset_caret = false;
+        let mut relayout_node = false;
 
         // Compute popup/dropdown geometry upfront to satisfy borrow checker
         let popup_rect_opt = match self.nodes.get(node_id).map(|n| &n.kind) {
@@ -5930,6 +6649,90 @@ impl WidgetTree {
                         }
                     }
                 }
+                WidgetKind::SegmentedControl {
+                    items,
+                    selected,
+                    on_change,
+                } => {
+                    let count = items.get().len();
+                    if count > 0 && rect.width > 0.0 {
+                        let idx =
+                            (((local_pos.x - rect.x) / rect.width) * count as f32).floor() as isize;
+                        let next = idx.clamp(0, (count - 1) as isize) as usize;
+                        selected.set(next);
+                        node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                        if let Some(cb) = on_change.clone() {
+                            idx_cb = Some((cb, next));
+                        }
+                    }
+                }
+                WidgetKind::Accordion {
+                    expanded,
+                    on_change,
+                    ..
+                } => {
+                    if !is_screen_pos || local_pos.y <= rect.y + 44.0 {
+                        let next = !expanded.get_untracked();
+                        expanded.set(next);
+                        node.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::A11Y;
+                        relayout_node = true;
+                        if let Some(cb) = on_change.clone() {
+                            bool_cb = Some((cb, next));
+                        }
+                    }
+                }
+                WidgetKind::DataTable {
+                    columns,
+                    rows,
+                    selected,
+                    sort_column,
+                    sort_ascending,
+                    scroll_offset,
+                    row_height,
+                    on_select,
+                    on_sort,
+                    ..
+                } => {
+                    let cols = columns.get();
+                    let row_list = rows.get();
+                    let header_h = 38.0f32.min(rect.height);
+                    if is_screen_pos && local_pos.y <= rect.y + header_h && !cols.is_empty() {
+                        let col_w = (rect.width / cols.len() as f32).max(1.0);
+                        let ci = (((local_pos.x - rect.x) / col_w).floor() as isize)
+                            .clamp(0, (cols.len() - 1) as isize)
+                            as usize;
+                        if *sort_column == Some(ci) {
+                            *sort_ascending = !*sort_ascending;
+                        } else {
+                            *sort_column = Some(ci);
+                            *sort_ascending = true;
+                        }
+                        node.dirty |= DirtyFlags::PAINT;
+                        if let Some(cb) = on_sort.clone() {
+                            sort_cb = Some((cb, ci));
+                        }
+                    } else if !row_list.is_empty() && *row_height > 0.0 {
+                        let sorted = Self::data_table_sorted_indices(
+                            &row_list,
+                            *sort_column,
+                            *sort_ascending,
+                        );
+                        let rel_y = if is_screen_pos {
+                            (local_pos.y - (rect.y + header_h) + *scroll_offset).max(0.0)
+                        } else {
+                            0.0
+                        };
+                        let vis_idx = ((rel_y / *row_height).floor() as isize)
+                            .clamp(0, (sorted.len() - 1) as isize)
+                            as usize;
+                        let orig_idx = sorted[vis_idx];
+                        selected.set(orig_idx);
+                        node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                        if let Some(cb) = on_select.clone() {
+                            idx_cb = Some((cb, orig_idx));
+                        }
+                    }
+                }
                 WidgetKind::Select {
                     options,
                     selected,
@@ -5963,7 +6766,8 @@ impl WidgetTree {
                             if max_scroll <= 0.0 {
                                 *dropdown_scroll = 0.0;
                             } else {
-                                let sel_idx = selected.get_untracked().min(opts.len().saturating_sub(1));
+                                let sel_idx =
+                                    selected.get_untracked().min(opts.len().saturating_sub(1));
                                 let item_top = sel_idx as f32 * 34.0;
                                 let item_bottom = item_top + 34.0;
                                 let vis_h = (dr.height - 8.0).max(34.0);
@@ -6054,6 +6858,10 @@ impl WidgetTree {
 
         self.sync_control_anim_target(node_id);
 
+        if relayout_node {
+            self.layout_engine.mark_dirty(node_id);
+        }
+
         if reset_caret {
             self.reset_caret_blink(craftui_core::monotonic_ms());
         }
@@ -6071,6 +6879,11 @@ impl WidgetTree {
             && let Ok(mut f) = cb.try_borrow_mut()
         {
             f(i);
+        }
+        if let Some((cb, col)) = sort_cb
+            && let Ok(mut f) = cb.try_borrow_mut()
+        {
+            f(col);
         }
         if let Some((cb, id)) = dismiss_cb
             && let Ok(mut f) = cb.try_borrow_mut()
@@ -6388,6 +7201,20 @@ impl WidgetTree {
                         node.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
                         return true;
                     }
+                    WidgetKind::DataTable {
+                        rows,
+                        scroll_offset,
+                        row_height,
+                        ..
+                    } => {
+                        let header_h = 38.0f32.min(rect.height);
+                        let body_h = (rect.height - header_h).max(0.0);
+                        let total_h = rows.get().len() as f32 * *row_height;
+                        let max_off = (total_h - body_h).max(0.0);
+                        *scroll_offset = (*scroll_offset - dy).clamp(0.0, max_off);
+                        node.dirty |= DirtyFlags::PAINT;
+                        return true;
+                    }
                     _ => {}
                 }
             }
@@ -6467,13 +7294,17 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.layout.hidden {
+        if node.layout.hidden || node.taffy_hidden_by_parent {
             return;
         }
         match &node.kind {
             WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. }
                 if !open.get() =>
             {
+                return;
+            }
+            WidgetKind::Accordion { expanded, .. } if !expanded.get() => {
+                out.push(id);
                 return;
             }
             _ => {}
@@ -6557,6 +7388,7 @@ impl WidgetTree {
         let Some(focused) = self.focused else {
             return false;
         };
+        let focused_rect = self.layout_engine.rect(focused);
 
         // Forward keys directly to focused CustomWidget if applicable
         if let Some(WidgetKind::Custom(cw)) = self.nodes.get(focused).map(|n| n.kind.clone()) {
@@ -6687,7 +7519,8 @@ impl WidgetTree {
                 }
                 WidgetKind::Button { .. }
                 | WidgetKind::Checkbox { .. }
-                | WidgetKind::Switch { .. } => {
+                | WidgetKind::Switch { .. }
+                | WidgetKind::Accordion { .. } => {
                     if matches!(ke.code, KeyCode::Enter | KeyCode::Space) {
                         activated = true;
                     }
@@ -6716,6 +7549,84 @@ impl WidgetTree {
                             node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                             if let Some(cb) = on_change.clone() {
                                 idx_cb = Some((cb, next));
+                            }
+                        }
+                    }
+                }
+                WidgetKind::SegmentedControl {
+                    items,
+                    selected,
+                    on_change,
+                } => {
+                    let count = items.get().len();
+                    if count > 0 {
+                        let cur = selected.get_untracked().min(count - 1);
+                        let next = match ke.code {
+                            KeyCode::ArrowRight => (cur + 1) % count,
+                            KeyCode::ArrowLeft => {
+                                if cur == 0 {
+                                    count - 1
+                                } else {
+                                    cur - 1
+                                }
+                            }
+                            KeyCode::Home => 0,
+                            KeyCode::End => count - 1,
+                            _ => cur,
+                        };
+                        if next != cur {
+                            selected.set(next);
+                            node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                            if let Some(cb) = on_change.clone() {
+                                idx_cb = Some((cb, next));
+                            }
+                        }
+                    }
+                }
+                WidgetKind::DataTable {
+                    rows,
+                    selected,
+                    sort_column,
+                    sort_ascending,
+                    scroll_offset,
+                    row_height,
+                    on_select,
+                    ..
+                } => {
+                    let row_list = rows.get();
+                    if !row_list.is_empty() {
+                        let sorted = Self::data_table_sorted_indices(
+                            &row_list,
+                            *sort_column,
+                            *sort_ascending,
+                        );
+                        let cur_orig = selected.get_untracked();
+                        let cur_vis = sorted.iter().position(|&r| r == cur_orig).unwrap_or(0);
+                        let next_vis = match ke.code {
+                            KeyCode::ArrowDown => (cur_vis + 1).min(sorted.len() - 1),
+                            KeyCode::ArrowUp => cur_vis.saturating_sub(1),
+                            KeyCode::Home => 0,
+                            KeyCode::End => sorted.len() - 1,
+                            _ => cur_vis,
+                        };
+                        if next_vis != cur_vis || sorted[next_vis] != cur_orig {
+                            let orig_idx = sorted[next_vis];
+                            selected.set(orig_idx);
+                            let body_h = (focused_rect.height - 38.0).max(0.0);
+                            if *row_height > 0.0 && body_h > 0.0 {
+                                let total_h = sorted.len() as f32 * *row_height;
+                                let max_scroll = (total_h - body_h).max(0.0);
+                                let item_top = next_vis as f32 * *row_height;
+                                let item_bottom = item_top + *row_height;
+                                if item_top < *scroll_offset {
+                                    *scroll_offset = item_top.clamp(0.0, max_scroll);
+                                } else if item_bottom > *scroll_offset + body_h {
+                                    *scroll_offset = (item_bottom - body_h).clamp(0.0, max_scroll);
+                                }
+                            }
+                            node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                            if let Some(cb) = on_select.clone() {
+                                idx_cb = Some((cb, orig_idx));
                             }
                         }
                     }
@@ -6975,17 +7886,34 @@ impl WidgetTree {
         let Some(node) = self.nodes.get(id) else {
             return;
         };
-        if node.layout.hidden {
+        if node.layout.hidden || node.taffy_hidden_by_parent {
             return;
         }
+        let is_collapsed_accordion = matches!(
+            &node.kind,
+            WidgetKind::Accordion { expanded, .. } if !expanded.get()
+        );
+        let child_ids: Vec<NodeId> = if is_collapsed_accordion {
+            Vec::new()
+        } else {
+            node.children
+                .iter()
+                .copied()
+                .filter(|&cid| {
+                    self.nodes
+                        .get(cid)
+                        .is_some_and(|cn| !cn.layout.hidden && !cn.taffy_hidden_by_parent)
+                })
+                .collect()
+        };
         let bounds = self.layout_engine.rect(id);
         out.push(A11ySnapshotNode {
             id,
             bounds,
             meta: node.a11y.clone(),
-            children: node.children.clone(),
+            children: child_ids.clone(),
         });
-        for &c in &node.children {
+        for c in child_ids {
             self.collect_a11y_recursive(c, out, seen);
         }
     }
@@ -7119,7 +8047,12 @@ impl WidgetTree {
                 continue;
             };
             match &node.kind {
-                WidgetKind::ScrollView { offset, .. } | WidgetKind::VirtualList { offset, .. } => {
+                WidgetKind::ScrollView { offset, .. }
+                | WidgetKind::VirtualList { offset, .. }
+                | WidgetKind::DataTable {
+                    scroll_offset: offset,
+                    ..
+                } => {
                     if *offset > 0.0 {
                         snap.scroll_offsets.push((path.clone(), *offset));
                     }
@@ -7146,7 +8079,10 @@ impl WidgetTree {
     pub fn restore_ui_state(&mut self, snap: &TreeUiSnapshot) {
         if let Some(ref fpath) = snap.focused_path
             && let Some(fid) = self.node_at_path(fpath)
-            && self.nodes.get(fid).is_some_and(|n| n.a11y.focusable && !n.is_disabled())
+            && self
+                .nodes
+                .get(fid)
+                .is_some_and(|n| n.a11y.focusable && !n.is_disabled())
         {
             self.focused = Some(fid);
             if self.focused_is_text_input() {
@@ -7159,7 +8095,11 @@ impl WidgetTree {
             {
                 match &mut n.kind {
                     WidgetKind::ScrollView { offset, .. }
-                    | WidgetKind::VirtualList { offset, .. } => {
+                    | WidgetKind::VirtualList { offset, .. }
+                    | WidgetKind::DataTable {
+                        scroll_offset: offset,
+                        ..
+                    } => {
                         *offset = (*off).max(0.0);
                         n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
                     }

@@ -45,13 +45,15 @@ Building a cross-platform GUI framework is notorious for scope explosion. The go
   - **Android (`craftui-platform-android`):** `android-activity` (`GameActivity`) integration, soft keyboard (IME) height insets, `SafeArea` cutout support, touch gestures, APK packager in `craftui-cli`, and **`PlatformView` external `SurfaceTexture` slot** for CameraX/Video.
 * **Exit Gate:** Same `.cui` + Rust app runs natively on Desktop, Android APK, and Browser WASM.
 
-### Milestone 5: iOS, Accessibility & Real-World Dogfooding (`Weeks 23–28`)
+### Milestone 5: iOS, Mobile Permissions, Accessibility & Real-World Dogfooding *(Completed — 2026-11-11)*
 * **Deliverables:**
-  - **iOS (`craftui-platform-ios`):** `UIKit` + `Metal` `wgpu` surface, touch/IME/SafeArea, XCFramework/IPA tooling.
-  - **Accessibility (`craftui-a11y`):** `accesskit` tree synchronization for screen readers.
-  - **Flagship Dogfooding (`ScanCraft Cross-Platform Prototype`):**
-    - Document grid (`VirtualGrid`), 8-point draggable crop overlay with magnifier loupe (`Canvas`), real-time `PixelBufferHandle` filter sliders, and live Android CameraX `SurfaceTexture` preview.
-* **Exit Gate:** Zero-crash 60 FPS demo across Desktop + Android + Web + iOS, ready for public `v0.1.0` MIT release.
+  - **iOS (`craftui-platform-ios`):** `UIKit` + `Metal` `wgpu` surface, touch/IME/SafeArea, C-ABI bridge exports (`craftui_ios_app_*`), Swift permission broker, and XCFramework/IPA tooling.
+  - **Mobile Permissions & Manifest Engine:** 35 standard permissions catalog, zero-dependency `craftui.toml` manifest parser & validator, automatic Android `<uses-permission>` & iOS `NS*UsageDescription` generation.
+  - **Phase 5 Widgets & DX:** `SafeArea`, `SegmentedControl`, `Accordion`, `DataTable` (sortable), `craftui-cli` (`new --template mobile`, `init`, `setup`, `run`, `permissions list|check`), official VS Code extension (`editors/vscode/`), and `.github/workflows/ci.yml`.
+  - **Accessibility (`craftui-a11y`):** `accesskit` incremental tree synchronization for screen readers.
+  - **Flagship Dogfooding & Showcase:**
+    - Showcase updated with "Mobile & Native" tab demonstrating permissions, `SafeArea`, `SegmentedControl`, `Accordion`, `DataTable`, native haptics, share sheet, and device telemetry.
+* **Exit Gate:** Zero-crash 60 FPS demo across Desktop + Android + Web + iOS, passing 100% of workspace tests and strict clippy, ready for public `v0.1.0` MIT release.
 
 ---
 

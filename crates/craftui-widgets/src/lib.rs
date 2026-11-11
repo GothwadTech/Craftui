@@ -8,7 +8,9 @@ pub mod toast;
 pub mod tree;
 pub mod widgets;
 
-pub use anim::{AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, TransitionCurve, Tween};
+pub use anim::{
+    AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, TransitionCurve, Tween,
+};
 pub use gesture::{GestureArena, RecognizedGesture, ScrollPhysics, VelocityTracker};
 pub use inspector::InspectorState;
 pub use router::{Router, RouterTransition};
@@ -61,8 +63,8 @@ impl WidgetTree {
 mod tests {
     use super::*;
     use craftui_core::{
-        Axis, KeyCode, KeyEvent, Length, Modifiers, PointerButton, PointerEvent, PointerId,
-        PointerPhase, Size, ThemeMode, UiEvent, WindowMetrics,
+        Axis, Insets, KeyCode, KeyEvent, Length, Modifiers, Point, PointerButton, PointerEvent,
+        PointerId, PointerPhase, Size, ThemeMode, UiEvent, WindowMetrics,
     };
     use craftui_layout::LayoutStyle;
     use craftui_reactive::{Scope, reset_runtime};
@@ -527,10 +529,8 @@ mod tests {
                 3 => PointerPhase::Move,
                 _ => PointerPhase::Move,
             };
-            let pos = craftui_core::Point::new(
-                start.x,
-                start.y + [-0.0, -25.0, -60.0, -120.0][idx],
-            );
+            let pos =
+                craftui_core::Point::new(start.x, start.y + [-0.0, -25.0, -60.0, -120.0][idx]);
             let _ = dy;
             tree.handle_event(&UiEvent::Pointer(PointerEvent {
                 id: PointerId(1),
@@ -565,7 +565,10 @@ mod tests {
         }));
         match &tree.nodes.get(sv).unwrap().kind {
             WidgetKind::ScrollView { offset, .. } => {
-                assert!((*offset - 400.0).abs() < 1.0, "expected max_off 400, got {offset}");
+                assert!(
+                    (*offset - 400.0).abs() < 1.0,
+                    "expected max_off 400, got {offset}"
+                );
             }
             _ => unreachable!(),
         }
@@ -734,11 +737,13 @@ mod tests {
             timestamp_ms: 40,
         }));
         let drop_pos = craftui_core::Point::new(sel_center.x, tree.rect(sel).max_y() + 20.0);
-        assert!(tree.handle_event(&UiEvent::Scroll(craftui_core::ScrollDelta {
-            x: 0.0,
-            y: -340.0, // scroll down by 10 rows (10 * 34px)
-            position: drop_pos,
-        })));
+        assert!(
+            tree.handle_event(&UiEvent::Scroll(craftui_core::ScrollDelta {
+                x: 0.0,
+                y: -340.0, // scroll down by 10 rows (10 * 34px)
+                position: drop_pos,
+            }))
+        );
         tree.handle_event(&UiEvent::Pointer(PointerEvent {
             id: PointerId(1),
             phase: PointerPhase::Down,
@@ -757,7 +762,11 @@ mod tests {
             is_touch: false,
             timestamp_ms: 60,
         }));
-        assert!(sel_sig.get() >= 9, "expected scrolled option >= 9, got {}", sel_sig.get());
+        assert!(
+            sel_sig.get() >= 9,
+            "expected scrolled option >= 9, got {}",
+            sel_sig.get()
+        );
     }
 
     #[test]
@@ -849,8 +858,18 @@ mod tests {
         assert!(tree.tick_animations(0.016));
         let mut mid_scene = PaintScene::new();
         tree.paint(&mut mid_scene);
-        assert!(mid_scene.commands.iter().any(|c| matches!(c, PaintCommand::PushTransform { .. })));
-        assert!(mid_scene.commands.iter().any(|c| matches!(c, PaintCommand::PushLayer { .. })));
+        assert!(
+            mid_scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, PaintCommand::PushTransform { .. }))
+        );
+        assert!(
+            mid_scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, PaintCommand::PushLayer { .. }))
+        );
 
         // Step to completion -> 0% idle animations left
         for _ in 0..240 {
@@ -905,7 +924,10 @@ mod tests {
             tree.rect(btn).center().y + 40.0,
         );
         assert_eq!(tree.hit_test(btn_screen_center), Some(btn));
-        assert_eq!(tree.cursor_at(btn_screen_center), craftui_core::CursorIcon::Crosshair);
+        assert_eq!(
+            tree.cursor_at(btn_screen_center),
+            craftui_core::CursorIcon::Crosshair
+        );
 
         tree.handle_event(&UiEvent::Pointer(PointerEvent {
             id: PointerId(1),
@@ -938,7 +960,10 @@ mod tests {
             tree.rect(dis_btn).center().x + 80.0,
             tree.rect(dis_btn).center().y + 40.0,
         );
-        assert_eq!(tree.cursor_at(dis_screen), craftui_core::CursorIcon::NotAllowed);
+        assert_eq!(
+            tree.cursor_at(dis_screen),
+            craftui_core::CursorIcon::NotAllowed
+        );
 
         // Slider tap near 75% width inside translated root
         let sr = tree.rect(slider);
@@ -946,7 +971,10 @@ mod tests {
             sr.x + 8.0 + (sr.width - 16.0) * 0.75 + 80.0,
             sr.center().y + 40.0,
         );
-        assert_eq!(tree.cursor_at(slider_target_screen), craftui_core::CursorIcon::Grab);
+        assert_eq!(
+            tree.cursor_at(slider_target_screen),
+            craftui_core::CursorIcon::Grab
+        );
         tree.handle_event(&UiEvent::Pointer(PointerEvent {
             id: PointerId(2),
             phase: PointerPhase::Down,
@@ -966,7 +994,11 @@ mod tests {
             is_touch: false,
             timestamp_ms: 70,
         }));
-        assert!((val.get() - 75.0).abs() < 3.0, "expected ~75, got {}", val.get());
+        assert!(
+            (val.get() - 75.0).abs() < 3.0,
+            "expected ~75, got {}",
+            val.get()
+        );
     }
 
     #[test]
@@ -993,9 +1025,8 @@ mod tests {
             ))
             .with_blend_mode(craftui_core::BlendMode::Screen);
         glass_style.opacity = 0.85;
-        glass_style.background = Some(
-            craftui_core::Brush::Solid(craftui_core::Color::rgba(30, 41, 59, 180)).into(),
-        );
+        glass_style.background =
+            Some(craftui_core::Brush::Solid(craftui_core::Color::rgba(30, 41, 59, 180)).into());
         glass_style.radius = craftui_core::CornerRadii::all(12.0);
 
         let glass = tree.container(
@@ -1039,12 +1070,14 @@ mod tests {
         }
 
         // Verify both outer DropShadow (inset=false) and inner shadow (inset=true) exist
-        let outer_shadow = scene.commands.iter().position(|c| {
-            matches!(c, PaintCommand::DropShadow { inset: false, .. })
-        });
-        let inner_shadow = scene.commands.iter().position(|c| {
-            matches!(c, PaintCommand::DropShadow { inset: true, .. })
-        });
+        let outer_shadow = scene
+            .commands
+            .iter()
+            .position(|c| matches!(c, PaintCommand::DropShadow { inset: false, .. }));
+        let inner_shadow = scene
+            .commands
+            .iter()
+            .position(|c| matches!(c, PaintCommand::DropShadow { inset: true, .. }));
         assert!(outer_shadow.is_some() && inner_shadow.is_some());
         assert!(outer_shadow.unwrap() < inner_shadow.unwrap());
 
@@ -1290,7 +1323,9 @@ mod tests {
             sp1,
             Some(30.0),
             Some(3.5),
-            Some(ReactiveValue::Static(craftui_core::Color::rgb(99, 102, 241))),
+            Some(ReactiveValue::Static(craftui_core::Color::rgb(
+                99, 102, 241,
+            ))),
         );
 
         // Hidden via closed Modal ancestor should ALSO pause animation
@@ -1304,8 +1339,12 @@ mod tests {
         tree.set_badge_icon(badge_icon, Some(ReactiveValue::Static("check".into())));
         tree.set_badge_colors(
             badge_icon,
-            Some(ReactiveValue::Static(craftui_core::Color::rgb(16, 185, 129))),
-            Some(ReactiveValue::Static(craftui_core::Color::rgba(16, 185, 129, 40))),
+            Some(ReactiveValue::Static(craftui_core::Color::rgb(
+                16, 185, 129,
+            ))),
+            Some(ReactiveValue::Static(craftui_core::Color::rgba(
+                16, 185, 129, 40,
+            ))),
         );
         tree.append_child(badge_row, badge_plain);
         tree.append_child(badge_row, badge_icon);
@@ -1407,7 +1446,10 @@ mod tests {
         // Clicking left_btn passes right through ToastHost!
         let btn_center = tree.rect(left_btn).center();
         assert_eq!(tree.hit_test(btn_center), Some(left_btn));
-        assert_eq!(tree.cursor_at(btn_center), craftui_core::CursorIcon::Pointer);
+        assert_eq!(
+            tree.cursor_at(btn_center),
+            craftui_core::CursorIcon::Pointer
+        );
         tree.handle_event(&UiEvent::Pointer(PointerEvent {
             id: PointerId(1),
             phase: PointerPhase::Down,
@@ -1430,7 +1472,10 @@ mod tests {
 
         // Empty right pane hits `right_box` -> Default cursor (not ResizeHorizontal)
         let empty_right = tree.rect(right_box).center();
-        assert_eq!(tree.cursor_at(empty_right), craftui_core::CursorIcon::Default);
+        assert_eq!(
+            tree.cursor_at(empty_right),
+            craftui_core::CursorIcon::Default
+        );
 
         // Sash hits `split` -> ResizeHorizontal cursor
         let sash_pt = craftui_core::Point::new(246.0 + 4.0, 150.0);
@@ -1501,5 +1546,353 @@ mod tests {
         }));
         assert!(mgr.is_empty());
         assert_eq!(*dismissed_ids.borrow(), vec![tid]);
+    }
+
+    #[test]
+    fn safe_area_dynamic_insets_keyboard_and_set_layout_preservation() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let sa = tree.safe_area(cx);
+        tree.set_layout(
+            sa,
+            LayoutStyle::column()
+                .with_size(Length::Pct(100.0), Length::Pct(100.0))
+                .with_padding(Insets::all(8.0)),
+        );
+        let child = tree.container(
+            cx,
+            LayoutStyle::column()
+                .with_width(Length::Pct(100.0))
+                .with_flex_grow(1.0),
+            BoxStyle::new(),
+        );
+        tree.append_child(sa, child);
+        tree.set_root(sa);
+
+        let metrics1 = WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            safe_area: Insets::new(44.0, 0.0, 34.0, 0.0),
+            keyboard_inset: 0.0,
+            ..Default::default()
+        };
+        tree.layout(metrics1);
+        let rc1 = tree.rect(child);
+        assert_eq!(rc1.y, 44.0 + 8.0);
+        assert_eq!(rc1.height, 800.0 - 44.0 - 34.0 - 16.0);
+
+        let metrics2 = WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            safe_area: Insets::new(44.0, 0.0, 34.0, 0.0),
+            keyboard_inset: 280.0,
+            ..Default::default()
+        };
+        tree.layout(metrics2);
+        let rc2 = tree.rect(child);
+        assert_eq!(rc2.y, 44.0 + 8.0);
+        assert_eq!(rc2.height, 800.0 - 44.0 - 280.0 - 16.0);
+    }
+
+    #[test]
+    fn segmented_control_click_spring_and_keyboard() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let sel = cx.signal(0usize);
+        let events = Rc::new(RefCell::new(Vec::<usize>::new()));
+        let ev_c = events.clone();
+
+        let root = tree.column(cx);
+        tree.set_layout(
+            root,
+            LayoutStyle::column().with_size(Length::Dp(360.0), Length::Dp(100.0)),
+        );
+        let seg = tree.segmented_control(
+            cx,
+            vec!["Day".to_string(), "Week".to_string(), "Month".to_string()],
+            sel,
+        );
+        tree.set_layout(
+            seg,
+            LayoutStyle::row()
+                .with_width(Length::Dp(300.0))
+                .with_height(Length::Dp(36.0)),
+        );
+        tree.set_on_index_change(seg, move |idx| ev_c.borrow_mut().push(idx));
+        tree.append_child(root, seg);
+        tree.set_root(root);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(360.0, 100.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+        let r = tree.rect(seg);
+        let click_third = Point::new(r.x + r.width * 0.85, r.y + r.height * 0.5);
+        assert_eq!(tree.hit_test(click_third), Some(seg));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: click_third,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: click_third,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 20,
+        }));
+        assert_eq!(sel.get(), 2);
+        assert!(tree.has_active_animations());
+        for _ in 0..8 {
+            tree.tick_animations(0.016);
+        }
+
+        // Keyboard Home / ArrowRight
+        assert!(tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::Home,
+            modifiers: Modifiers::default(),
+            pressed: true,
+            repeat: false,
+            text: None,
+        })));
+        assert_eq!(sel.get(), 0);
+        assert!(tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::ArrowRight,
+            modifiers: Modifiers::default(),
+            pressed: true,
+            repeat: false,
+            text: None,
+        })));
+        assert_eq!(sel.get(), 1);
+        assert_eq!(*events.borrow(), vec![2, 0, 1]);
+
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+        assert!(
+            scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, PaintCommand::DrawText { text, .. } if text == "Week"))
+        );
+    }
+
+    #[test]
+    fn accordion_collapse_expand_header_hit_a11y_and_keyboard() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let expanded = cx.signal(false);
+        let toggles = Rc::new(RefCell::new(Vec::<bool>::new()));
+        let tog_c = toggles.clone();
+        let child_clicks = Rc::new(Cell::new(0usize));
+        let cc = child_clicks.clone();
+
+        let root = tree.column(cx);
+        tree.set_layout(
+            root,
+            LayoutStyle::column().with_size(Length::Dp(340.0), Length::Dp(320.0)),
+        );
+        let acc = tree.accordion(cx, "Permissions", expanded);
+        tree.set_layout(
+            acc,
+            LayoutStyle::column()
+                .with_width(Length::Dp(320.0))
+                .with_padding(Insets::all(12.0)),
+        );
+        tree.set_on_bool_change(acc, move |v| tog_c.borrow_mut().push(v));
+        let btn = tree.button(cx, "Grant Camera", move || cc.set(cc.get() + 1));
+        tree.set_layout(btn, LayoutStyle::row().with_height(Length::Dp(40.0)));
+        tree.append_child(acc, btn);
+        tree.append_child(root, acc);
+        tree.set_root(root);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(340.0, 320.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+        // Collapsed -> header only (44dp) and child hidden in A11y tree
+        assert!((tree.rect(acc).height - 44.0).abs() < 0.5);
+        let upd1 = tree.build_a11y_update().expect("initial a11y");
+        let btn_id = craftui_a11y::accesskit::NodeId::from(slotmap::Key::data(&btn).as_ffi());
+        assert!(!upd1.nodes.iter().any(|(id, _)| *id == btn_id));
+
+        // Clicking header expands accordion
+        let hdr_pt = Point::new(40.0, 20.0);
+        assert_eq!(tree.hit_test(hdr_pt), Some(acc));
+        assert_eq!(tree.cursor_at(hdr_pt), craftui_core::CursorIcon::Pointer);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: hdr_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: hdr_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 25,
+        }));
+        assert!(expanded.get());
+        tree.layout(metrics);
+        // Expanded height = 44 header + 12 top + 40 child + 12 bottom = 108dp
+        assert!((tree.rect(acc).height - 108.0).abs() < 1.0);
+        assert!((tree.rect(btn).y - 56.0).abs() < 1.0);
+        let upd2 = tree.build_a11y_update().expect("expanded a11y");
+        assert!(upd2.nodes.iter().any(|(id, _)| *id == btn_id));
+
+        // Body below header hits child button (or Default on padding), NOT accordion
+        let below_hdr = Point::new(6.0, 80.0);
+        assert_eq!(tree.hit_test(below_hdr), None);
+        let btn_center = tree.rect(btn).center();
+        assert_eq!(tree.hit_test(btn_center), Some(btn));
+
+        // Keyboard Space on focused Accordion toggles closed even when expanded
+        tree.focused = Some(acc);
+        assert!(tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::Space,
+            modifiers: Modifiers::default(),
+            pressed: true,
+            repeat: false,
+            text: None,
+        })));
+        assert!(!expanded.get());
+        tree.layout(metrics);
+        assert!((tree.rect(acc).height - 44.0).abs() < 0.5);
+        assert_eq!(*toggles.borrow(), vec![true, false]);
+
+        // A11y click re-expands
+        let acc_a11y_id = craftui_a11y::accesskit::NodeId::from(slotmap::Key::data(&acc).as_ffi());
+        assert!(
+            tree.handle_a11y_action(&craftui_a11y::accesskit::ActionRequest {
+                action: craftui_a11y::accesskit::Action::Click,
+                target_tree: craftui_a11y::accesskit::TreeId::ROOT,
+                target_node: acc_a11y_id,
+                data: None,
+            })
+        );
+        assert!(expanded.get());
+    }
+
+    #[test]
+    fn data_table_sort_selection_preservation_scroll_and_keyboard() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let sel = cx.signal(0usize);
+        let sorts = Rc::new(RefCell::new(Vec::<usize>::new()));
+        let sorts_c = sorts.clone();
+        let selects = Rc::new(RefCell::new(Vec::<usize>::new()));
+        let selects_c = selects.clone();
+
+        let cols = vec!["Capability".to_string(), "Score".to_string()];
+        let rows = vec![
+            vec!["Camera".to_string(), "30".to_string()],
+            vec!["Biometrics".to_string(), "10".to_string()],
+            vec!["Location".to_string(), "20".to_string()],
+            vec!["Bluetooth".to_string(), "40".to_string()],
+            vec!["Microphone".to_string(), "50".to_string()],
+        ];
+
+        let tbl = tree.data_table(cx, cols, rows, sel);
+        // Header 38 + 2 rows visible (72dp) -> viewport 110dp so scroll is active
+        tree.set_layout(
+            tbl,
+            LayoutStyle::column().with_size(Length::Dp(300.0), Length::Dp(110.0)),
+        );
+        tree.set_on_index_change(tbl, move |idx| selects_c.borrow_mut().push(idx));
+        tree.set_on_sort(tbl, move |col| sorts_c.borrow_mut().push(col));
+        tree.set_root(tbl);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(300.0, 110.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Click second column header ("Score") -> sorts ascending: [10(orig 1), 20(orig 2), 30(orig 0), ...]
+        let hdr_col1 = Point::new(220.0, 18.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: hdr_col1,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: hdr_col1,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 20,
+        }));
+        assert_eq!(*sorts.borrow(), vec![1]);
+
+        // Click first body row (y = 38 + 18 = 56) -> corresponds to orig_idx 1 ("Biometrics", "10")
+        let row0_pt = Point::new(80.0, 56.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Down,
+            position: row0_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 30,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Up,
+            position: row0_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 40,
+        }));
+        assert_eq!(sel.get(), 1);
+
+        // Keyboard End selects last sorted row ("Microphone", orig_idx 4) and auto-scrolls down
+        assert!(tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::End,
+            modifiers: Modifiers::default(),
+            pressed: true,
+            repeat: false,
+            text: None,
+        })));
+        assert_eq!(sel.get(), 4);
+        assert!(matches!(
+            tree.nodes.get(tbl).map(|n| &n.kind),
+            Some(WidgetKind::DataTable { scroll_offset, .. }) if *scroll_offset > 50.0
+        ));
+
+        // Wheel scroll back up
+        assert!(
+            tree.handle_event(&UiEvent::Scroll(craftui_core::ScrollDelta {
+                position: Point::new(100.0, 70.0),
+                x: 0.0,
+                y: 120.0,
+            }))
+        );
+        assert!(matches!(
+            tree.nodes.get(tbl).map(|n| &n.kind),
+            Some(WidgetKind::DataTable { scroll_offset, .. }) if *scroll_offset == 0.0
+        ));
+        assert_eq!(*selects.borrow(), vec![1, 4]);
     }
 }

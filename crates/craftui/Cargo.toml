@@ -71,3 +71,7 @@ craftui-platform-desktop = { workspace = true, optional = true }
 craftui-platform-android = { workspace = true, optional = true }
 craftui-platform-ios = { workspace = true, optional = true }
 craftui-platform-web = { workspace = true, optional = true }
+
+[[bench]]
+name = "perf_suite"
+harness = false

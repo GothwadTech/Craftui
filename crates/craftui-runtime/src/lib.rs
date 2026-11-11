@@ -134,6 +134,19 @@ impl DynValue {
         }
     }
 
+    pub fn as_string_table(&self) -> Vec<Vec<String>> {
+        match self {
+            Self::List(rows) => rows
+                .iter()
+                .map(|row| match row {
+                    Self::List(cells) => cells.iter().map(DynValue::as_str).collect(),
+                    other => vec![other.as_str()],
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn key_string(&self) -> String {
         match self {
             Self::Int(i) => format!("i:{i}"),
@@ -773,6 +786,73 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
             wire_index_change(n, el, env, tree);
             n
         }
+        "SegmentedControl" => {
+            let items_rv = find_prop(el, &["items", "options", "tabs"])
+                .map(|p| expr_to_reactive_string_list(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(Vec::new()));
+            let idx_prop = find_prop(el, &["selected", "active", "value"]);
+            let idx_sig = bind_usize_signal(scope, idx_prop, env, 0);
+            let n = tree.segmented_control(scope, items_rv, idx_sig);
+            wire_index_change(n, el, env, tree);
+            n
+        }
+        "Accordion" => {
+            let title_rv = find_prop(el, &["title", "label", "text"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            let exp_prop = find_prop(el, &["expanded", "open"]);
+            let exp_sig = bind_bool_signal(scope, exp_prop, env, false);
+            let n = tree.accordion(scope, title_rv, exp_sig);
+            if let Some(h) = el
+                .handlers
+                .iter()
+                .find(|h| h.event == "on_change" || h.event == "on_toggle")
+            {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_bool_change(n, move |expanded| {
+                    let mut h_env = env_c.clone();
+                    let v = DynValue::Bool(expanded);
+                    h_env.locals.insert("expanded".into(), v.clone());
+                    h_env.locals.insert("open".into(), v.clone());
+                    h_env.locals.insert("value".into(), v);
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            n
+        }
+        "DataTable" => {
+            let cols_rv = find_prop(el, &["columns"])
+                .map(|p| expr_to_reactive_string_list(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(Vec::new()));
+            let rows_rv = find_prop(el, &["rows", "items"])
+                .map(|p| expr_to_reactive_string_table(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(Vec::new()));
+            let sel_prop = find_prop(el, &["selected"]);
+            let sel_sig = bind_usize_signal(scope, sel_prop, env, 0);
+            let n = tree.data_table(scope, cols_rv, rows_rv, sel_sig);
+            let striped_opt = eval_prop("striped").map(|v| v.as_bool());
+            let row_height_opt = eval_prop("row_height").map(|v| v.as_f32());
+            if striped_opt.is_some() || row_height_opt.is_some() {
+                tree.set_data_table_options(n, striped_opt, row_height_opt);
+            }
+            wire_index_change(n, el, env, tree);
+            if let Some(h) = el.handlers.iter().find(|h| h.event == "on_sort") {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_sort(n, move |col| {
+                    let mut h_env = env_c.clone();
+                    let v = DynValue::Int(col as i64);
+                    h_env.locals.insert("column".into(), v.clone());
+                    h_env.locals.insert("col".into(), v.clone());
+                    h_env.locals.insert("index".into(), v.clone());
+                    h_env.locals.insert("idx".into(), v.clone());
+                    h_env.locals.insert("value".into(), v);
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            n
+        }
         "Select" | "Dropdown" => {
             let opts_rv = find_prop(el, &["options", "items"])
                 .map(|p| expr_to_reactive_string_list(&p.value, env))
@@ -939,9 +1019,7 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
                 let ms_v = ms
                     .map(|p| eval_expr(&p.value, env).as_f32())
                     .unwrap_or(80.0);
-                let ds_v = ds
-                    .map(|p| eval_expr(&p.value, env).as_f32())
-                    .unwrap_or(8.0);
+                let ds_v = ds.map(|p| eval_expr(&p.value, env).as_f32()).unwrap_or(8.0);
                 tree.set_split_pane_config(n, mf_v, ms_v, ds_v);
             }
             if let Some(h) = el.handlers.iter().find(|h| h.event == "on_change") {
@@ -1013,7 +1091,11 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
     node
 }
 
-fn apply_node_layout_props(layout: &mut craftui_layout::LayoutStyle, el: &ElementNode, env: &DynEnv) -> bool {
+fn apply_node_layout_props(
+    layout: &mut craftui_layout::LayoutStyle,
+    el: &ElementNode,
+    env: &DynEnv,
+) -> bool {
     let mut dirty = false;
     let eval_p = |name: &str| -> Option<DynValue> {
         el.props
@@ -1212,7 +1294,10 @@ fn eval_animate_curve(spec: &AnimateSpec, env: &DynEnv) -> TransitionCurve {
             ),
             "tween" if !args.is_empty() => {
                 let dur = eval_expr(&args[0], env).as_f32();
-                let eas = args.get(1).map(parse_easing_expr).unwrap_or(Easing::EaseOut);
+                let eas = args
+                    .get(1)
+                    .map(parse_easing_expr)
+                    .unwrap_or(Easing::EaseOut);
                 TransitionCurve::tween(dur, eas)
             }
             _ => TransitionCurve::snappy(),
@@ -1320,7 +1405,11 @@ fn apply_common_props_and_events(
                 }
             },
             move |id, tr| {
-                let mut l = tr.nodes.get(id).map(|n| n.layout.clone()).unwrap_or_default();
+                let mut l = tr
+                    .nodes
+                    .get(id)
+                    .map(|n| n.layout.clone())
+                    .unwrap_or_default();
                 if apply_node_layout_props(&mut l, &el_c, &env_ap) {
                     tr.set_layout(id, l);
                 }
@@ -1452,12 +1541,8 @@ fn apply_common_props_and_events(
                 let br_v = br_expr
                     .as_ref()
                     .map(|e| CornerRadii::all(eval_expr(e, &env_ap).as_f32()));
-                let bw_v = bw_expr
-                    .as_ref()
-                    .map(|e| eval_expr(e, &env_ap).as_f32());
-                let cl_v = cl_expr
-                    .as_ref()
-                    .map(|e| eval_expr(e, &env_ap).as_bool());
+                let bw_v = bw_expr.as_ref().map(|e| eval_expr(e, &env_ap).as_f32());
+                let cl_v = cl_expr.as_ref().map(|e| eval_expr(e, &env_ap).as_bool());
                 if let Some(rad) = br_v {
                     tr.set_image_radius(id, rad);
                 }
@@ -2199,6 +2284,7 @@ fn wire_index_change(node: NodeId, el: &ElementNode, env: &DynEnv, tree: &mut Wi
             let mut h_env = env_c.clone();
             let v = DynValue::Int(idx as i64);
             h_env.locals.insert("index".into(), v.clone());
+            h_env.locals.insert("idx".into(), v.clone());
             h_env.locals.insert("selected".into(), v.clone());
             h_env.locals.insert("active".into(), v.clone());
             h_env.locals.insert("value".into(), v);
@@ -2404,9 +2490,7 @@ fn eval_iterable(expr: &Expr, env: &DynEnv, track: bool) -> Vec<DynValue> {
 
 fn expr_has_reactivity(expr: &Expr, env: &DynEnv) -> bool {
     match expr {
-        Expr::Ident(name) => {
-            env.props.contains_key(name) || env.signal_locals.contains_key(name)
-        }
+        Expr::Ident(name) => env.props.contains_key(name) || env.signal_locals.contains_key(name),
         Expr::Member(base, _) => {
             matches!(base.as_ref(), Expr::Ident(r) if r == "Theme")
                 || expr_has_reactivity(base, env)
@@ -2474,6 +2558,18 @@ fn expr_to_reactive_string_list(expr: &Expr, env: &DynEnv) -> ReactiveValue<Vec<
     }
 }
 
+fn expr_to_reactive_string_table(expr: &Expr, env: &DynEnv) -> ReactiveValue<Vec<Vec<String>>> {
+    if expr_has_reactivity(expr, env) {
+        let e = expr.clone();
+        let env_c = env.clone();
+        ReactiveValue::Dynamic(Rc::new(move || {
+            eval_expr_tracked(&e, &env_c, true).as_string_table()
+        }))
+    } else {
+        ReactiveValue::Static(eval_expr(expr, env).as_string_table())
+    }
+}
+
 fn expr_to_reactive_color(expr: &Expr, env: &DynEnv, fallback: Color) -> ReactiveValue<Color> {
     if expr_has_reactivity(expr, env) {
         let e = expr.clone();
@@ -2496,7 +2592,10 @@ fn dyn_value_to_toast_item(v: &DynValue) -> Option<ToastItem> {
         .get("id")
         .map(|x| x.as_i64().max(0) as u64)
         .unwrap_or(0);
-    let title = fields.get("title").map(DynValue::as_str).unwrap_or_default();
+    let title = fields
+        .get("title")
+        .map(DynValue::as_str)
+        .unwrap_or_default();
     let message = fields
         .get("message")
         .map(DynValue::as_str)
@@ -3278,7 +3377,9 @@ export component ShowcasePhase3 {
         }
     }
 }"#;
-        session.reload(src, Some("ShowcasePhase3"), &mut tree).unwrap();
+        session
+            .reload(src, Some("ShowcasePhase3"), &mut tree)
+            .unwrap();
         let mut m0 = BTreeMap::new();
         m0.insert("id".into(), DynValue::Int(101));
         m0.insert("title".into(), DynValue::String("Build".into()));
@@ -3307,7 +3408,10 @@ export component ShowcasePhase3 {
             ..Default::default()
         };
         tree.layout(metrics);
-        assert!(!tree.has_active_animations(), "mount values must snap without animating");
+        assert!(
+            !tree.has_active_animations(),
+            "mount values must snap without animating"
+        );
         let card = tree.node_by_id("card").unwrap();
         assert!((tree.nodes.get(card).unwrap().box_style.opacity - 0.4).abs() < 1e-4);
 
@@ -3365,10 +3469,19 @@ export component ShowcasePhase3 {
         }));
 
         tree.layout(metrics);
-        assert_eq!(session.store.props.get("points").unwrap().get(), DynValue::Int(15));
-        assert!(tree.has_active_animations(), "updating reactive animated opacity/scale must trigger animations");
+        assert_eq!(
+            session.store.props.get("points").unwrap().get(),
+            DynValue::Int(15)
+        );
+        assert!(
+            tree.has_active_animations(),
+            "updating reactive animated opacity/scale must trigger animations"
+        );
         let after_rows = tree.nodes.get(for_host).unwrap().children.clone();
-        assert_eq!(after_rows, initial_rows, "keyed loop rows must reuse NodeIds when payload mutates");
+        assert_eq!(
+            after_rows, initial_rows,
+            "keyed loop rows must reuse NodeIds when payload mutates"
+        );
         let row0_txt_id = tree.nodes.get(after_rows[0]).unwrap().children[0];
         match &tree.nodes.get(row0_txt_id).unwrap().kind {
             WidgetKind::Text { content, .. } => assert_eq!(content.get(), "0: Build!"),
@@ -3444,7 +3557,9 @@ export component ShowcasePhase3 {
         }
     }
 }"#;
-        session.reload(src, Some("Phase4Widgets"), &mut tree).unwrap();
+        session
+            .reload(src, Some("Phase4Widgets"), &mut tree)
+            .unwrap();
         let metrics = WindowMetrics {
             logical_size: Size::new(500.0, 320.0),
             ..Default::default()
@@ -3471,7 +3586,9 @@ export component ShowcasePhase3 {
 
         let spin_id = tree.node_by_id("load_spin").unwrap();
         match &tree.nodes.get(spin_id).unwrap().kind {
-            WidgetKind::Spinner { size, thickness, .. } => {
+            WidgetKind::Spinner {
+                size, thickness, ..
+            } => {
                 assert!((*size - 26.0).abs() < 0.01);
                 assert!((*thickness - 3.0).abs() < 0.01);
             }
@@ -3506,5 +3623,121 @@ export component ShowcasePhase3 {
             session.store.props.get("dismissed_id").unwrap().get(),
             DynValue::Int(9)
         );
+    }
+
+    #[test]
+    fn runtime_supports_phase5_safe_area_segmented_accordion_and_datatable() {
+        let mut session = HotReloadSession::new(Scope::root());
+        let mut tree = WidgetTree::new(session.state_scope);
+        let src = r#"export component Phase5Mobile {
+    in-out property <int> segment: 0;
+    in-out property <bool> open_acc: false;
+    in-out property <int> sel_row: 0;
+    in-out property <int> sorted_col: -1;
+    in property <[[string]]> rows_data: [["Camera", "Granted"], ["Mic", "Denied"]];
+
+    SafeArea {
+        id: "safe_root";
+        padding: 10;
+        Column {
+            id: "safe_content";
+            gap: 8;
+            SegmentedControl {
+                id: "seg";
+                items: ["All", "Granted", "Denied"];
+                selected <=> segment;
+                on_change => { segment = idx; }
+            }
+            Accordion {
+                id: "acc";
+                title: "Android Manifest Details";
+                expanded <=> open_acc;
+                on_toggle => { open_acc = expanded; }
+                Text { id: "acc_body"; text: "Uses android.permission.CAMERA"; }
+            }
+            DataTable {
+                id: "tbl";
+                columns: ["Permission", "State"];
+                rows: rows_data;
+                selected <=> sel_row;
+                striped: false;
+                row_height: 36;
+                on_select => { sel_row = idx; }
+                on_sort => { sorted_col = col; }
+            }
+        }
+    }
+}"#;
+        session
+            .reload(src, Some("Phase5Mobile"), &mut tree)
+            .unwrap();
+        let m1 = WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            safe_area: Insets::new(48.0, 0.0, 34.0, 0.0),
+            ..Default::default()
+        };
+        tree.layout(m1);
+        let content_r1 = tree.rect(tree.node_by_id("safe_content").unwrap());
+        assert!((content_r1.y - 58.0).abs() < 0.5, "got {}", content_r1.y);
+
+        // Dynamic safe area + keyboard inset update moves SafeArea content smoothly
+        let m2 = WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            safe_area: Insets::new(20.0, 12.0, 24.0, 12.0),
+            keyboard_inset: 280.0,
+            ..Default::default()
+        };
+        tree.layout(m2);
+        let content_r2 = tree.rect(tree.node_by_id("safe_content").unwrap());
+        assert!((content_r2.y - 30.0).abs() < 0.5, "got {}", content_r2.y);
+        assert!((content_r2.x - 22.0).abs() < 0.5, "got {}", content_r2.x);
+
+        let seg_node = tree.nodes.get(tree.node_by_id("seg").unwrap()).unwrap();
+        assert!(matches!(seg_node.kind, WidgetKind::SegmentedControl { .. }));
+
+        let acc_id = tree.node_by_id("acc").unwrap();
+        let acc_rect_closed = tree.rect(acc_id);
+        let acc_hdr_pt = Point::new(acc_rect_closed.x + 24.0, acc_rect_closed.y + 16.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Down,
+            position: acc_hdr_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 0,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Up,
+            position: acc_hdr_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        assert_eq!(
+            session.store.props.get("open_acc").unwrap().get(),
+            DynValue::Bool(true)
+        );
+        tree.layout(m2);
+        assert!(tree.rect(acc_id).height > acc_rect_closed.height);
+
+        let tbl_id = tree.node_by_id("tbl").unwrap();
+        match &tree.nodes.get(tbl_id).unwrap().kind {
+            WidgetKind::DataTable {
+                columns,
+                rows,
+                striped,
+                row_height,
+                ..
+            } => {
+                assert_eq!(columns.get(), vec!["Permission", "State"]);
+                assert_eq!(rows.get().len(), 2);
+                assert!(!*striped);
+                assert!((*row_height - 36.0).abs() < 0.01);
+            }
+            _ => panic!("expected DataTable widget"),
+        }
     }
 }

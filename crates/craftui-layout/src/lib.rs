@@ -47,6 +47,8 @@ pub struct LayoutStyle {
     pub use_inset: bool,
     pub safe_area: bool,
     pub clip_overflow: bool,
+    #[serde(default)]
+    pub header_top_inset: f32,
 }
 
 impl Default for LayoutStyle {
@@ -78,6 +80,7 @@ impl Default for LayoutStyle {
             use_inset: false,
             safe_area: false,
             clip_overflow: false,
+            header_top_inset: 0.0,
         }
     }
 }
@@ -233,7 +236,7 @@ impl LayoutStyle {
             height: len_to_lpa(self.max_height, scale_factor),
         };
 
-        let eff_pad = if self.safe_area {
+        let mut eff_pad = if self.safe_area {
             Insets::new(
                 self.padding.top + safe_area.top,
                 self.padding.right + safe_area.right,
@@ -243,6 +246,7 @@ impl LayoutStyle {
         } else {
             self.padding
         };
+        eff_pad.top += self.header_top_inset;
 
         style.padding = taffy::Rect {
             top: tp::length(eff_pad.top),
@@ -562,8 +566,7 @@ fn sync_styles_recursive(
     let ctx_changed = synced_node_context.get(node) != Some(&ctx_now);
 
     if env.env_changed || ctx_changed || dirty_styles.contains(&node) {
-        let taffy_style =
-            style.to_taffy(env.scale_factor, env.safe_area, eff_dir, force_absolute);
+        let taffy_style = style.to_taffy(env.scale_factor, env.safe_area, eff_dir, force_absolute);
         if let Some(&taffy_id) = node_map.get(node) {
             let _ = taffy.set_style(taffy_id, taffy_style);
         }
@@ -724,5 +727,35 @@ mod tests {
         );
         assert_eq!(engine.rect(c1), Rect::new(0.0, 0.0, 100.0, 40.0));
         assert_eq!(engine.rect(c2), Rect::new(120.0, 0.0, 100.0, 40.0));
+    }
+
+    #[test]
+    fn header_top_inset_combines_with_padding_and_safe_area() {
+        let mut nodes: SlotMap<NodeId, ()> = SlotMap::with_key();
+        let card = nodes.insert(());
+        let child = nodes.insert(());
+
+        let mut engine = LayoutEngine::new();
+        let mut card_style = LayoutStyle::column()
+            .with_width(dp(240.0))
+            .with_padding(Insets::all(10.0))
+            .with_safe_area(true);
+        card_style.header_top_inset = 44.0;
+        engine.upsert_node(card, card_style);
+        engine.upsert_node(child, LayoutStyle::column().with_height(dp(30.0)));
+        engine.set_children(card, &[child]);
+
+        let safe = Insets::new(12.0, 0.0, 8.0, 4.0);
+        engine.compute_layout(card, 240.0, 300.0, safe, 1.0, Direction::Ltr, |_, _| {
+            Size::ZERO
+        });
+
+        let rc = engine.rect(child);
+        assert_eq!(rc.x, 14.0);
+        assert_eq!(rc.y, 10.0 + 12.0 + 44.0);
+        assert_eq!(
+            engine.rect(card).height,
+            10.0 + 12.0 + 44.0 + 30.0 + 10.0 + 8.0
+        );
     }
 }

@@ -49,7 +49,11 @@ impl Modifiers {
     /// Primary shortcut modifier (`Cmd` on macOS/iOS/browser-Mac, `Ctrl` everywhere else).
     #[inline]
     pub fn command(self) -> bool {
-        if cfg!(any(target_os = "macos", target_os = "ios", target_arch = "wasm32")) {
+        if cfg!(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_arch = "wasm32"
+        )) {
             self.super_key || self.ctrl
         } else {
             self.ctrl

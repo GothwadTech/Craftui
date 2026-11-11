@@ -1,46 +1,117 @@
 # CraftUI
 
-A pure-Rust, MIT-licensed cross-platform declarative UI framework targeting **Desktop** (Windows, macOS, Linux), **Mobile** (Android, iOS), and **Web** (WebAssembly).
+A pure-Rust, MIT-licensed cross-platform declarative UI framework targeting **Desktop** (Windows, macOS, Linux), **Mobile** (Android, iOS), and **Web** (WebAssembly), engineered for exceptional visual beauty, lightweight footprint, sub-100ms developer iteration, and native OS capabilities.
 
-> See [`ROADMAP.md`](ROADMAP.md) for the full audited issue register and phased production roadmap, [`craftui_prd.md`](craftui_prd.md) for product requirements, [`craftui_architecture.md`](craftui_architecture.md) for system architecture, and [`craftui_dsl_and_design_spec.md`](craftui_dsl_and_design_spec.md) for `.cui` & design specs.
+> **Roadmap & Docs:**
+> - [`ROADMAP.md`](ROADMAP.md) — Audited issue register and verified production phases (Phases 1–5 completed).
+> - [`craftui_prd.md`](craftui_prd.md) — Product requirements and capabilities.
+> - [`craftui_architecture.md`](craftui_architecture.md) — System architecture and rendering pipeline.
+> - [`craftui_dsl_and_design_spec.md`](craftui_dsl_and_design_spec.md) — `.cui` declarative template and design system specifications.
 
-## Core Architecture Highlights
+---
 
-- **`craftui-core`**: Geometry (`Point`, `Size`, `Rect`, `Transform2D`, `CornerRadii`, `WindowMetrics`), colors/brushes/gradients, layered/inset `BoxShadow`, blend modes, cursor icons, theme design tokens (`Light`, `Dark`, `Amoled`, `HighContrast`, `ThemeOverride`), platform service traits, and `UiDispatcher`.
-- **`craftui-reactive`**: Fine-grained generational `Copy` signals (`Scope`, `Signal<T>`, `ReadSignal<T>`, `Computed<T>`, `Effect`), `batch`, `untrack`, context lookup, and scope-bound timers/tasks.
-- **`craftui-layout`**: Dirty-aware Flexbox, CSS Grid, and Z-`Stack` layout engine powered by `taffy` with `SafeArea` insets and RTL mirroring.
-- **`craftui-text`**: Multi-script text shaping (`parley` + `harfrust` + `fontique`) with **LRU shaped-layout cache**, bundled permissive **65 KB `Vera.ttf` fallback font** (always renders text out of the box on WASM/headless Linux), and full `TextEditorState` (undo/redo, word motion, selection, IME).
-- **`craftui-render`**: Feature-gated hybrid renderer supporting a lightweight **Instanced SDF Quad + Glyph Atlas + Kawase BackdropBlur GPU backend (`gpu-sdf`)** alongside optional **`vello` GPU (`gpu-vello`)** and **`vello_cpu` / `tiny-skia`** software backends, plus SVG icons and damage-tracked pixel buffers.
-- **`craftui-a11y`**: Incremental screen-reader semantic tree synchronization powered by `accesskit`.
-- **`craftui-widgets`**: Retained `WidgetTree`, property animations (`Spring` / `Tween` / transitions), standard & composable widgets (`Row`, `Column`, `Grid`, `Stack`, `Spacer`, `SafeArea`, `Divider`, `Icon`, `Text`, `Button`, `ImageView`, `Canvas`, `ScrollView`, `VirtualList`, `VirtualGrid`, `TextInput`, `TextArea`, `Checkbox`, `Switch`, `Slider`, `Tabs`, `Select`, `RadioGroup`, `PopupMenu`, `Tooltip`, `ProgressIndicator`, `Modal`, `BottomSheet`, `Toast`, `SplitPane`, `PlatformView`), `CustomWidget`, `GestureArena`, `Router<R>`, and `Ctrl+Shift+I` Inspector.
-- **`craftui-dsl` & `craftui-runtime`**: Lossless `rowan` + `logos` `.cui` compiler with strict typed validation, declarative `animate` blocks, reactive transforms & styles, keyed `for`, AOT Rust codegen, and optional feature-gated hot-reload runtime.
-- **`craftui-macros`**: Pure-Rust `cui!` macro and `#[component]` attribute macro.
-- **`craftui-platform-{desktop,android,ios,web}` & `craftui`**: Demand-driven platform runners (`0%` idle spin) and unified `craftui::prelude::*` facade.
-- **`craftui-cli` & `craftui-lsp`**: Project scaffolding/bundling CLI (`new`, `dev`, `preview`, `check`, `render`, `doctor`, `build`) and context-aware `.cui` Language Server (`tower-lsp`).
+## Key Features & Highlights
+
+- **Lightweight & High-Performance Hybrid Rendering**:
+  - Pure-WGSL **Instanced SDF Quad + Glyph Atlas + Kawase Backdrop-Blur GPU backend (`gpu-sdf`)** running on Desktop (Vulkan, Metal, DirectX 12), Mobile (Vulkan, GLES), WebGPU, **and WebGL2** without compute-shader requirements.
+  - Optional `vello` GPU (`gpu-vello`) and pure-software fallback renderers (`vello_cpu`, `tiny-skia`).
+  - Zero idle CPU/GPU consumption: demand-driven frame pacing (`0%` idle spin) across desktop, mobile, and web.
+- **Modern Declarative UI & Design System**:
+  - Declarative `.cui` markup and pure-Rust `cui!` macro with compile-time type validation, two-way bindings (`<=>`), and declarative `animate` blocks.
+  - Complete widget suite (40+ built-ins): `SafeArea` (dynamic notch/Dynamic Island/keyboard insets), `SegmentedControl`, `Accordion`, `DataTable` (sortable, striped, selectable), `SplitPane`, `Spinner`, `Badge`, `ToastHost`, `Modal`, `BottomSheet`, `ScrollView`, `VirtualList`, `VirtualGrid`, `Tabs`, `Slider`, `Switch`, `Checkbox`, `TextInput`, `TextArea`, `Canvas`, and `PlatformView`.
+  - Built-in design token modes (`Dark`, `Light`, `Amoled`, `HighContrast`, `ThemeOverride`) with live runtime interpolation.
+- **Native Mobile Capabilities & Zero-Boilerplate Permissions**:
+  - **35 Standard Cross-Platform Permissions** (`Camera`, `Microphone`, `LocationWhenInUse`, `LocationAlways`, `Photos`, `Notifications`, `Bluetooth`, `Biometrics`, `Contacts`, `Sensors`, `StorageRead`, `Nfc`, `Vibrate`, `ClipboardRead`, etc.).
+  - Single zero-dependency `craftui.toml` manifest:
+    - Automatically emits Android `<uses-permission>` (with exact `android:maxSdkVersion` bounds) and `<uses-feature android:required="false" />`.
+    - Automatically merges Apple `Info.plist` `NS*UsageDescription` privacy strings and `UIBackgroundModes`.
+    - Automatically checks W3C Web Permissions API descriptor compatibility.
+  - Native haptics (`HapticStyle`), OS share sheet (`SharePayload`), secure key-value storage (Android Keystore / iOS Keychain), and live device/network/battery telemetry.
+- **Flutter-Surpassing Developer Experience (DX)**:
+  - `craftui-cli`:
+    - `craftui new <name> --template counter|dashboard|mobile`
+    - `craftui init` (initializes `craftui.toml` in existing projects without overwriting code)
+    - `craftui setup` (installs missing Rust targets and audits NDK/ADB/tools)
+    - `craftui run --platform desktop|web|android` (multi-threaded Web static server with `application/wasm` MIME; direct ADB install/launch)
+    - `craftui permissions list|check` (audits `craftui.toml` against target platforms)
+    - `craftui doctor [--json]` (inspects rustc, cargo, targets, NDK, clang, Xcode, and `.cui` files)
+  - **Official VS Code Extension** (`editors/vscode/`): syntax highlighting, LSP diagnostics, hover docs, completions, hex color pickers, and live hot-reload preview shortcuts.
+
+---
 
 ## Quick Start
 
+### 1. Install & Setup Toolchain
 ```bash
-# Run workspace unit & integration tests
+# Verify environment and install missing targets
+cargo run -p craftui-cli -- doctor
+cargo run -p craftui-cli -- setup
+```
+
+### 2. Scaffold a New Project
+```bash
+# Create a mobile-ready starter
+cargo run -p craftui-cli -- new my_app --template mobile
+cd my_app
+
+# Audit permissions manifest
+cargo run -p craftui-cli -- permissions check craftui.toml
+
+# Validate templates and run on desktop
+cargo run -p craftui-cli -- check ui/main.cui
+cargo run -p craftui-cli -- run --platform desktop
+```
+
+### 3. Build & Package for All Platforms
+```bash
+# WebAssembly web bundle (dist/web) and serve locally
+cargo run -p craftui-cli -- run --platform web --port 8080
+
+# Android Gradle / GameActivity project (dist/android)
+cargo run -p craftui-cli -- build --platform android
+
+# iOS UIKit / Metal / C-ABI bridge bundle (dist/ios)
+cargo run -p craftui-cli -- build --platform ios --skip-cargo
+```
+
+---
+
+## Workspace Verification & Testing
+
+```bash
+# Run all workspace unit and integration tests
 cargo test --workspace
 
-# Check strict lints
+# Enforce strict compiler and clippy warnings
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Validate all .cui templates
-cargo run -p craftui-cli -- check examples
+# Check headless minimal footprint build
+cargo check -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"
 
-# Render a headless snapshot of a .cui file
-cargo run -p craftui-cli -- render examples/showcase/ui/showcase.cui -o showcase.png
+# Check Web WASM target
+cargo clippy -p craftui-platform-web --target wasm32-unknown-unknown --all-targets -- -D warnings
 
-# Launch flagship examples
-cargo run -p craftui-example-counter
-cargo run -p craftui-example-showcase
-cargo run -p craftui-example-todo
-cargo run -p craftui-example-settings
-cargo run -p craftui-example-canvas
+# Run headless performance benchmark suite
+cargo bench -p craftui --bench perf_suite -- --quick --json
+
+# Run package binary size report
+bash scripts/size_report.sh
 ```
+
+---
+
+## Platform Verification & Honest Limitations
+
+| Platform | Verification Status | Notes & Limitations |
+|---|---|---|
+| **Linux (Host)** | **Verified** | Full desktop suite, Wayland/X11, software + GPU offscreen rendering, CLI, and LSP verified. |
+| **Web (`wasm32-unknown-unknown`)** | **Verified** | Cross-compilation, strict `-D warnings` clippy, `application/wasm` HTTP server, and DOM ARIA/canvas verified; browser GPU display requires live browser. |
+| **Android (`aarch64-linux-android`)** | **Verified** | Cross-compilation via Android NDK 28.2 (`aarch64-linux-android24-clang`), `AndroidHost` lifecycle/IME/permissions tests, and Gradle project generation verified; live APK on-device execution requires physical Android device or emulator. |
+| **iOS (`aarch64-apple-ios`)** | **Verified C-ABI / Swift** | C-ABI bridge exports, `IosAppHost` lifecycle/touch/permissions tests, and Xcode bridge templates (`CraftUI.h`, `CraftUIViewController.swift`, `CraftUIPermissions.swift`, `Info.plist`) verified; final static library linking (`xcodebuild`) and IPA signing require macOS host. |
+| **Windows (`x86_64-pc-windows-msvc`)** | **Verified Core/DSL** | Platform-neutral code, layout, rendering, and CLI verified on Linux host; Win32 `IFileDialog` / `CF_UNICODETEXT` native runtime execution requires Windows CI runner. |
+
+---
 
 ## License
 
-Licensed under the [MIT License](LICENSE). Zero GPL/LGPL/AGPL dependencies are permitted (enforced via `deny.toml`).
+Licensed under the [MIT License](LICENSE) or [Apache License 2.0](LICENSE-APACHE) at your option. Zero GPL/LGPL/AGPL dependencies are permitted (enforced by `deny.toml`).

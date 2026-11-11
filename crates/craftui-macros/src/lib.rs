@@ -175,11 +175,7 @@ impl Parse for CuiChild {
             }
             let key_expr = {
                 let fk = input.fork();
-                if fk
-                    .parse::<Ident>()
-                    .is_ok_and(|id| id == "key")
-                    && fk.peek(Token![:])
-                {
+                if fk.parse::<Ident>().is_ok_and(|id| id == "key") && fk.peek(Token![:]) {
                     let _k: Ident = input.parse()?;
                     input.parse::<Token![:]>()?;
                     Some(Expr::parse_without_eager_brace(input)?)
@@ -397,19 +393,11 @@ fn emit_cui_child(
                 let host_var = format_ident!("__cui_if_host_{}", *counter);
                 *counter += 1;
                 let mut then_stmts = TokenStream2::new();
-                let then_var = emit_child_list(
-                    then_children,
-                    parent_slot_layout,
-                    counter,
-                    &mut then_stmts,
-                );
+                let then_var =
+                    emit_child_list(then_children, parent_slot_layout, counter, &mut then_stmts);
                 let mut else_stmts = TokenStream2::new();
-                let else_var = emit_child_list(
-                    else_ch,
-                    parent_slot_layout,
-                    counter,
-                    &mut else_stmts,
-                );
+                let else_var =
+                    emit_child_list(else_ch, parent_slot_layout, counter, &mut else_stmts);
                 stmts.extend(quote! {
                     let #host_var = __tree.dynamic_slot(
                         __cx,
@@ -434,7 +422,9 @@ fn emit_cui_child(
                 if matches!(cond, Expr::Closure(_)) {
                     stmts.extend(quote! { __tree.set_visible_when(#cvar, #cond); });
                 } else {
-                    stmts.extend(quote! { __tree.set_visible_when(#cvar, move || -> bool { #cond }); });
+                    stmts.extend(
+                        quote! { __tree.set_visible_when(#cvar, move || -> bool { #cond }); },
+                    );
                 }
                 cvar
             }
@@ -570,9 +560,7 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
 
     let kind_str = el.kind.to_string();
     let find_prop = |names: &[&str]| -> Option<&PropArg> {
-        el.args
-            .iter()
-            .find(|a| names.iter().any(|n| a.name == *n))
+        el.args.iter().find(|a| names.iter().any(|n| a.name == *n))
     };
     let find_arg = |names: &[&str]| -> Option<&Expr> { find_prop(names).map(|a| &a.value) };
 
@@ -888,6 +876,137 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 #chg
             }
         }
+        "SegmentedControl" => {
+            let items = find_arg(&["items", "options", "tabs"])
+                .map(|e| {
+                    if matches!(e, Expr::Closure(_)) {
+                        quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                    } else {
+                        quote!(#e)
+                    }
+                })
+                .unwrap_or_else(|| quote!(Vec::<String>::new()));
+            let sel_sig = match find_prop(&["selected", "active", "value"]) {
+                Some(sel_prop) => {
+                    let sel = &sel_prop.value;
+                    if is_two_way_signal_expr(sel_prop) {
+                        quote!(#sel)
+                    } else {
+                        quote! {{
+                            let __s = __cx.signal((#sel)() as usize);
+                            __cx.effect(move || {
+                                let __nv = (#sel)() as usize;
+                                if __s.get_untracked() != __nv { __s.set(__nv); }
+                            });
+                            __s
+                        }}
+                    }
+                }
+                None => quote!(__cx.signal(0usize)),
+            };
+            let chg = find_arg(&["on_change", "on_select"])
+                .map(|cb| quote! { __tree.set_on_index_change(#var, #cb); });
+            quote! {
+                let #var = __tree.segmented_control(__cx, #items, #sel_sig);
+                #chg
+            }
+        }
+        "Accordion" => {
+            let title = find_arg(&["title", "label", "text"])
+                .map(|e| {
+                    if matches!(e, Expr::Closure(_)) {
+                        quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                    } else {
+                        quote!(#e)
+                    }
+                })
+                .unwrap_or_else(|| quote!(""));
+            let exp_sig = match find_prop(&["expanded", "open"]) {
+                Some(exp_prop) => {
+                    let exp = &exp_prop.value;
+                    if is_two_way_signal_expr(exp_prop) {
+                        quote!(#exp)
+                    } else {
+                        quote! {{
+                            let __s = __cx.signal((#exp)());
+                            __cx.effect(move || {
+                                let __nv = (#exp)();
+                                if __s.get_untracked() != __nv { __s.set(__nv); }
+                            });
+                            __s
+                        }}
+                    }
+                }
+                None => quote!(__cx.signal(false)),
+            };
+            let chg = find_arg(&["on_change", "on_toggle"])
+                .map(|cb| quote! { __tree.set_on_bool_change(#var, #cb); });
+            quote! {
+                let #var = __tree.accordion(__cx, #title, #exp_sig);
+                #chg
+            }
+        }
+        "DataTable" => {
+            let cols = find_arg(&["columns"])
+                .map(|e| {
+                    if matches!(e, Expr::Closure(_)) {
+                        quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                    } else {
+                        quote!(#e)
+                    }
+                })
+                .unwrap_or_else(|| quote!(Vec::<String>::new()));
+            let rows = find_arg(&["rows", "items"])
+                .map(|e| {
+                    if matches!(e, Expr::Closure(_)) {
+                        quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                    } else {
+                        quote!(#e)
+                    }
+                })
+                .unwrap_or_else(|| quote!(Vec::<Vec<String>>::new()));
+            let sel_sig = match find_prop(&["selected"]) {
+                Some(sel_prop) => {
+                    let sel = &sel_prop.value;
+                    if is_two_way_signal_expr(sel_prop) {
+                        quote!(#sel)
+                    } else {
+                        quote! {{
+                            let __s = __cx.signal((#sel)() as usize);
+                            __cx.effect(move || {
+                                let __nv = (#sel)() as usize;
+                                if __s.get_untracked() != __nv { __s.set(__nv); }
+                            });
+                            __s
+                        }}
+                    }
+                }
+                None => quote!(__cx.signal(0usize)),
+            };
+            let striped_arg = find_arg(&["striped"]);
+            let rh_arg = find_arg(&["row_height"]);
+            let opts_stmt = if striped_arg.is_some() || rh_arg.is_some() {
+                let st_opt = striped_arg
+                    .map(|e| quote!(Some(#e)))
+                    .unwrap_or_else(|| quote!(None));
+                let rh_opt = rh_arg
+                    .map(|e| quote!(Some(#e as f32)))
+                    .unwrap_or_else(|| quote!(None));
+                quote! { __tree.set_data_table_options(#var, #st_opt, #rh_opt); }
+            } else {
+                TokenStream2::new()
+            };
+            let on_sel = find_arg(&["on_select", "on_change"])
+                .map(|cb| quote! { __tree.set_on_index_change(#var, #cb); });
+            let on_sort =
+                find_arg(&["on_sort"]).map(|cb| quote! { __tree.set_on_sort(#var, #cb); });
+            quote! {
+                let #var = __tree.data_table(__cx, #cols, #rows, #sel_sig);
+                #opts_stmt
+                #on_sel
+                #on_sort
+            }
+        }
         "Select" | "Dropdown" => {
             let opts = find_arg(&["options", "items"])
                 .map(|e| quote!(#e))
@@ -1123,9 +1242,15 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
             let ms = find_arg(&["min_second"]);
             let ds = find_arg(&["divider_size"]);
             let cfg_stmt = if mf.is_some() || ms.is_some() || ds.is_some() {
-                let mf_c = mf.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(80.0f32));
-                let ms_c = ms.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(80.0f32));
-                let ds_c = ds.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(8.0f32));
+                let mf_c = mf
+                    .map(|e| quote!(#e as f32))
+                    .unwrap_or_else(|| quote!(80.0f32));
+                let ms_c = ms
+                    .map(|e| quote!(#e as f32))
+                    .unwrap_or_else(|| quote!(80.0f32));
+                let ds_c = ds
+                    .map(|e| quote!(#e as f32))
+                    .unwrap_or_else(|| quote!(8.0f32));
                 quote! { __tree.set_split_pane_config(#var, #mf_c, #ms_c, #ds_c); }
             } else {
                 TokenStream2::new()
@@ -1188,7 +1313,13 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
             let view_id = find_arg(&["view_id"])
                 .or_else(|| {
                     find_arg(&["id"]).filter(|e| {
-                        !matches!(e, Expr::Lit(syn::ExprLit { lit: Lit::Str(_), .. }))
+                        !matches!(
+                            e,
+                            Expr::Lit(syn::ExprLit {
+                                lit: Lit::Str(_),
+                                ..
+                            })
+                        )
                     })
                 })
                 .map(|e| quote!(#e))
@@ -1247,7 +1378,13 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
     // Register node `id` if provided (skip numeric/PlatformViewId `id` on PlatformView)
     if let Some(id_expr) = find_arg(&["id"])
         && (kind_str != "PlatformView"
-            || matches!(id_expr, Expr::Lit(syn::ExprLit { lit: Lit::Str(_), .. })))
+            || matches!(
+                id_expr,
+                Expr::Lit(syn::ExprLit {
+                    lit: Lit::Str(_),
+                    ..
+                })
+            ))
     {
         stmts.extend(quote! { __tree.register_node_id(#var, #id_expr); });
     }
@@ -1290,22 +1427,40 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
 
         match name.as_str() {
             "width" => {
-                push_layout_prop!(quote! { __ls.width = #val; }, |id: &Ident| quote! { __ls.width = #id(); });
+                push_layout_prop!(
+                    quote! { __ls.width = #val; },
+                    |id: &Ident| quote! { __ls.width = #id(); }
+                );
             }
             "height" => {
-                push_layout_prop!(quote! { __ls.height = #val; }, |id: &Ident| quote! { __ls.height = #id(); });
+                push_layout_prop!(
+                    quote! { __ls.height = #val; },
+                    |id: &Ident| quote! { __ls.height = #id(); }
+                );
             }
             "min_width" => {
-                push_layout_prop!(quote! { __ls.min_width = #val; }, |id: &Ident| quote! { __ls.min_width = #id(); });
+                push_layout_prop!(
+                    quote! { __ls.min_width = #val; },
+                    |id: &Ident| quote! { __ls.min_width = #id(); }
+                );
             }
             "max_width" => {
-                push_layout_prop!(quote! { __ls.max_width = #val; }, |id: &Ident| quote! { __ls.max_width = #id(); });
+                push_layout_prop!(
+                    quote! { __ls.max_width = #val; },
+                    |id: &Ident| quote! { __ls.max_width = #id(); }
+                );
             }
             "min_height" => {
-                push_layout_prop!(quote! { __ls.min_height = #val; }, |id: &Ident| quote! { __ls.min_height = #id(); });
+                push_layout_prop!(
+                    quote! { __ls.min_height = #val; },
+                    |id: &Ident| quote! { __ls.min_height = #id(); }
+                );
             }
             "max_height" => {
-                push_layout_prop!(quote! { __ls.max_height = #val; }, |id: &Ident| quote! { __ls.max_height = #id(); });
+                push_layout_prop!(
+                    quote! { __ls.max_height = #val; },
+                    |id: &Ident| quote! { __ls.max_height = #id(); }
+                );
             }
             "flex_grow" => {
                 push_layout_prop!(
@@ -1802,8 +1957,12 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 }
             });
         } else {
-            let tx = tx_arg.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(0.0f32));
-            let ty = ty_arg.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(0.0f32));
+            let tx = tx_arg
+                .map(|e| quote!(#e as f32))
+                .unwrap_or_else(|| quote!(0.0f32));
+            let ty = ty_arg
+                .map(|e| quote!(#e as f32))
+                .unwrap_or_else(|| quote!(0.0f32));
             stmts.extend(quote! { __tree.set_translate(#var, #tx, #ty); });
         }
     }
@@ -1862,8 +2021,12 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 }
             });
         } else {
-            let kx = kx_arg.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(0.0f32));
-            let ky = ky_arg.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(0.0f32));
+            let kx = kx_arg
+                .map(|e| quote!(#e as f32))
+                .unwrap_or_else(|| quote!(0.0f32));
+            let ky = ky_arg
+                .map(|e| quote!(#e as f32))
+                .unwrap_or_else(|| quote!(0.0f32));
             stmts.extend(quote! { __tree.set_transform(#var, ::craftui::core::Transform2D::skew(#kx, #ky)); });
         }
     }

@@ -10,8 +10,8 @@ use craftui_text::TextEngine;
 use guillotiere::{AtlasAllocator, size2};
 use kurbo::{BezPath, PathEl, Stroke, StrokeOpts, stroke as kurbo_stroke};
 use parley::PositionedLayoutItem;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
@@ -671,7 +671,10 @@ impl GpuSdfBackend {
             })
         };
 
-        let sdf_pipeline = make_sdf_pipeline("craftui-sdf-premul", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let sdf_pipeline = make_sdf_pipeline(
+            "craftui-sdf-premul",
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        );
         let hole_pipeline = make_sdf_pipeline("craftui-sdf-hole", wgpu::BlendState::REPLACE);
 
         // Present & Blend pipelines
@@ -997,7 +1000,10 @@ impl GpuSdfBackend {
         let req_w = (w + 2).min(self.atlas_size);
         let req_h = (h + 2).min(self.atlas_size);
         if let Some(alloc) = self.atlas_alloc.allocate(size2(req_w as i32, req_h as i32)) {
-            return Some((alloc.rectangle.min.x as u32 + 1, alloc.rectangle.min.y as u32 + 1));
+            return Some((
+                alloc.rectangle.min.x as u32 + 1,
+                alloc.rectangle.min.y as u32 + 1,
+            ));
         }
         // Flush queued geometry that still references old atlas UVs before resetting atlas!
         self.flush_pending(device, queue, encoder, inst_cursor, background);
@@ -1010,7 +1016,15 @@ impl GpuSdfBackend {
             .map(|a| (a.rectangle.min.x as u32 + 1, a.rectangle.min.y as u32 + 1))
     }
 
-    fn upload_rgba_to_atlas(&self, queue: &wgpu::Queue, x: u32, y: u32, w: u32, h: u32, rgba: &[u8]) {
+    fn upload_rgba_to_atlas(
+        &self,
+        queue: &wgpu::Queue,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        rgba: &[u8],
+    ) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas_tex,
@@ -1246,7 +1260,13 @@ impl GpuSdfBackend {
         Some(entry)
     }
 
-    fn ensure_image_uploaded(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: TextureId, textures: &TextureRegistry) -> Option<(u32, u32)> {
+    fn ensure_image_uploaded(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: TextureId,
+        textures: &TextureRegistry,
+    ) -> Option<(u32, u32)> {
         let handle = textures.get(id)?;
         let ver = handle.version();
         if let Some(existing) = self.image_cache.get(&id)
@@ -1509,10 +1529,7 @@ impl GpuSdfBackend {
                     ([0.0; 4], [0.0; 4], [0.0; 4], 0.0)
                 } else if stops.len() == 1 {
                     (stops[0].color.to_rgba_f32(), [0.0; 4], [0.0; 4], 0.0)
-                } else if stops.len() == 2
-                    && stops[0].offset <= 0.001
-                    && stops[1].offset >= 0.999
-                {
+                } else if stops.len() == 2 && stops[0].offset <= 0.001 && stops[1].offset >= 0.999 {
                     (
                         stops[0].color.to_rgba_f32(),
                         stops[1].color.to_rgba_f32(),
@@ -1546,10 +1563,7 @@ impl GpuSdfBackend {
                     ([0.0; 4], [0.0; 4], [0.0; 4], 0.0)
                 } else if stops.len() == 1 {
                     (stops[0].color.to_rgba_f32(), [0.0; 4], [0.0; 4], 0.0)
-                } else if stops.len() == 2
-                    && stops[0].offset <= 0.001
-                    && stops[1].offset >= 0.999
-                {
+                } else if stops.len() == 2 && stops[0].offset <= 0.001 && stops[1].offset >= 0.999 {
                     (
                         stops[0].color.to_rgba_f32(),
                         stops[1].color.to_rgba_f32(),
@@ -1602,7 +1616,11 @@ impl GpuSdfBackend {
         let qw = (self.width / 4).max(1);
         let qh = (self.height / 4).max(1);
 
-        if self.blur_half_a.as_ref().is_none_or(|t| t.width != hw || t.height != hh) {
+        if self
+            .blur_half_a
+            .as_ref()
+            .is_none_or(|t| t.width != hw || t.height != hh)
+        {
             self.blur_half_a = Some(RenderTargetTex::new(device, "craftui-blur-ha", hw, hh));
             self.blur_half_b = Some(RenderTargetTex::new(device, "craftui-blur-hb", hw, hh));
             self.blur_quarter = Some(RenderTargetTex::new(device, "craftui-blur-q", qw, qh));
@@ -1994,10 +2012,8 @@ impl GpuSdfBackend {
         let mut inst_cursor = 0usize;
         let mut uniform_cursor = 0usize;
         let mut xform_stack = vec![Transform2D::IDENTITY];
-        let mut clip_stack: Vec<(Rect, CornerRadii)> = vec![(
-            Rect::new(-1e5, -1e5, 2e5, 2e5),
-            CornerRadii::ZERO,
-        )];
+        let mut clip_stack: Vec<(Rect, CornerRadii)> =
+            vec![(Rect::new(-1e5, -1e5, 2e5, 2e5), CornerRadii::ZERO)];
 
         for cmd in &paint_scene.commands {
             let cur_xform = *xform_stack.last().unwrap();
@@ -2253,7 +2269,9 @@ impl GpuSdfBackend {
                     radius,
                     opacity,
                 } => {
-                    if let Some((iw, ih)) = self.ensure_image_uploaded(device, queue, *texture, textures) {
+                    if let Some((iw, ih)) =
+                        self.ensure_image_uploaded(device, queue, *texture, textures)
+                    {
                         let (draw_rect, _) = compute_image_transform(*rect, iw, ih, *fit);
                         let dw = draw_rect.width.max(1e-4);
                         let dh = draw_rect.height.max(1e-4);
@@ -2529,7 +2547,9 @@ fn sample_stops(sorted: &[ColorStop], t: f32) -> Color {
         let b = win[1];
         if t <= b.offset {
             let span = (b.offset - a.offset).max(1e-5);
-            return a.color.lerp(b.color, ((t - a.offset) / span).clamp(0.0, 1.0));
+            return a
+                .color
+                .lerp(b.color, ((t - a.offset) / span).clamp(0.0, 1.0));
         }
     }
     sorted.last().unwrap().color

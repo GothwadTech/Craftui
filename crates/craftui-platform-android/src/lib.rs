@@ -1,13 +1,661 @@
 //! Android platform adapter (`android-activity` `GameActivity` + Vulkan/GLES `wgpu` + JNI/IME/Surface bridges).
 
 use craftui_core::{
-    DirtyFlags, ImeEvent, Insets, KeyCode, KeyEvent, Modifiers, PlatformViewId, Point,
-    PointerButton, PointerEvent, PointerId, PointerPhase, Size, TextureId, UiDispatcher, UiEvent,
-    WindowMetrics,
+    AndroidPermissionSpec, AppLifecycleEvent, BatteryState, DeviceCapabilitiesBackend, DeviceInfo,
+    DirtyFlags, FileDialogBackend, FileDialogRequest, HapticStyle, HapticsBackend, ImeEvent,
+    Insets, KeyCode, KeyEvent, Modifiers, NetworkStatus, Permission, PermissionBackend,
+    PermissionOutcome, PermissionStatus, PlatformServices, PlatformViewId, Point, PointerButton,
+    PointerEvent, PointerId, PointerPhase, SecureStorageBackend, ShareBackend, SharePayload, Size,
+    TextureId, UiDispatcher, UiEvent, WindowMetrics,
 };
 use craftui_reactive::Scope;
 use craftui_render::{PaintScene, TextureHandle, TextureRegistry};
 use craftui_widgets::{Router, WidgetKind, WidgetTree};
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+/// Android manifest permission entry (`0 = PERMISSION_GRANTED`, `-1 = PERMISSION_DENIED`).
+pub const ANDROID_PERMISSION_GRANTED: i32 = 0;
+
+/// Platform commands emitted from CraftUI Rust widgets/services for Android `MainActivity` execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AndroidPlatformCommand {
+    RequestPermissions {
+        request_id: u64,
+        permissions: Vec<Permission>,
+        manifest_permissions: Vec<String>,
+    },
+    OpenAppSettings,
+    TriggerHaptic(HapticStyle),
+    Share(SharePayload),
+    SyncSecureKey {
+        key: String,
+        value: String,
+    },
+    DeleteSecureKey {
+        key: String,
+    },
+    OpenFileDialog {
+        request_id: u64,
+        request: FileDialogRequest,
+    },
+    SaveFileDialog {
+        request_id: u64,
+        request: FileDialogRequest,
+    },
+}
+
+#[derive(Debug, Default)]
+struct PendingPermissionRequest {
+    permissions: Vec<Permission>,
+    resolved: Option<Vec<PermissionOutcome>>,
+}
+
+#[derive(Debug, Default)]
+struct PendingFileDialogRequest {
+    resolved: Option<Vec<PathBuf>>,
+}
+
+/// Shared thread-safe Android OS bridge coordinating ActivityResult permissions, SAF pickers,
+/// haptics, share intents, keystore secrets, and device telemetry.
+#[derive(Debug)]
+pub struct AndroidBridgeState {
+    next_request_id: AtomicU64,
+    statuses: Mutex<HashMap<Permission, PermissionStatus>>,
+    rationales: Mutex<HashMap<Permission, bool>>,
+    commands: Mutex<VecDeque<AndroidPlatformCommand>>,
+    pending_perms: Mutex<HashMap<u64, PendingPermissionRequest>>,
+    perm_cv: Condvar,
+    pending_files: Mutex<HashMap<u64, PendingFileDialogRequest>>,
+    file_cv: Condvar,
+    request_timeout: Mutex<Duration>,
+    secure_entries: Mutex<HashMap<String, String>>,
+    device_info: Mutex<DeviceInfo>,
+    network_status: Mutex<NetworkStatus>,
+    battery_state: Mutex<BatteryState>,
+    lifecycle_history: Mutex<Vec<AppLifecycleEvent>>,
+}
+
+impl Default for AndroidBridgeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AndroidBridgeState {
+    pub fn new() -> Self {
+        Self {
+            next_request_id: AtomicU64::new(1),
+            statuses: Mutex::new(HashMap::new()),
+            rationales: Mutex::new(HashMap::new()),
+            commands: Mutex::new(VecDeque::new()),
+            pending_perms: Mutex::new(HashMap::new()),
+            perm_cv: Condvar::new(),
+            pending_files: Mutex::new(HashMap::new()),
+            file_cv: Condvar::new(),
+            request_timeout: Mutex::new(Duration::from_millis(if cfg!(target_os = "android") {
+                30_000
+            } else {
+                2_000
+            })),
+            secure_entries: Mutex::new(HashMap::new()),
+            device_info: Mutex::new(DeviceInfo {
+                os: "Android".to_string(),
+                model: String::new(),
+                os_version: String::new(),
+                sdk_int: Some(35),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+            }),
+            network_status: Mutex::new(NetworkStatus::Unknown),
+            battery_state: Mutex::new(BatteryState::default()),
+            lifecycle_history: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn set_request_timeout(&self, timeout: Duration) {
+        if let Ok(mut guard) = self.request_timeout.lock() {
+            *guard = timeout;
+        }
+    }
+
+    fn timeout(&self) -> Duration {
+        self.request_timeout
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(Duration::from_millis(250))
+    }
+
+    fn push_command(&self, cmd: AndroidPlatformCommand) {
+        if let Ok(mut guard) = self.commands.lock() {
+            guard.push_back(cmd);
+        }
+    }
+
+    pub fn drain_commands(&self) -> Vec<AndroidPlatformCommand> {
+        self.commands
+            .lock()
+            .map(|mut guard| guard.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn set_permission_status(
+        &self,
+        permission: Permission,
+        status: PermissionStatus,
+        rationale: bool,
+    ) {
+        if let Ok(mut guard) = self.statuses.lock() {
+            guard.insert(permission.clone(), status);
+        }
+        if let Ok(mut guard) = self.rationales.lock() {
+            guard.insert(permission, rationale);
+        }
+    }
+
+    pub fn sync_permission_statuses(&self, entries: Vec<(Permission, PermissionStatus, bool)>) {
+        for (perm, status, rationale) in entries {
+            self.set_permission_status(perm, status, rationale);
+        }
+    }
+
+    fn filter_manifest_names(&self, perm: &Permission) -> Vec<String> {
+        let sdk = self
+            .device_info
+            .lock()
+            .ok()
+            .and_then(|d| d.sdk_int)
+            .unwrap_or(35);
+        perm.android_permissions()
+            .into_iter()
+            .filter(|spec: &AndroidPermissionSpec| {
+                spec.min_sdk.is_none_or(|min| sdk >= min)
+                    && spec.max_sdk.is_none_or(|max| sdk <= max)
+            })
+            .map(|spec| spec.name.into_owned())
+            .collect()
+    }
+
+    /// Resolve a queued permission request from Android `ActivityResultContracts.RequestMultiplePermissions`
+    /// or `onRequestPermissionsResult` (`grant_result == 0` means granted).
+    pub fn push_permission_results(&self, request_id: u64, results: &[(String, i32, bool)]) {
+        let requested_perms = self
+            .pending_perms
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&request_id).map(|p| p.permissions.clone()))
+            .unwrap_or_default();
+
+        let result_map: HashMap<&str, (i32, bool)> = results
+            .iter()
+            .map(|(name, grant, rat)| (name.as_str(), (*grant, *rat)))
+            .collect();
+
+        let mut outcomes = Vec::with_capacity(requested_perms.len());
+        if requested_perms.is_empty() {
+            for (manifest_name, grant, rationale) in results {
+                let perm = Permission::from_key(manifest_name);
+                let prev = self
+                    .statuses
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.get(&perm).copied());
+                let status = classify_android_grant_result(*grant, *rationale, prev);
+                self.set_permission_status(perm.clone(), status, *rationale);
+                outcomes.push(PermissionOutcome {
+                    permission: perm,
+                    status,
+                    should_show_rationale: *rationale,
+                });
+            }
+        } else {
+            for perm in requested_perms {
+                let specs = self.filter_manifest_names(&perm);
+                let mut any_matched = false;
+                let mut all_granted = !specs.is_empty();
+                let mut any_rationale = false;
+                for name in &specs {
+                    if let Some((grant, rat)) = result_map.get(name.as_str()).copied() {
+                        any_matched = true;
+                        if grant != ANDROID_PERMISSION_GRANTED {
+                            all_granted = false;
+                        }
+                        if rat {
+                            any_rationale = true;
+                        }
+                    } else if let Some((grant, rat)) = result_map.get(perm.key().as_ref()).copied()
+                    {
+                        any_matched = true;
+                        if grant != ANDROID_PERMISSION_GRANTED {
+                            all_granted = false;
+                        }
+                        if rat {
+                            any_rationale = true;
+                        }
+                    }
+                }
+                let prev = self
+                    .statuses
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.get(&perm).copied());
+                let status = if specs.is_empty() && !any_matched {
+                    // Android does not require a runtime prompt for this permission at the current SDK level.
+                    PermissionStatus::Granted
+                } else if !any_matched {
+                    prev.unwrap_or(PermissionStatus::NotDetermined)
+                } else if all_granted {
+                    PermissionStatus::Granted
+                } else {
+                    classify_android_grant_result(-1, any_rationale, prev)
+                };
+                self.set_permission_status(perm.clone(), status, any_rationale);
+                outcomes.push(PermissionOutcome {
+                    permission: perm,
+                    status,
+                    should_show_rationale: any_rationale,
+                });
+            }
+        }
+
+        if let Ok(mut pending) = self.pending_perms.lock()
+            && let Some(entry) = pending.get_mut(&request_id)
+        {
+            entry.resolved = Some(outcomes);
+        }
+        self.perm_cv.notify_all();
+    }
+
+    pub fn push_file_dialog_result(&self, request_id: u64, paths: Vec<PathBuf>) {
+        if let Ok(mut pending) = self.pending_files.lock()
+            && let Some(entry) = pending.get_mut(&request_id)
+        {
+            entry.resolved = Some(paths);
+        }
+        self.file_cv.notify_all();
+    }
+
+    pub fn push_lifecycle_event(&self, ev: AppLifecycleEvent) {
+        if let Ok(mut guard) = self.lifecycle_history.lock() {
+            guard.push(ev);
+        }
+    }
+
+    pub fn lifecycle_history(&self) -> Vec<AppLifecycleEvent> {
+        self.lifecycle_history
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+}
+
+fn classify_android_grant_result(
+    grant_result: i32,
+    should_show_rationale: bool,
+    previous: Option<PermissionStatus>,
+) -> PermissionStatus {
+    if grant_result == ANDROID_PERMISSION_GRANTED {
+        PermissionStatus::Granted
+    } else if should_show_rationale {
+        PermissionStatus::Denied
+    } else if matches!(
+        previous,
+        Some(PermissionStatus::Denied | PermissionStatus::PermanentlyDenied)
+    ) {
+        PermissionStatus::PermanentlyDenied
+    } else {
+        PermissionStatus::Denied
+    }
+}
+
+/// Android runtime permission backend backed by [`AndroidBridgeState`] (`MainActivity` `ActivityResult`).
+#[derive(Clone)]
+pub struct AndroidPermissionBackend {
+    state: Arc<AndroidBridgeState>,
+}
+
+impl AndroidPermissionBackend {
+    pub fn new(state: Arc<AndroidBridgeState>) -> Self {
+        Self { state }
+    }
+}
+
+impl PermissionBackend for AndroidPermissionBackend {
+    fn check(&self, permission: &Permission) -> PermissionStatus {
+        self.state
+            .statuses
+            .lock()
+            .ok()
+            .and_then(|g| g.get(permission).copied())
+            .unwrap_or_else(|| {
+                if self.state.filter_manifest_names(permission).is_empty() {
+                    PermissionStatus::Granted
+                } else {
+                    PermissionStatus::NotDetermined
+                }
+            })
+    }
+
+    fn request(&self, permission: &Permission) -> PermissionStatus {
+        self.request_many(std::slice::from_ref(permission))
+            .into_iter()
+            .next()
+            .map_or(PermissionStatus::Unsupported, |o| o.status)
+    }
+
+    fn request_many(&self, permissions: &[Permission]) -> Vec<PermissionOutcome> {
+        if permissions.is_empty() {
+            return Vec::new();
+        }
+        let mut all_granted = true;
+        let mut cached = Vec::with_capacity(permissions.len());
+        for perm in permissions {
+            let st = self.check(perm);
+            let rat = self.should_show_rationale(perm);
+            if !st.is_granted() {
+                all_granted = false;
+            }
+            cached.push(PermissionOutcome {
+                permission: perm.clone(),
+                status: st,
+                should_show_rationale: rat,
+            });
+        }
+        if all_granted {
+            return cached;
+        }
+
+        let mut manifest_names = Vec::new();
+        for perm in permissions {
+            for name in self.state.filter_manifest_names(perm) {
+                if !manifest_names.contains(&name) {
+                    manifest_names.push(name);
+                }
+            }
+        }
+        if manifest_names.is_empty() {
+            for perm in permissions {
+                self.state
+                    .set_permission_status(perm.clone(), PermissionStatus::Granted, false);
+            }
+            return permissions
+                .iter()
+                .map(|p| PermissionOutcome {
+                    permission: p.clone(),
+                    status: PermissionStatus::Granted,
+                    should_show_rationale: false,
+                })
+                .collect();
+        }
+
+        let request_id = self.state.next_request_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut pending) = self.state.pending_perms.lock() {
+            pending.insert(
+                request_id,
+                PendingPermissionRequest {
+                    permissions: permissions.to_vec(),
+                    resolved: None,
+                },
+            );
+        }
+        self.state
+            .push_command(AndroidPlatformCommand::RequestPermissions {
+                request_id,
+                permissions: permissions.to_vec(),
+                manifest_permissions: manifest_names,
+            });
+
+        let timeout = self.state.timeout();
+        if !timeout.is_zero()
+            && let Ok(mut pending) = self.state.pending_perms.lock()
+        {
+            let deadline = Instant::now() + timeout;
+            while pending
+                .get(&request_id)
+                .is_some_and(|entry| entry.resolved.is_none())
+            {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let Ok((next_guard, wait_res)) =
+                    self.state.perm_cv.wait_timeout(pending, remaining)
+                else {
+                    return cached;
+                };
+                pending = next_guard;
+                if wait_res.timed_out() {
+                    break;
+                }
+            }
+            if let Some(entry) = pending.remove(&request_id)
+                && let Some(outcomes) = entry.resolved
+            {
+                return outcomes;
+            }
+        }
+        if let Ok(mut pending) = self.state.pending_perms.lock() {
+            pending.remove(&request_id);
+        }
+        cached
+    }
+
+    fn should_show_rationale(&self, permission: &Permission) -> bool {
+        self.state
+            .rationales
+            .lock()
+            .ok()
+            .and_then(|g| g.get(permission).copied())
+            .unwrap_or(false)
+    }
+
+    fn open_app_settings(&self) -> bool {
+        self.state
+            .push_command(AndroidPlatformCommand::OpenAppSettings);
+        true
+    }
+}
+
+/// Android haptics bridge forwarding tactile patterns to `VibrationEffect`.
+#[derive(Clone)]
+pub struct AndroidHapticsBackend {
+    state: Arc<AndroidBridgeState>,
+}
+
+impl AndroidHapticsBackend {
+    pub fn new(state: Arc<AndroidBridgeState>) -> Self {
+        Self { state }
+    }
+}
+
+impl HapticsBackend for AndroidHapticsBackend {
+    fn trigger(&self, style: HapticStyle) -> bool {
+        self.state
+            .push_command(AndroidPlatformCommand::TriggerHaptic(style));
+        true
+    }
+}
+
+/// Android `Intent.ACTION_SEND` share sheet bridge.
+#[derive(Clone)]
+pub struct AndroidShareBackend {
+    state: Arc<AndroidBridgeState>,
+}
+
+impl AndroidShareBackend {
+    pub fn new(state: Arc<AndroidBridgeState>) -> Self {
+        Self { state }
+    }
+}
+
+impl ShareBackend for AndroidShareBackend {
+    fn share(&self, payload: &SharePayload) -> bool {
+        self.state
+            .push_command(AndroidPlatformCommand::Share(payload.clone()));
+        true
+    }
+}
+
+/// Android Keystore / EncryptedSharedPreferences synchronized secure storage backend.
+#[derive(Clone)]
+pub struct AndroidSecureStorage {
+    state: Arc<AndroidBridgeState>,
+}
+
+impl AndroidSecureStorage {
+    pub fn new(state: Arc<AndroidBridgeState>) -> Self {
+        Self { state }
+    }
+}
+
+impl SecureStorageBackend for AndroidSecureStorage {
+    fn get_secret(&self, key: &str) -> Option<String> {
+        self.state
+            .secure_entries
+            .lock()
+            .ok()
+            .and_then(|g| g.get(key).cloned())
+    }
+
+    fn set_secret(&self, key: &str, value: &str) -> bool {
+        let Ok(mut guard) = self.state.secure_entries.lock() else {
+            return false;
+        };
+        guard.insert(key.to_string(), value.to_string());
+        self.state
+            .push_command(AndroidPlatformCommand::SyncSecureKey {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
+        true
+    }
+
+    fn delete_secret(&self, key: &str) -> bool {
+        let Ok(mut guard) = self.state.secure_entries.lock() else {
+            return false;
+        };
+        let existed = guard.remove(key).is_some();
+        self.state
+            .push_command(AndroidPlatformCommand::DeleteSecureKey {
+                key: key.to_string(),
+            });
+        existed
+    }
+}
+
+/// Android device info, network connectivity, and battery state provider.
+#[derive(Clone)]
+pub struct AndroidDeviceCapabilities {
+    state: Arc<AndroidBridgeState>,
+}
+
+impl AndroidDeviceCapabilities {
+    pub fn new(state: Arc<AndroidBridgeState>) -> Self {
+        Self { state }
+    }
+}
+
+impl DeviceCapabilitiesBackend for AndroidDeviceCapabilities {
+    fn device_info(&self) -> DeviceInfo {
+        self.state
+            .device_info
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    fn network_status(&self) -> NetworkStatus {
+        self.state
+            .network_status
+            .lock()
+            .map(|g| *g)
+            .unwrap_or_default()
+    }
+
+    fn battery_state(&self) -> BatteryState {
+        self.state
+            .battery_state
+            .lock()
+            .map(|g| *g)
+            .unwrap_or_default()
+    }
+}
+
+/// Android Storage Access Framework (`ActivityResultContracts.OpenDocument` / `CreateDocument`) bridge.
+#[derive(Clone)]
+pub struct AndroidFileDialogBridge {
+    state: Arc<AndroidBridgeState>,
+}
+
+impl AndroidFileDialogBridge {
+    pub fn new(state: Arc<AndroidBridgeState>) -> Self {
+        Self { state }
+    }
+
+    fn wait_result(&self, request_id: u64) -> Vec<PathBuf> {
+        let timeout = self.state.timeout();
+        if !timeout.is_zero()
+            && let Ok(mut pending) = self.state.pending_files.lock()
+        {
+            let deadline = Instant::now() + timeout;
+            while pending
+                .get(&request_id)
+                .is_some_and(|entry| entry.resolved.is_none())
+            {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let Ok((next_guard, wait_res)) =
+                    self.state.file_cv.wait_timeout(pending, remaining)
+                else {
+                    return Vec::new();
+                };
+                pending = next_guard;
+                if wait_res.timed_out() {
+                    break;
+                }
+            }
+            if let Some(entry) = pending.remove(&request_id) {
+                return entry.resolved.unwrap_or_default();
+            }
+        }
+        if let Ok(mut pending) = self.state.pending_files.lock() {
+            pending.remove(&request_id);
+        }
+        Vec::new()
+    }
+}
+
+impl FileDialogBackend for AndroidFileDialogBridge {
+    fn open_files(&self, request: &FileDialogRequest) -> Vec<PathBuf> {
+        let request_id = self.state.next_request_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut pending) = self.state.pending_files.lock() {
+            pending.insert(request_id, PendingFileDialogRequest::default());
+        }
+        self.state
+            .push_command(AndroidPlatformCommand::OpenFileDialog {
+                request_id,
+                request: request.clone(),
+            });
+        self.wait_result(request_id)
+    }
+
+    fn save_file(&self, request: &FileDialogRequest) -> Option<PathBuf> {
+        let request_id = self.state.next_request_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut pending) = self.state.pending_files.lock() {
+            pending.insert(request_id, PendingFileDialogRequest::default());
+        }
+        self.state
+            .push_command(AndroidPlatformCommand::SaveFileDialog {
+                request_id,
+                request: request.clone(),
+            });
+        self.wait_result(request_id).into_iter().next()
+    }
+}
 
 /// Embedding strategy for native Android Views (e.g., CameraX / ExoPlayer / WebView)
 /// hosted inside CraftUI [`WidgetKind::PlatformView`](craftui_widgets::WidgetKind::PlatformView).
@@ -84,17 +732,83 @@ pub enum AndroidPunctuationKey {
 /// Translate a punctuation/numpad key with active `shift` modifier into a printable character.
 pub fn map_android_punctuation(key: AndroidPunctuationKey, shift: bool) -> char {
     match key {
-        AndroidPunctuationKey::Comma => if shift { '<' } else { ',' },
-        AndroidPunctuationKey::Period => if shift { '>' } else { '.' },
-        AndroidPunctuationKey::Minus => if shift { '_' } else { '-' },
-        AndroidPunctuationKey::Equals => if shift { '+' } else { '=' },
-        AndroidPunctuationKey::LeftBracket => if shift { '{' } else { '[' },
-        AndroidPunctuationKey::RightBracket => if shift { '}' } else { ']' },
-        AndroidPunctuationKey::Backslash => if shift { '|' } else { '\\' },
-        AndroidPunctuationKey::Semicolon => if shift { ':' } else { ';' },
-        AndroidPunctuationKey::Apostrophe => if shift { '"' } else { '\'' },
-        AndroidPunctuationKey::Slash => if shift { '?' } else { '/' },
-        AndroidPunctuationKey::Grave => if shift { '~' } else { '`' },
+        AndroidPunctuationKey::Comma => {
+            if shift {
+                '<'
+            } else {
+                ','
+            }
+        }
+        AndroidPunctuationKey::Period => {
+            if shift {
+                '>'
+            } else {
+                '.'
+            }
+        }
+        AndroidPunctuationKey::Minus => {
+            if shift {
+                '_'
+            } else {
+                '-'
+            }
+        }
+        AndroidPunctuationKey::Equals => {
+            if shift {
+                '+'
+            } else {
+                '='
+            }
+        }
+        AndroidPunctuationKey::LeftBracket => {
+            if shift {
+                '{'
+            } else {
+                '['
+            }
+        }
+        AndroidPunctuationKey::RightBracket => {
+            if shift {
+                '}'
+            } else {
+                ']'
+            }
+        }
+        AndroidPunctuationKey::Backslash => {
+            if shift {
+                '|'
+            } else {
+                '\\'
+            }
+        }
+        AndroidPunctuationKey::Semicolon => {
+            if shift {
+                ':'
+            } else {
+                ';'
+            }
+        }
+        AndroidPunctuationKey::Apostrophe => {
+            if shift {
+                '"'
+            } else {
+                '\''
+            }
+        }
+        AndroidPunctuationKey::Slash => {
+            if shift {
+                '?'
+            } else {
+                '/'
+            }
+        }
+        AndroidPunctuationKey::Grave => {
+            if shift {
+                '~'
+            } else {
+                '`'
+            }
+        }
         AndroidPunctuationKey::At => '@',
         AndroidPunctuationKey::Plus => '+',
         AndroidPunctuationKey::Star => '*',
@@ -169,6 +883,7 @@ pub struct AndroidHost {
     pub scene: PaintScene,
     pub textures: TextureRegistry,
     pub dispatcher: UiDispatcher,
+    pub bridge: Arc<AndroidBridgeState>,
     back_handler: Option<Box<dyn FnMut() -> bool>>,
     last_ime_visible: bool,
     last_synced_ime_state: Option<SyncedImeSnapshot>,
@@ -180,6 +895,16 @@ impl AndroidHost {
     pub fn new(dispatcher: UiDispatcher, width_px: u32, height_px: u32, scale_factor: f32) -> Self {
         let scope = Scope::root();
         let mut tree = WidgetTree::new(scope);
+        let bridge = Arc::new(AndroidBridgeState::new());
+        tree.set_platform_services(
+            PlatformServices::in_memory()
+                .with_permissions(AndroidPermissionBackend::new(bridge.clone()))
+                .with_haptics(AndroidHapticsBackend::new(bridge.clone()))
+                .with_share(AndroidShareBackend::new(bridge.clone()))
+                .with_secure_storage(AndroidSecureStorage::new(bridge.clone()))
+                .with_device_capabilities(AndroidDeviceCapabilities::new(bridge.clone()))
+                .with_file_dialog(AndroidFileDialogBridge::new(bridge.clone())),
+        );
         let sf = scale_factor.max(1.0);
         tree.metrics = WindowMetrics {
             logical_size: Size::new(width_px as f32 / sf, height_px as f32 / sf),
@@ -193,11 +918,61 @@ impl AndroidHost {
             scene: PaintScene::new(),
             textures: TextureRegistry::new(),
             dispatcher,
+            bridge,
             back_handler: None,
             last_ime_visible: false,
             last_synced_ime_state: None,
             needs_redraw: true,
             last_error: None,
+        }
+    }
+
+    pub fn bridge(&self) -> Arc<AndroidBridgeState> {
+        self.bridge.clone()
+    }
+
+    pub fn set_permission_wait_timeout(&self, timeout: Duration) {
+        self.bridge.set_request_timeout(timeout);
+    }
+
+    pub fn drain_platform_commands(&self) -> Vec<AndroidPlatformCommand> {
+        self.bridge.drain_commands()
+    }
+
+    pub fn sync_permission_statuses(&mut self, entries: Vec<(Permission, PermissionStatus, bool)>) {
+        self.bridge.sync_permission_statuses(entries);
+        self.needs_redraw = true;
+    }
+
+    pub fn push_permission_results(&mut self, request_id: u64, results: &[(String, i32, bool)]) {
+        self.bridge.push_permission_results(request_id, results);
+        self.needs_redraw = true;
+    }
+
+    pub fn push_file_dialog_result(&mut self, request_id: u64, paths: Vec<PathBuf>) {
+        self.bridge.push_file_dialog_result(request_id, paths);
+        self.needs_redraw = true;
+    }
+
+    pub fn push_lifecycle_event(&mut self, ev: AppLifecycleEvent) {
+        self.bridge.push_lifecycle_event(ev);
+    }
+
+    pub fn set_device_info(&mut self, info: DeviceInfo) {
+        if let Ok(mut guard) = self.bridge.device_info.lock() {
+            *guard = info;
+        }
+    }
+
+    pub fn set_network_status(&mut self, status: NetworkStatus) {
+        if let Ok(mut guard) = self.bridge.network_status.lock() {
+            *guard = status;
+        }
+    }
+
+    pub fn set_battery_state(&mut self, state: BatteryState) {
+        if let Ok(mut guard) = self.bridge.battery_state.lock() {
+            *guard = state;
         }
     }
 
@@ -649,9 +1424,8 @@ pub mod android_runtime {
         let ch = |lower: char, upper: char| {
             AndroidKeyCode::Character(if letter_upper { upper } else { lower })
         };
-        let punct = |p: AndroidPunctuationKey| {
-            AndroidKeyCode::Character(map_android_punctuation(p, shift))
-        };
+        let punct =
+            |p: AndroidPunctuationKey| AndroidKeyCode::Character(map_android_punctuation(p, shift));
         let digit = |d: char| AndroidKeyCode::Character(map_android_digit(d, shift));
 
         match kc {
@@ -912,7 +1686,18 @@ pub mod android_runtime {
                             }) {}
                         }
                     }
+                    MainEvent::Resume { .. } => {
+                        host.push_lifecycle_event(AppLifecycleEvent::Resumed);
+                        host.request_redraw();
+                    }
+                    MainEvent::Pause => {
+                        host.push_lifecycle_event(AppLifecycleEvent::Paused);
+                    }
+                    MainEvent::LowMemory => {
+                        host.push_lifecycle_event(AppLifecycleEvent::MemoryWarning);
+                    }
                     MainEvent::Destroy => {
+                        host.push_lifecycle_event(AppLifecycleEvent::Detached);
                         running = false;
                     }
                     _ => {}
@@ -1069,12 +1854,30 @@ mod tests {
     #[test]
     fn android_punctuation_keys_clipboard_shortcuts_and_error_state() {
         reset_runtime();
-        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Period, false), '.');
-        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Period, true), '>');
-        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Minus, true), '_');
-        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Slash, true), '?');
-        assert_eq!(map_android_punctuation(AndroidPunctuationKey::At, false), '@');
-        assert_eq!(map_android_punctuation(AndroidPunctuationKey::NumpadAdd, false), '+');
+        assert_eq!(
+            map_android_punctuation(AndroidPunctuationKey::Period, false),
+            '.'
+        );
+        assert_eq!(
+            map_android_punctuation(AndroidPunctuationKey::Period, true),
+            '>'
+        );
+        assert_eq!(
+            map_android_punctuation(AndroidPunctuationKey::Minus, true),
+            '_'
+        );
+        assert_eq!(
+            map_android_punctuation(AndroidPunctuationKey::Slash, true),
+            '?'
+        );
+        assert_eq!(
+            map_android_punctuation(AndroidPunctuationKey::At, false),
+            '@'
+        );
+        assert_eq!(
+            map_android_punctuation(AndroidPunctuationKey::NumpadAdd, false),
+            '+'
+        );
         assert_eq!(map_android_digit('2', true), '@');
         assert_eq!(map_android_digit('8', false), '8');
 
@@ -1086,7 +1889,9 @@ mod tests {
         assert!(host.last_error().is_none());
 
         let text_sig = host.scope.signal(String::new());
-        let inp = host.tree.text_input(host.scope, "", "Email", Some(text_sig));
+        let inp = host
+            .tree
+            .text_input(host.scope, "", "Email", Some(text_sig));
         host.tree.set_root(inp);
         let _ = host.step_frame(0.016);
         host.tree.focused = Some(inp);
@@ -1219,5 +2024,191 @@ mod tests {
             c,
             craftui_render::PaintCommand::PlatformViewHole { id, .. } if *id == pv_id
         )));
+    }
+
+    #[test]
+    fn android_permissions_haptics_share_saf_and_telemetry_work() {
+        reset_runtime();
+        let disp = UiDispatcher::new();
+        let mut host = AndroidHost::new(disp.clone(), 1080, 2400, 3.0);
+
+        host.set_device_info(DeviceInfo {
+            os: "Android".into(),
+            model: "Pixel 9".into(),
+            os_version: "15".into(),
+            sdk_int: Some(35),
+            app_version: "1.2.0".into(),
+        });
+        host.set_network_status(NetworkStatus::Wifi);
+        host.set_battery_state(BatteryState {
+            level_pct: Some(84),
+            charging: true,
+        });
+        host.push_lifecycle_event(AppLifecycleEvent::Resumed);
+        host.push_lifecycle_event(AppLifecycleEvent::Paused);
+
+        assert_eq!(host.tree.services.device_info().model, "Pixel 9");
+        assert_eq!(host.tree.services.network_status(), NetworkStatus::Wifi);
+        assert_eq!(host.tree.services.battery_state().level_pct, Some(84));
+        assert_eq!(
+            host.bridge.lifecycle_history(),
+            vec![AppLifecycleEvent::Resumed, AppLifecycleEvent::Paused]
+        );
+
+        // Runtime permissions without runtime prompt on API 35 (e.g., Vibrate) are granted cleanly
+        assert_eq!(
+            host.tree.services.check_permission(&Permission::Camera),
+            PermissionStatus::NotDetermined
+        );
+        assert_eq!(
+            host.tree
+                .services
+                .check_permission(&Permission::BackgroundRefresh),
+            PermissionStatus::Granted
+        );
+
+        // Haptics, share, app settings, and keystore sync emit typed AndroidPlatformCommands
+        assert!(host.tree.services.trigger_haptic(HapticStyle::Medium));
+        assert!(
+            host.tree
+                .services
+                .share(&SharePayload::text("Invoice PDF").with_title("Share"))
+        );
+        assert!(host.tree.services.open_app_settings());
+        assert!(host.tree.services.set_secret("jwt", "secret-token"));
+        assert_eq!(
+            host.tree.services.get_secret("jwt").as_deref(),
+            Some("secret-token")
+        );
+        assert!(host.tree.services.delete_secret("jwt"));
+        assert_eq!(host.tree.services.get_secret("jwt"), None);
+
+        let cmds = host.drain_platform_commands();
+        assert_eq!(cmds.len(), 5);
+        assert!(matches!(
+            cmds[0],
+            AndroidPlatformCommand::TriggerHaptic(HapticStyle::Medium)
+        ));
+        assert!(matches!(cmds[1], AndroidPlatformCommand::Share(_)));
+        assert_eq!(cmds[2], AndroidPlatformCommand::OpenAppSettings);
+        assert!(matches!(
+            cmds[3],
+            AndroidPlatformCommand::SyncSecureKey { .. }
+        ));
+        assert!(matches!(
+            cmds[4],
+            AndroidPlatformCommand::DeleteSecureKey { .. }
+        ));
+
+        // Async batch permission request + SAF file open resolved asynchronously on worker thread
+        let perm_outcomes = Arc::new(Mutex::new(None));
+        let po_c = perm_outcomes.clone();
+        host.tree.services.request_permissions_async(
+            vec![Permission::Camera, Permission::Notifications],
+            disp.clone(),
+            move |outcomes| {
+                *po_c.lock().unwrap() = Some(outcomes);
+            },
+        );
+
+        let mut req_id = None;
+        for _ in 0..100 {
+            for cmd in host.drain_platform_commands() {
+                if let AndroidPlatformCommand::RequestPermissions {
+                    request_id,
+                    manifest_permissions,
+                    ..
+                } = cmd
+                {
+                    assert!(
+                        manifest_permissions.contains(&"android.permission.CAMERA".to_string())
+                    );
+                    assert!(
+                        manifest_permissions
+                            .contains(&"android.permission.POST_NOTIFICATIONS".to_string())
+                    );
+                    req_id = Some(request_id);
+                }
+            }
+            if req_id.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let id = req_id.expect("RequestPermissions command emitted");
+        host.push_permission_results(
+            id,
+            &[
+                ("android.permission.CAMERA".to_string(), 0, false),
+                (
+                    "android.permission.POST_NOTIFICATIONS".to_string(),
+                    -1,
+                    true,
+                ),
+            ],
+        );
+
+        for _ in 0..100 {
+            let _ = disp.drain();
+            if perm_outcomes.lock().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let resolved = perm_outcomes
+            .lock()
+            .unwrap()
+            .take()
+            .expect("async outcomes delivered");
+        assert_eq!(resolved[0].status, PermissionStatus::Granted);
+        assert_eq!(resolved[1].status, PermissionStatus::Denied);
+        assert!(resolved[1].should_show_rationale);
+        assert_eq!(
+            host.tree.services.check_permission(&Permission::Camera),
+            PermissionStatus::Granted
+        );
+        assert!(
+            host.tree
+                .services
+                .should_show_permission_rationale(&Permission::Notifications)
+        );
+
+        // SAF File Dialog roundtrip
+        let picked = Arc::new(Mutex::new(None));
+        let pk_c = picked.clone();
+        host.tree.services.pick_open_file_async(
+            FileDialogRequest::open("Import JSON"),
+            disp.clone(),
+            move |path| {
+                *pk_c.lock().unwrap() = Some(path);
+            },
+        );
+        let mut saf_id = None;
+        for _ in 0..100 {
+            for cmd in host.drain_platform_commands() {
+                if let AndroidPlatformCommand::OpenFileDialog { request_id, .. } = cmd {
+                    saf_id = Some(request_id);
+                }
+            }
+            if saf_id.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        host.push_file_dialog_result(
+            saf_id.expect("OpenFileDialog emitted"),
+            vec![PathBuf::from("/sdcard/Download/report.json")],
+        );
+        for _ in 0..100 {
+            let _ = disp.drain();
+            if picked.lock().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            picked.lock().unwrap().clone(),
+            Some(Some(PathBuf::from("/sdcard/Download/report.json")))
+        );
     }
 }

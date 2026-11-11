@@ -1,0 +1,23 @@
+[app]
+name = "CraftUI Showcase"
+id = "dev.craftui.showcase"
+version = "0.1.0"
+
+[android]
+min_sdk = 24
+target_sdk = 35
+version_code = 1
+features = ["android.hardware.camera", "android.hardware.location.gps"]
+
+[ios]
+deployment_target = "15.0"
+capabilities = ["push-notifications"]
+
+[permissions]
+camera = "Capture photos and scan visual codes in the mobile showcase."
+location_when_in_use = "Display nearby device telemetry and location in the mobile showcase."
+notifications = "Deliver real-time showcase alerts and background reminders."
+photos = "Import user-selected gallery photos into the showcase image card."
+biometrics = "Verify identity with Touch ID, Face ID, or fingerprint authentication."
+vibrate = "Provide subtle tactile feedback on interactive actions."
+clipboard_read = "Allow one-click paste of exported component snippets."

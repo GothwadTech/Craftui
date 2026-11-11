@@ -514,7 +514,12 @@ impl Transform2D {
             max_x = max_x.max(c.x);
             max_y = max_y.max(c.y);
         }
-        Rect::new(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+        Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x).max(0.0),
+            (max_y - min_y).max(0.0),
+        )
     }
 
     #[inline]

@@ -1,6 +1,6 @@
-use crate::scene::{PaintCommand, PaintScene, compute_image_transform};
 #[cfg(feature = "cpu-vello")]
 use crate::scene::brush_to_peniko;
+use crate::scene::{PaintCommand, PaintScene, compute_image_transform};
 use crate::texture::TextureRegistry;
 #[cfg(feature = "cpu-vello")]
 use craftui_core::TextureId;
@@ -245,10 +245,14 @@ mod vello_cpu_impl {
                             self.flush_batch(&mut rendered_any);
                             let bounds = cur_xform.transform_rect_bounds(*rect);
                             let pad = (*blur_radius * scale * 2.0).ceil() as i32;
-                            let sx0 = ((bounds.x * scale).floor() as i32 - pad).clamp(0, w as i32 - 1);
-                            let sy0 = ((bounds.y * scale).floor() as i32 - pad).clamp(0, h as i32 - 1);
-                            let sx1 = ((bounds.max_x() * scale).ceil() as i32 + pad).clamp(sx0 + 1, w as i32);
-                            let sy1 = ((bounds.max_y() * scale).ceil() as i32 + pad).clamp(sy0 + 1, h as i32);
+                            let sx0 =
+                                ((bounds.x * scale).floor() as i32 - pad).clamp(0, w as i32 - 1);
+                            let sy0 =
+                                ((bounds.y * scale).floor() as i32 - pad).clamp(0, h as i32 - 1);
+                            let sx1 = ((bounds.max_x() * scale).ceil() as i32 + pad)
+                                .clamp(sx0 + 1, w as i32);
+                            let sy1 = ((bounds.max_y() * scale).ceil() as i32 + pad)
+                                .clamp(sy0 + 1, h as i32);
                             let bw = (sx1 - sx0) as usize;
                             let bh = (sy1 - sy0) as usize;
                             let mut patch = vec![0u8; bw * bh * 4];
@@ -277,10 +281,7 @@ mod vello_cpu_impl {
                                 sampler: peniko::ImageSampler::default(),
                             });
                             self.ctx.fill_rect(&kurbo::Rect::new(
-                                sx0 as f64,
-                                sy0 as f64,
-                                sx1 as f64,
-                                sy1 as f64,
+                                sx0 as f64, sy0 as f64, sx1 as f64, sy1 as f64,
                             ));
                             self.ctx.reset_paint_transform();
                             self.ctx.set_transform(eff_xform);
@@ -319,7 +320,8 @@ mod vello_cpu_impl {
                         if let Some(pixmap) = self.get_or_upload_pixmap(*texture, textures) {
                             let img_w = pixmap.width() as u32;
                             let img_h = pixmap.height() as u32;
-                            let (_, img_affine) = compute_image_transform(*rect, img_w, img_h, *fit);
+                            let (_, img_affine) =
+                                compute_image_transform(*rect, img_w, img_h, *fit);
                             let clip_path = rect.to_rounded_kurbo(*radius).to_path(0.1);
                             self.ctx.set_transform(eff_xform);
                             self.ctx.push_clip_layer(&clip_path);
@@ -416,13 +418,8 @@ mod vello_cpu_impl {
                         } else {
                             None
                         };
-                        self.ctx.push_layer(
-                            clip,
-                            Some(p_blend),
-                            Some(*opacity),
-                            None,
-                            None,
-                        );
+                        self.ctx
+                            .push_layer(clip, Some(p_blend), Some(*opacity), None, None);
                         layer_stack_depth += 1;
                     }
                     PaintCommand::PopLayer => {
@@ -679,7 +676,9 @@ mod tiny_skia_impl {
                                 transform,
                             );
                             if let Some(parent_clip) = clip_stack.last() {
-                                for (a, b) in mask.data_mut().iter_mut().zip(parent_clip.data().iter()) {
+                                for (a, b) in
+                                    mask.data_mut().iter_mut().zip(parent_clip.data().iter())
+                                {
                                     *a = ((*a as u16 * *b as u16) / 255) as u8;
                                 }
                             }
@@ -784,12 +783,21 @@ mod tiny_skia_impl {
                                         ..Default::default()
                                     };
                                     let dst = active_pixmap_mut(&mut root_pixmap, &mut layer_stack);
-                                    let img_mask = if !radius.is_zero() || cur_xform != Transform2D::IDENTITY {
+                                    let img_mask = if !radius.is_zero()
+                                        || cur_xform != Transform2D::IDENTITY
+                                    {
                                         rounded_rect_to_tiny_path(*rect, *radius).and_then(|p| {
                                             let mut m = tiny_skia::Mask::new(w, h)?;
-                                            m.fill_path(&p, tiny_skia::FillRule::Winding, true, transform);
+                                            m.fill_path(
+                                                &p,
+                                                tiny_skia::FillRule::Winding,
+                                                true,
+                                                transform,
+                                            );
                                             if let Some(outer) = clip_stack.last() {
-                                                for (a, b) in m.data_mut().iter_mut().zip(outer.data().iter()) {
+                                                for (a, b) in
+                                                    m.data_mut().iter_mut().zip(outer.data().iter())
+                                                {
                                                     *a = ((*a as u16 * *b as u16) / 255) as u8;
                                                 }
                                             }
@@ -827,7 +835,8 @@ mod tiny_skia_impl {
                                     coords_buf.clear();
                                     coords_buf.extend(norm.iter().map(|c| c.to_bits()));
                                     for g in glyph_run.positioned_glyphs() {
-                                        let p_local = Point_xf(cur_xform, origin.x + g.x, origin.y + g.y);
+                                        let p_local =
+                                            Point_xf(cur_xform, origin.x + g.x, origin.y + g.y);
                                         let gx_phys = p_local.0 * sf;
                                         let gy_phys = p_local.1 * sf;
                                         let gx_floor = gx_phys.floor();
@@ -852,7 +861,8 @@ mod tiny_skia_impl {
                                                 }
                                                 let a = ((col.a as u16 * cov as u16) / 255) as u8;
                                                 let idx = i * 4;
-                                                premul[idx] = ((col.r as u16 * a as u16) / 255) as u8;
+                                                premul[idx] =
+                                                    ((col.r as u16 * a as u16) / 255) as u8;
                                                 premul[idx + 1] =
                                                     ((col.g as u16 * a as u16) / 255) as u8;
                                                 premul[idx + 2] =
@@ -1093,7 +1103,9 @@ mod tiny_skia_impl {
             let sw = (x1 - x0) as u32;
             let sh = (y1 - y0) as u32;
             if let Some(mut shadow_pix) = tiny_skia::Pixmap::new(sw, sh) {
-                shadow_pix.fill(tiny_skia::Color::from_rgba8(color.r, color.g, color.b, color.a));
+                shadow_pix.fill(tiny_skia::Color::from_rgba8(
+                    color.r, color.g, color.b, color.a,
+                ));
                 let cut_rect = rect.translate(offset_x, offset_y).inflate(-spread, -spread);
                 let cut_radii = CornerRadii::new(
                     (radius.top_left - spread).max(0.0),
@@ -1106,8 +1118,8 @@ mod tiny_skia_impl {
                     clr.set_color_rgba8(0, 0, 0, 255);
                     clr.blend_mode = tiny_skia::BlendMode::Clear;
                     clr.anti_alias = true;
-                    let local_ts =
-                        tiny_skia::Transform::from_translate(-x0 as f32, -y0 as f32).pre_concat(transform);
+                    let local_ts = tiny_skia::Transform::from_translate(-x0 as f32, -y0 as f32)
+                        .pre_concat(transform);
                     shadow_pix.fill_path(
                         &cut_path,
                         &clr,
@@ -1167,15 +1179,9 @@ mod tiny_skia_impl {
                 let mut paint = tiny_skia::Paint::default();
                 paint.set_color_rgba8(color.r, color.g, color.b, color.a);
                 paint.anti_alias = true;
-                let local_ts =
-                    tiny_skia::Transform::from_translate(-x0 as f32, -y0 as f32).pre_concat(transform);
-                shadow_pix.fill_path(
-                    &path,
-                    &paint,
-                    tiny_skia::FillRule::Winding,
-                    local_ts,
-                    None,
-                );
+                let local_ts = tiny_skia::Transform::from_translate(-x0 as f32, -y0 as f32)
+                    .pre_concat(transform);
+                shadow_pix.fill_path(&path, &paint, tiny_skia::FillRule::Winding, local_ts, None);
                 let br = (std_dev * sf * 0.5).round() as usize;
                 if br > 0 {
                     separable_box_blur_rgba(shadow_pix.data_mut(), sw as usize, sh as usize, br);
@@ -1369,26 +1375,38 @@ pub(crate) fn render_minimal_software_rgba(
                 );
             }
             PaintCommand::DrawImage {
-                rect, texture, fit, opacity, ..
+                rect,
+                texture,
+                fit,
+                opacity,
+                ..
             } => {
                 if let Some(handle) = textures.get(*texture) {
                     let (iw, ih, _, src) = handle.snapshot();
                     if iw > 0 && ih > 0 {
-                        let (dr, _) = compute_image_transform(xf.transform_rect_bounds(*rect), iw, ih, *fit);
+                        let (dr, _) =
+                            compute_image_transform(xf.transform_rect_bounds(*rect), iw, ih, *fit);
                         let dx0 = (dr.x * sf).floor().max(0.0) as usize;
                         let dy0 = (dr.y * sf).floor().max(0.0) as usize;
                         let dx1 = (dr.max_x() * sf).ceil().min(w as f32) as usize;
                         let dy1 = (dr.max_y() * sf).ceil().min(h as f32) as usize;
                         for py in dy0..dy1 {
-                            let v = (((py as f32 - dr.y * sf) / (dr.height * sf).max(1.0)) * ih as f32)
-                                .clamp(0.0, (ih - 1) as f32) as usize;
+                            let v = (((py as f32 - dr.y * sf) / (dr.height * sf).max(1.0))
+                                * ih as f32)
+                                .clamp(0.0, (ih - 1) as f32)
+                                as usize;
                             for px in dx0..dx1 {
-                                let u = (((px as f32 - dr.x * sf) / (dr.width * sf).max(1.0)) * iw as f32)
-                                    .clamp(0.0, (iw - 1) as f32) as usize;
+                                let u = (((px as f32 - dr.x * sf) / (dr.width * sf).max(1.0))
+                                    * iw as f32)
+                                    .clamp(0.0, (iw - 1) as f32)
+                                    as usize;
                                 let si = (v * iw as usize + u) * 4;
                                 let di = (py * w + px) * 4;
                                 let a = (src[si + 3] as f32 * *opacity / 255.0).clamp(0.0, 1.0);
-                                blend_straight(&mut out[di..di + 4], [src[si], src[si + 1], src[si + 2], (a * 255.0) as u8]);
+                                blend_straight(
+                                    &mut out[di..di + 4],
+                                    [src[si], src[si + 1], src[si + 2], (a * 255.0) as u8],
+                                );
                             }
                         }
                     }
@@ -1436,8 +1454,16 @@ fn fill_span_rgba(out: &mut [u8], w: usize, h: usize, rect: Rect, sf: f32, c: Co
 fn blend_straight(dst: &mut [u8], src: [u8; 4]) {
     let sa = src[3] as f32 / 255.0;
     let inv = 1.0 - sa;
-    dst[0] = (src[0] as f32 * sa + dst[0] as f32 * inv).round().min(255.0) as u8;
-    dst[1] = (src[1] as f32 * sa + dst[1] as f32 * inv).round().min(255.0) as u8;
-    dst[2] = (src[2] as f32 * sa + dst[2] as f32 * inv).round().min(255.0) as u8;
-    dst[3] = ((sa + (dst[3] as f32 / 255.0) * inv) * 255.0).round().min(255.0) as u8;
+    dst[0] = (src[0] as f32 * sa + dst[0] as f32 * inv)
+        .round()
+        .min(255.0) as u8;
+    dst[1] = (src[1] as f32 * sa + dst[1] as f32 * inv)
+        .round()
+        .min(255.0) as u8;
+    dst[2] = (src[2] as f32 * sa + dst[2] as f32 * inv)
+        .round()
+        .min(255.0) as u8;
+    dst[3] = ((sa + (dst[3] as f32 / 255.0) * inv) * 255.0)
+        .round()
+        .min(255.0) as u8;
 }

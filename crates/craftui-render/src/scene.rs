@@ -145,7 +145,8 @@ impl PaintScene {
     }
 
     pub fn push_transform(&mut self, transform: Transform2D) {
-        self.commands.push(PaintCommand::PushTransform { transform });
+        self.commands
+            .push(PaintCommand::PushTransform { transform });
     }
 
     pub fn pop_transform(&mut self) {

@@ -165,12 +165,16 @@ fn resolve_source_internal(
     // Merge entry declarations after dependencies, always overriding colliding imported names
     // while keeping entry declarations ordered last (so `components.last()` targets entry file).
     for st in &parsed.file.structs {
-        state.merged_structs.retain(|existing| existing.name != st.name);
+        state
+            .merged_structs
+            .retain(|existing| existing.name != st.name);
         state.seen_structs.insert(st.name.clone());
         state.merged_structs.push(st.clone());
     }
     for en in &parsed.file.enums {
-        state.merged_enums.retain(|existing| existing.name != en.name);
+        state
+            .merged_enums
+            .retain(|existing| existing.name != en.name);
         state.seen_enums.insert(en.name.clone());
         state.merged_enums.push(en.clone());
     }

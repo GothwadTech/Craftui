@@ -461,7 +461,11 @@ mod tests {
         assert!(u1.tree.is_some());
 
         // Identical frame -> None!
-        assert!(bridge.build_incremental_update(root, Some(btn), &snaps).is_none());
+        assert!(
+            bridge
+                .build_incremental_update(root, Some(btn), &snaps)
+                .is_none()
+        );
 
         // Update only one node label -> only 1 node serialized!
         snaps[2].meta.label = Some("Saved!".into());

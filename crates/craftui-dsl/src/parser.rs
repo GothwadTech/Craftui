@@ -512,10 +512,7 @@ impl Parser {
                 TokenKind::Ident => {
                     if self.peek_text() == Some("animate")
                         && self.peek_nth(1) == Some(TokenKind::Ident)
-                        && matches!(
-                            self.peek_nth(2),
-                            Some(TokenKind::Comma | TokenKind::LBrace)
-                        )
+                        && matches!(self.peek_nth(2), Some(TokenKind::Comma | TokenKind::LBrace))
                     {
                         animations.extend(self.parse_animate_block());
                         continue;
@@ -539,7 +536,10 @@ impl Parser {
                                 self.diagnostics.push(Diagnostic {
                                     span: Span::new(t.start, t.end),
                                     severity: Severity::Error,
-                                    message: format!("unexpected identifier '{}' in element", t.text),
+                                    message: format!(
+                                        "unexpected identifier '{}' in element",
+                                        t.text
+                                    ),
                                 });
                             }
                             self.builder.finish_node();

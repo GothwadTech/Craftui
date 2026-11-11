@@ -169,7 +169,9 @@ pub fn write_rgba_png(path: impl AsRef<Path>, width: u32, height: u32, rgba: &[u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use craftui_core::{BlendMode, BoxShadow, Brush, ColorStop, CornerRadii, Fit, Point, Rect, Transform2D};
+    use craftui_core::{
+        BlendMode, BoxShadow, Brush, ColorStop, CornerRadii, Fit, Point, Rect, Transform2D,
+    };
     use craftui_text::TextStyle;
 
     #[test]
@@ -278,7 +280,10 @@ mod tests {
                 p[0] > 220 && p[1] > 220 && p[2] > 220
             })
         });
-        assert!(has_glyph_pixels, "TinySkiaBackend must rasterize DrawText glyphs");
+        assert!(
+            has_glyph_pixels,
+            "TinySkiaBackend must rasterize DrawText glyphs"
+        );
     }
 
     #[test]
@@ -290,7 +295,11 @@ mod tests {
         });
         let textures = TextureRegistry::new();
         let mut text = TextEngine::new();
-        for backend in [BackendKind::VelloCpu, BackendKind::TinySkia, BackendKind::GpuSdf] {
+        for backend in [
+            BackendKind::VelloCpu,
+            BackendKind::TinySkia,
+            BackendKind::GpuSdf,
+        ] {
             let rgba = render_scene_to_rgba(
                 backend,
                 &scene,
@@ -311,8 +320,16 @@ mod tests {
     fn transforms_backdrop_blur_shadows_and_blend_layers_render_cleanly() {
         let mut scene = PaintScene::new();
         // High-contrast vertical stripe background
-        scene.fill_rect(Rect::new(0.0, 0.0, 60.0, 120.0), Color::rgb(240, 40, 40), CornerRadii::ZERO);
-        scene.fill_rect(Rect::new(60.0, 0.0, 60.0, 120.0), Color::rgb(40, 40, 240), CornerRadii::ZERO);
+        scene.fill_rect(
+            Rect::new(0.0, 0.0, 60.0, 120.0),
+            Color::rgb(240, 40, 40),
+            CornerRadii::ZERO,
+        );
+        scene.fill_rect(
+            Rect::new(60.0, 0.0, 60.0, 120.0),
+            Color::rgb(40, 40, 240),
+            CornerRadii::ZERO,
+        );
 
         // BackdropBlur frosted panel spanning x=30..90 over red/blue boundary
         scene.backdrop_blur(
@@ -333,7 +350,11 @@ mod tests {
             Point::new(60.0, 60.0),
             Transform2D::rotation(0.4),
         ));
-        scene.fill_rect(Rect::new(45.0, 45.0, 30.0, 30.0), Color::rgb(34, 197, 94), CornerRadii::all(6.0));
+        scene.fill_rect(
+            Rect::new(45.0, 45.0, 30.0, 30.0),
+            Color::rgb(34, 197, 94),
+            CornerRadii::all(6.0),
+        );
         scene.pop_transform();
         scene.pop_layer();
 
@@ -346,7 +367,11 @@ mod tests {
 
         let textures = TextureRegistry::new();
         let mut text = TextEngine::new();
-        for backend in [BackendKind::VelloCpu, BackendKind::TinySkia, BackendKind::GpuSdf] {
+        for backend in [
+            BackendKind::VelloCpu,
+            BackendKind::TinySkia,
+            BackendKind::GpuSdf,
+        ] {
             let rgba = render_scene_to_rgba(
                 backend,
                 &scene,
@@ -363,7 +388,10 @@ mod tests {
             assert!(p_left[0] > 180 && p_left[2] < 80);
             // Inside frosted stripe boundary at (59, 36) should contain mixed red & blue from blur
             let p_seam = &rgba[(36 * 120 + 59) * 4..][..4];
-            assert!(p_seam[0] > 60 && p_seam[2] > 60, "expected blurred seam pixel on {backend:?}, got {p_seam:?}");
+            assert!(
+                p_seam[0] > 60 && p_seam[2] > 60,
+                "expected blurred seam pixel on {backend:?}, got {p_seam:?}"
+            );
         }
     }
 }

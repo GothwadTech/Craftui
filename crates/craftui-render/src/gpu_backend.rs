@@ -434,7 +434,8 @@ impl GpuSurfacePipeline {
                 },
             ) {
                 Ok(renderer) => {
-                    let (target_texture, target_view) = create_vello_target(device, w, h, format.is_srgb());
+                    let (target_texture, target_view) =
+                        create_vello_target(device, w, h, format.is_srgb());
                     let blitter = TextureBlitter::new(device, format);
                     return ActivePipelineKind::VelloGpu(Box::new(VelloGpuPipeline {
                         renderer: Box::new(renderer),
@@ -461,7 +462,8 @@ impl GpuSurfacePipeline {
         #[cfg(not(feature = "gpu-sdf"))]
         let _ = queue;
 
-        let (upload_texture, upload_view) = create_cpu_upload_target(device, w, h, format.is_srgb());
+        let (upload_texture, upload_view) =
+            create_cpu_upload_target(device, w, h, format.is_srgb());
         let blitter = TextureBlitter::new(device, format);
         ActivePipelineKind::CpuUpload(Box::new(CpuUploadPipeline {
             cpu: Box::new(SoftwareRenderer::new(w, h)),
@@ -604,9 +606,12 @@ impl GpuSurfacePipeline {
                         },
                     )
                     .map_err(|e| CraftError::Render(format!("vello render failed: {e}")))?;
-                vello
-                    .blitter
-                    .copy(&self.device, &mut encoder, &vello.target_view, &surface_view);
+                vello.blitter.copy(
+                    &self.device,
+                    &mut encoder,
+                    &vello.target_view,
+                    &surface_view,
+                );
             }
             ActivePipelineKind::CpuUpload(upload) => {
                 let straight = upload.cpu.render_straight_rgba(
@@ -637,9 +642,12 @@ impl GpuSurfacePipeline {
                         depth_or_array_layers: 1,
                     },
                 );
-                upload
-                    .blitter
-                    .copy(&self.device, &mut encoder, &upload.upload_view, &surface_view);
+                upload.blitter.copy(
+                    &self.device,
+                    &mut encoder,
+                    &upload.upload_view,
+                    &surface_view,
+                );
             }
         }
 
@@ -753,13 +761,7 @@ fn encode_vello_scene(
             } => {
                 let p_brush = brush_to_peniko(brush);
                 if radius.is_zero() {
-                    scene.fill(
-                        peniko::Fill::NonZero,
-                        eff,
-                        &p_brush,
-                        None,
-                        &rect.to_kurbo(),
-                    );
+                    scene.fill(peniko::Fill::NonZero, eff, &p_brush, None, &rect.to_kurbo());
                 } else {
                     scene.fill(
                         peniko::Fill::NonZero,
@@ -799,11 +801,9 @@ fn encode_vello_scene(
                 offset_y,
                 color,
             } => {
-                let avg_r = (radius.top_left
-                    + radius.top_right
-                    + radius.bottom_right
-                    + radius.bottom_left)
-                    * 0.25;
+                let avg_r =
+                    (radius.top_left + radius.top_right + radius.bottom_right + radius.bottom_left)
+                        * 0.25;
                 if *inset {
                     scene.push_clip_layer(
                         peniko::Fill::NonZero,
@@ -842,10 +842,7 @@ fn encode_vello_scene(
                 }
             }
             PaintCommand::BackdropBlur {
-                rect,
-                radius,
-                tint,
-                ..
+                rect, radius, tint, ..
             } => {
                 // Vello compute scenes are forward-only; draw translucent frosted tint surface cleanly
                 let frosted = Color::rgba(tint.r, tint.g, tint.b, tint.a.max(96));

@@ -5,10 +5,12 @@
 
 use accesskit_winit::Adapter as AccessKitAdapter;
 use craftui_core::{
-    ClipboardBackend, Color, CraftError, CursorIcon, FileDialogBackend, FileDialogRequest,
-    ImeEvent, KeyCode, KeyEvent, Modifiers, NodeId, PlatformServices, Point, PointerButton,
-    PointerEvent, PointerId, PointerPhase, Result, ScrollDelta, Size, UiDispatcher, UiEvent,
-    WindowMetrics, monotonic_ms,
+    BatteryState, ClipboardBackend, Color, CraftError, CursorIcon, DeviceCapabilitiesBackend,
+    DeviceInfo, FileDialogBackend, FileDialogRequest, ImeEvent, KeyCode, KeyEvent,
+    MemorySecureStorage, Modifiers, NetworkStatus, NodeId, Permission, PermissionBackend,
+    PermissionStatus, PlatformServices, Point, PointerButton, PointerEvent, PointerId,
+    PointerPhase, Result, ScrollDelta, SecureStorageBackend, ShareBackend, SharePayload, Size,
+    UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
 };
 use craftui_reactive::Scope;
 #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
@@ -97,7 +99,9 @@ impl ClipboardBackend for DesktopClipboard {
     }
 }
 
-fn read_os_clipboard(#[allow(unused_variables)] state: &mut DesktopClipboardState) -> Option<String> {
+fn read_os_clipboard(
+    #[allow(unused_variables)] state: &mut DesktopClipboardState,
+) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
@@ -342,8 +346,345 @@ impl FileDialogBackend for DesktopFileDialog {
     }
 }
 
+/// Desktop host permission backend reporting desktop-accessible capabilities as [`PermissionStatus::Granted`],
+/// mobile/telephony-only capabilities as [`PermissionStatus::Unsupported`], and honoring explicit test/host overrides.
+#[derive(Debug, Default)]
+pub struct DesktopPermissionBackend {
+    overrides: Mutex<HashMap<Permission, PermissionStatus>>,
+    launch_os_settings: bool,
+}
+
+impl DesktopPermissionBackend {
+    pub fn new() -> Self {
+        Self {
+            overrides: Mutex::new(HashMap::new()),
+            launch_os_settings: true,
+        }
+    }
+
+    pub fn with_status(self, permission: Permission, status: PermissionStatus) -> Self {
+        self.set_status(permission, status);
+        self
+    }
+
+    pub fn with_settings_launcher(mut self, enabled: bool) -> Self {
+        self.launch_os_settings = enabled;
+        self
+    }
+
+    pub fn set_status(&self, permission: Permission, status: PermissionStatus) {
+        if let Ok(mut guard) = self.overrides.lock() {
+            guard.insert(permission, status);
+        }
+    }
+
+    pub fn default_desktop_status(permission: &Permission) -> PermissionStatus {
+        match permission {
+            Permission::Camera
+            | Permission::Microphone
+            | Permission::LocationWhenInUse
+            | Permission::LocationCoarse
+            | Permission::Photos
+            | Permission::PhotosAddOnly
+            | Permission::Videos
+            | Permission::AudioLibrary
+            | Permission::Notifications
+            | Permission::Bluetooth
+            | Permission::BluetoothScan
+            | Permission::BluetoothConnect
+            | Permission::BluetoothAdvertise
+            | Permission::Biometrics
+            | Permission::Contacts
+            | Permission::CalendarRead
+            | Permission::CalendarWrite
+            | Permission::StorageRead
+            | Permission::StorageWrite
+            | Permission::BackgroundRefresh
+            | Permission::MediaProjection
+            | Permission::ClipboardRead => PermissionStatus::Granted,
+            Permission::LocationAlways
+            | Permission::Sensors
+            | Permission::MotionActivity
+            | Permission::ManageExternalStorage
+            | Permission::Nfc
+            | Permission::PhoneState
+            | Permission::CallPhone
+            | Permission::SmsRead
+            | Permission::SmsSend
+            | Permission::SystemAlertWindow
+            | Permission::ScheduleExactAlarm
+            | Permission::InstallPackages
+            | Permission::Vibrate
+            | Permission::Custom(_) => PermissionStatus::Unsupported,
+        }
+    }
+}
+
+impl PermissionBackend for DesktopPermissionBackend {
+    fn check(&self, permission: &Permission) -> PermissionStatus {
+        if let Ok(guard) = self.overrides.lock()
+            && let Some(status) = guard.get(permission)
+        {
+            return *status;
+        }
+        Self::default_desktop_status(permission)
+    }
+
+    fn request(&self, permission: &Permission) -> PermissionStatus {
+        self.check(permission)
+    }
+
+    fn should_show_rationale(&self, _permission: &Permission) -> bool {
+        false
+    }
+
+    fn open_app_settings(&self) -> bool {
+        if !self.launch_os_settings || cfg!(test) || !has_unix_display() {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security")
+                .spawn()
+                .is_ok()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", "ms-settings:privacy"])
+                .spawn()
+                .is_ok()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("xdg-open")
+                .arg("settings://privacy")
+                .spawn()
+                .is_ok()
+        }
+    }
+}
+
+/// Desktop share adapter formatting shared text/URL/file summaries into the OS clipboard (`DesktopClipboard`).
+#[derive(Clone, Default)]
+pub struct DesktopShareBackend {
+    clipboard: DesktopClipboard,
+}
+
+impl DesktopShareBackend {
+    pub fn new(clipboard: DesktopClipboard) -> Self {
+        Self { clipboard }
+    }
+
+    pub fn format_payload(payload: &SharePayload) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(title) = payload.title.as_deref().filter(|s| !s.trim().is_empty()) {
+            parts.push(title.trim().to_string());
+        }
+        if let Some(text) = payload.text.as_deref().filter(|s| !s.trim().is_empty()) {
+            parts.push(text.trim().to_string());
+        }
+        if let Some(url) = payload.url.as_deref().filter(|s| !s.trim().is_empty()) {
+            parts.push(url.trim().to_string());
+        }
+        if !payload.files.is_empty() {
+            let paths: Vec<String> = payload
+                .files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            parts.push(paths.join(", "));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n"))
+        }
+    }
+}
+
+impl ShareBackend for DesktopShareBackend {
+    fn share(&self, payload: &SharePayload) -> bool {
+        let Some(formatted) = Self::format_payload(payload) else {
+            return false;
+        };
+        let mut cb = self.clipboard.clone();
+        cb.set_text(&formatted)
+    }
+}
+
+/// Desktop session credential store backed by [`MemorySecureStorage`].
+#[derive(Debug, Default)]
+pub struct DesktopSecureStorage {
+    inner: MemorySecureStorage,
+}
+
+impl DesktopSecureStorage {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl SecureStorageBackend for DesktopSecureStorage {
+    fn get_secret(&self, key: &str) -> Option<String> {
+        self.inner.get_secret(key)
+    }
+
+    fn set_secret(&self, key: &str, value: &str) -> bool {
+        self.inner.set_secret(key, value)
+    }
+
+    fn delete_secret(&self, key: &str) -> bool {
+        self.inner.delete_secret(key)
+    }
+}
+
+/// Desktop hardware/OS telemetry provider reading `/etc/os-release`, sysfs network interfaces, and
+/// battery sysfs on Linux with deterministic fallbacks on macOS/Windows/CI hosts.
+#[derive(Debug, Default)]
+pub struct DesktopDeviceCapabilities {
+    network_override: Mutex<Option<NetworkStatus>>,
+    battery_override: Mutex<Option<BatteryState>>,
+}
+
+impl DesktopDeviceCapabilities {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_network_override(&self, status: Option<NetworkStatus>) {
+        if let Ok(mut guard) = self.network_override.lock() {
+            *guard = status;
+        }
+    }
+
+    pub fn set_battery_override(&self, state: Option<BatteryState>) {
+        if let Ok(mut guard) = self.battery_override.lock() {
+            *guard = state;
+        }
+    }
+}
+
+fn read_desktop_os_version() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("PRETTY_NAME=") {
+                    return rest.trim().trim_matches('"').to_string();
+                }
+            }
+        }
+    }
+    std::env::consts::FAMILY.to_string()
+}
+
+fn probe_desktop_network() -> NetworkStatus {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            let mut saw_any = false;
+            let mut has_wifi = false;
+            let mut has_ethernet = false;
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str == "lo" {
+                    continue;
+                }
+                saw_any = true;
+                let path = entry.path();
+                if let Ok(state) = std::fs::read_to_string(path.join("operstate"))
+                    && state.trim() == "up"
+                {
+                    if path.join("wireless").exists() || name_str.starts_with("wl") {
+                        has_wifi = true;
+                    } else {
+                        has_ethernet = true;
+                    }
+                }
+            }
+            if has_wifi {
+                return NetworkStatus::Wifi;
+            }
+            if has_ethernet {
+                return NetworkStatus::Ethernet;
+            }
+            if saw_any {
+                return NetworkStatus::Offline;
+            }
+        }
+    }
+    NetworkStatus::Unknown
+}
+
+fn probe_desktop_battery() -> BatteryState {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if !name.to_string_lossy().starts_with("BAT") {
+                    continue;
+                }
+                let path = entry.path();
+                let pct = std::fs::read_to_string(path.join("capacity"))
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u8>().ok())
+                    .map(|v| v.min(100));
+                let charging = std::fs::read_to_string(path.join("status"))
+                    .map(|s| matches!(s.trim(), "Charging" | "Full"))
+                    .unwrap_or(false);
+                if pct.is_some() {
+                    return BatteryState {
+                        level_pct: pct,
+                        charging,
+                    };
+                }
+            }
+        }
+    }
+    BatteryState::default()
+}
+
+impl DeviceCapabilitiesBackend for DesktopDeviceCapabilities {
+    fn device_info(&self) -> DeviceInfo {
+        DeviceInfo {
+            os: std::env::consts::OS.to_string(),
+            model: std::env::consts::ARCH.to_string(),
+            os_version: read_desktop_os_version(),
+            sdk_int: None,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+
+    fn network_status(&self) -> NetworkStatus {
+        if let Ok(guard) = self.network_override.lock()
+            && let Some(status) = *guard
+        {
+            return status;
+        }
+        probe_desktop_network()
+    }
+
+    fn battery_state(&self) -> BatteryState {
+        if let Ok(guard) = self.battery_override.lock()
+            && let Some(state) = *guard
+        {
+            return state;
+        }
+        probe_desktop_battery()
+    }
+}
+
 pub fn default_desktop_services() -> PlatformServices {
-    PlatformServices::new(DesktopClipboard::default(), DesktopFileDialog)
+    let clipboard = DesktopClipboard::default();
+    PlatformServices::new(clipboard.clone(), DesktopFileDialog)
+        .with_permissions(DesktopPermissionBackend::new())
+        .with_share(DesktopShareBackend::new(clipboard))
+        .with_secure_storage(DesktopSecureStorage::new())
+        .with_device_capabilities(DesktopDeviceCapabilities::new())
 }
 
 /// Custom event loop messages delivered from background worker threads, AccessKit, `.cui` watcher, or window opening.
@@ -522,14 +863,8 @@ pub fn run_hot_reload_cui(
         _watcher: Some(watcher),
     };
 
-    let mut runner = DesktopRunner::new_with_tree(
-        config,
-        proxy,
-        dispatcher,
-        root_scope,
-        tree,
-        None,
-    );
+    let mut runner =
+        DesktopRunner::new_with_tree(config, proxy, dispatcher, root_scope, tree, None);
     runner.set_primary_hot_reload(spec);
     event_loop
         .run_app(&mut runner)
@@ -862,7 +1197,9 @@ impl DesktopRunner {
                 Err(sb_err) => {
                     #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
                     {
-                        tracing::warn!("Softbuffer init failed ({sb_err}); trying wgpu CPU fallback");
+                        tracing::warn!(
+                            "Softbuffer init failed ({sb_err}); trying wgpu CPU fallback"
+                        );
                         match GpuSurfacePipeline::new_with_display(
                             || Arc::clone(&window),
                             || Box::new(display_handle.clone()),
@@ -1513,5 +1850,70 @@ mod tests {
         ))
         .add_path(PathBuf::from("assets/icon.png"));
         assert!(!should_trigger_hot_reload(&modify_other));
+    }
+
+    #[test]
+    fn desktop_services_support_permissions_share_secure_storage_and_device_telemetry() {
+        let services = default_desktop_services();
+        assert_eq!(
+            services.check_permission(&Permission::Camera),
+            PermissionStatus::Granted
+        );
+        assert_eq!(
+            services.request_permission(&Permission::StorageRead),
+            PermissionStatus::Granted
+        );
+        assert_eq!(
+            services.check_permission(&Permission::SmsSend),
+            PermissionStatus::Unsupported
+        );
+        assert!(!services.should_show_permission_rationale(&Permission::Camera));
+        assert!(!services.open_app_settings());
+
+        let perms = DesktopPermissionBackend::new()
+            .with_status(Permission::Notifications, PermissionStatus::Denied)
+            .with_settings_launcher(false);
+        assert_eq!(
+            perms.check(&Permission::Notifications),
+            PermissionStatus::Denied
+        );
+        assert!(!perms.open_app_settings());
+
+        assert!(services.set_secret("desktop_token", "abc_123"));
+        assert_eq!(
+            services.get_secret("desktop_token").as_deref(),
+            Some("abc_123")
+        );
+        assert!(services.delete_secret("desktop_token"));
+        assert_eq!(services.get_secret("desktop_token"), None);
+
+        assert!(!services.share(&SharePayload::new()));
+        assert!(
+            services.share(
+                &SharePayload::url("https://craftui.dev")
+                    .with_title("CraftUI")
+                    .with_text("Lightweight GPU UI")
+            )
+        );
+
+        let info = services.device_info();
+        assert_eq!(info.os, std::env::consts::OS);
+        assert!(!info.model.is_empty());
+        assert!(!info.app_version.is_empty());
+
+        let caps = DesktopDeviceCapabilities::new();
+        caps.set_network_override(Some(NetworkStatus::Ethernet));
+        caps.set_battery_override(Some(BatteryState {
+            level_pct: Some(95),
+            charging: true,
+        }));
+        assert_eq!(caps.network_status(), NetworkStatus::Ethernet);
+        assert_eq!(
+            caps.battery_state(),
+            BatteryState {
+                level_pct: Some(95),
+                charging: true
+            }
+        );
     }
 }

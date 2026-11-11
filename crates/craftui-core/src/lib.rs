@@ -22,8 +22,13 @@ pub use geometry::{
 };
 pub use ids::{DirtyFlags, NodeId, PlatformViewId, ScopeId, TextureId};
 pub use platform::{
-    ClipboardBackend, FileDialogBackend, FileDialogRequest, FileFilter, MemoryClipboard,
-    MockFileDialog, NoopFileDialog, PlatformServices,
+    AndroidPermissionSpec, AppLifecycleEvent, BatteryState, ClipboardBackend,
+    DeviceCapabilitiesBackend, DeviceInfo, FileDialogBackend, FileDialogRequest, FileFilter,
+    HapticStyle, HapticsBackend, MemoryClipboard, MemorySecureStorage, MockDeviceCapabilities,
+    MockFileDialog, MockHaptics, MockPermissionBackend, MockShare, NetworkStatus, NoopFileDialog,
+    NoopHaptics, NoopPermissionBackend, NoopShare, Permission, PermissionBackend,
+    PermissionOutcome, PermissionStatus, PlatformServices, SecureStorageBackend, ShareBackend,
+    SharePayload,
 };
 pub use style::{
     Alignment, Axis, BlendMode, Border, BoxShadow, Brush, ColorStop, CursorIcon, Direction, Fit,

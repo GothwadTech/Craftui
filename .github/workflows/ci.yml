@@ -37,29 +37,52 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Minimal-Feature Compile Check
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"
 
   check-wasm:
-    name: Web WASM Check
+    name: Web WASM Clippy & Minimal Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - run: cargo check -p craftui-platform-web --target wasm32-unknown-unknown
+          components: clippy
+      - run: cargo clippy -p craftui-platform-web --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo check -p craftui-platform-web --target wasm32-unknown-unknown --no-default-features --features gpu-sdf
 
   check-android:
-    name: Android Cross-Compile Check
+    name: Android Clippy & Minimal Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-      - name: Check Android crate with preinstalled NDK
+          components: clippy
+      - name: Clippy & Minimal-Feature Check with preinstalled NDK
         run: |
           NDK_BIN="${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          CC_aarch64_linux_android="${NDK_BIN}/aarch64-linux-android26-clang" \
-          CXX_aarch64_linux_android="${NDK_BIN}/aarch64-linux-android26-clang++" \
-          AR_aarch64_linux_android="${NDK_BIN}/llvm-ar" \
-          cargo check -p craftui-platform-android --target aarch64-linux-android
+          export CC_aarch64_linux_android="${NDK_BIN}/aarch64-linux-android26-clang"
+          export CXX_aarch64_linux_android="${NDK_BIN}/aarch64-linux-android26-clang++"
+          export AR_aarch64_linux_android="${NDK_BIN}/llvm-ar"
+          cargo clippy -p craftui-platform-android --target aarch64-linux-android -- -D warnings
+          cargo check -p craftui-platform-android --target aarch64-linux-android --no-default-features --features gpu-sdf
+
+  bench-smoke:
+    name: Benchmark Smoke Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux System Deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev libx11-dev
+      - name: Run Perf Suite Smoke Benchmark
+        run: |
+          cargo bench -p craftui --bench perf_suite -- --quick --json > bench-smoke.json
+          cat bench-smoke.json
+          python3 -m json.tool bench-smoke.json > /dev/null

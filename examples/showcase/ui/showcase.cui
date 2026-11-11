@@ -28,12 +28,30 @@ export component ShowcaseScreen {
     in-out property <bool> overlay_menu_btn_hovered: false;
     in-out property <bool> close_modal_hovered: false;
     in-out property <bool> dismiss_sheet_hovered: false;
+    in-out property <int> mobile_segment: 0;
+    in-out property <bool> accordion_open: true;
+    in-out property <int> perm_table_selected: 0;
+    in-out property <int> perm_table_sort: 0;
+    in property <[[string]]> mobile_perm_rows: [
+        ["Camera", "camera", "Granted"],
+        ["Location", "location_when_in_use", "Granted"],
+        ["Notifications", "notifications", "Granted"],
+        ["Biometrics", "biometrics", "Granted"],
+        ["Storage", "storage_read", "Granted"],
+        ["Haptics", "vibrate", "Granted"]
+    ];
+    in-out property <bool> req_perm_hovered: false;
+    in-out property <bool> haptic_btn_hovered: false;
+    in-out property <bool> share_btn_hovered: false;
 
     callback on_theme_cycle();
     callback on_notify_toast();
     callback on_copy_summary();
     callback on_open_file();
     callback on_toast_dismiss(int);
+    callback on_request_permission();
+    callback on_trigger_haptic();
+    callback on_share_payload();
 
     Stack {
         width: 100%;
@@ -126,7 +144,7 @@ export component ShowcaseScreen {
 
             Tabs {
                 id: "showcase_tabs";
-                tabs: ["Controls", "Virtual Data", "Glass & Split", "Overlays"];
+                tabs: ["Controls", "Virtual Data", "Glass & Split", "Overlays", "Mobile & Native"];
                 active <=> active_tab;
                 on_change => {
                     active_tab = index;
@@ -580,6 +598,115 @@ export component ShowcaseScreen {
                         on_tap => {
                             show_menu = !show_menu;
                             last_action = "Toggled PopupMenu";
+                        }
+                    }
+                }
+            }
+
+            if active_tab == 4 : SafeArea {
+                Column {
+                    id: "mobile_tab_panel";
+                    width: 100%;
+                    flex_grow: 1.0;
+                    background: Theme.surface;
+                    border_radius: 12dp;
+                    border_width: 1;
+                    border_color: Theme.border;
+                    padding: 16dp;
+                    gap: 12dp;
+
+                    SectionHeader {
+                        title: "Mobile Permissions, SafeArea & Native Telemetry";
+                        badge: "Phase 5";
+                        icon_name: "settings";
+                        on_badge_tap => { last_action = "Mobile & Native section tapped"; }
+                    }
+
+                    SegmentedControl {
+                        items: ["Permissions Table", "Device Telemetry", "OS Capabilities"];
+                        selected <=> mobile_segment;
+                        on_change => { last_action = "Mobile mode: " + index; }
+                    }
+
+                    Accordion {
+                        title: "Permissions Architecture (craftui.toml -> Android/iOS/Web)";
+                        expanded <=> accordion_open;
+                        on_toggle => { last_action = "Accordion toggled: " + expanded; }
+                        Column {
+                            gap: 6dp;
+                            padding: 8dp;
+                            Text {
+                                text: "Declared permissions in craftui.toml automatically emit Android uses-permission and Apple Info.plist NS*UsageDescription keys.";
+                                font_size: 13;
+                                color: Theme.text_secondary;
+                            }
+                            Text {
+                                text: "35 standard permission keys supported natively across Android, iOS, Web, and Desktop fallbacks.";
+                                font_size: 13;
+                                color: Theme.text_secondary;
+                            }
+                        }
+                    }
+
+                    DataTable {
+                        columns: ["Capability", "Permission Key", "Runtime Status"];
+                        rows: mobile_perm_rows;
+                        selected <=> perm_table_selected;
+                        striped: true;
+                        row_height: 38;
+                        on_sort => {
+                            perm_table_sort = column;
+                            last_action = "Sorted permissions by column #" + column;
+                        }
+                    }
+
+                    Row {
+                        gap: 12dp;
+                        align: Center;
+
+                        Button {
+                            id: "req_perm_btn";
+                            text: "Request Selected";
+                            background: Theme.primary;
+                            foreground: Theme.on_primary;
+                            border_radius: 10dp;
+                            cursor: Pointer;
+                            scale: req_perm_hovered ? 1.04 : 1.0;
+                            animate scale { curve: snappy(); }
+                            on_hover => { req_perm_hovered = value; }
+                            on_tap => {
+                                on_request_permission();
+                            }
+                        }
+
+                        Button {
+                            id: "haptic_btn";
+                            text: "Trigger Haptic";
+                            background: Theme.surface_variant;
+                            foreground: Theme.text_primary;
+                            border_radius: 10dp;
+                            cursor: Pointer;
+                            scale: haptic_btn_hovered ? 1.04 : 1.0;
+                            animate scale { curve: snappy(); }
+                            on_hover => { haptic_btn_hovered = value; }
+                            on_tap => {
+                                on_trigger_haptic();
+                            }
+                        }
+
+                        Button {
+                            id: "share_btn";
+                            text: "Share Link";
+                            background: Theme.surface_variant;
+                            foreground: Theme.text_primary;
+                            border_radius: 10dp;
+                            cursor: Pointer;
+                            scale: share_btn_hovered ? 1.04 : 1.0;
+                            animate scale { curve: snappy(); }
+                            on_hover => { share_btn_hovered = value; }
+                            on_tap => {
+                                on_share_payload();
+                            }
                         }
                     }
                 }

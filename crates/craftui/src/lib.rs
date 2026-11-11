@@ -91,12 +91,18 @@ pub mod prelude {
     pub use crate::{auto, dp, pct, px};
     pub use craftui_a11y::{A11yMetadata, A11yRole};
     pub use craftui_core::{
-        Alignment, Axis, BlendMode, Border, BoxShadow, Breakpoint, Brush, ClipboardBackend, Color,
-        Constraints, CornerRadii, CursorIcon, Direction, DirtyFlags, FileDialogBackend,
-        FileDialogRequest, FileFilter, Fit, ImeEvent, Insets, Justify, KeyCode, KeyEvent, Length,
-        Modifiers, NodeId, PlatformServices, PlatformViewId, Point, PointerButton, PointerEvent,
-        PointerId, PointerPhase, Rect, ScrollDelta, Size, TextureId, ThemeMode, ThemeOverride,
-        ThemeTokens, Transform2D, UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
+        Alignment, AndroidPermissionSpec, AppLifecycleEvent, Axis, BatteryState, BlendMode, Border,
+        BoxShadow, Breakpoint, Brush, ClipboardBackend, Color, Constraints, CornerRadii,
+        CursorIcon, DeviceCapabilitiesBackend, DeviceInfo, Direction, DirtyFlags,
+        FileDialogBackend, FileDialogRequest, FileFilter, Fit, HapticStyle, HapticsBackend,
+        ImeEvent, Insets, Justify, KeyCode, KeyEvent, Length, MemorySecureStorage,
+        MockDeviceCapabilities, MockHaptics, MockPermissionBackend, MockShare, Modifiers,
+        NetworkStatus, NodeId, NoopHaptics, NoopPermissionBackend, NoopShare, Permission,
+        PermissionBackend, PermissionOutcome, PermissionStatus, PlatformServices, PlatformViewId,
+        Point, PointerButton, PointerEvent, PointerId, PointerPhase, Rect, ScrollDelta,
+        SecureStorageBackend, ShareBackend, SharePayload, Size, TextureId, ThemeMode,
+        ThemeOverride, ThemeTokens, Transform2D, UiDispatcher, UiEvent, WindowMetrics,
+        monotonic_ms,
     };
     pub use craftui_layout::{LayoutMode, LayoutStyle};
     pub use craftui_macros::{component, cui};
@@ -118,12 +124,12 @@ pub mod prelude {
         ViewFn, VirtualItemFactory, WidgetKind, WidgetTree,
     };
 
+    #[cfg(all(feature = "desktop", feature = "hot-reload"))]
+    pub use craftui_platform_desktop::run_hot_reload_cui;
     #[cfg(feature = "desktop")]
     pub use craftui_platform_desktop::{
         AppContext, DesktopClipboard, DesktopFileDialog, WindowConfig, WindowLauncher, run_app,
     };
-    #[cfg(all(feature = "desktop", feature = "hot-reload"))]
-    pub use craftui_platform_desktop::run_hot_reload_cui;
 }
 
 #[cfg(test)]
@@ -316,7 +322,9 @@ mod tests {
         tree.layout(metrics);
 
         // Initial snapshot checks: no spurious animations, glassmorphism/cursor/blend set, Else branch visible
-        let card = tree.node_by_id("glass_card").expect("glass_card registered");
+        let card = tree
+            .node_by_id("glass_card")
+            .expect("glass_card registered");
         let card_node = tree.nodes.get(card).unwrap();
         assert!((card_node.box_style.backdrop_blur - 14.0).abs() < 0.01);
         assert_eq!(card_node.box_style.blend_mode, BlendMode::Overlay);
@@ -328,7 +336,10 @@ mod tests {
         zoomed.set(true);
         show_alt.set(true);
         tree.layout(metrics);
-        assert!(tree.has_active_animations(), "zoom/opacity transitions should activate");
+        assert!(
+            tree.has_active_animations(),
+            "zoom/opacity transitions should activate"
+        );
         assert!(tree.node_by_id("branch_then").is_some());
         for _ in 0..120 {
             if !tree.tick_animations(0.016) {
@@ -424,7 +435,14 @@ mod tests {
         });
 
         let badge = tree.node_by_id("badge").unwrap();
-        assert!(tree.nodes.get(badge).unwrap().box_style.background.is_none());
+        assert!(
+            tree.nodes
+                .get(badge)
+                .unwrap()
+                .box_style
+                .background
+                .is_none()
+        );
         let pane_a = tree.rect(tree.node_by_id("pane_a").unwrap());
         let pane_b = tree.rect(tree.node_by_id("pane_b").unwrap());
         assert!(pane_a.width < pane_b.width);
@@ -452,5 +470,161 @@ mod tests {
         }));
         assert!(toasts.is_empty());
         assert!(!toasts.dismiss(toast_id));
+    }
+
+    #[test]
+    fn prelude_exposes_mobile_permissions_and_capabilities() {
+        let perms = MockPermissionBackend::new()
+            .with_status(Permission::Photos, PermissionStatus::Limited)
+            .with_rationale(Permission::Camera, true);
+        let haptics = MockHaptics::new();
+        let share = MockShare::new();
+        let storage = MemorySecureStorage::new();
+        let device = MockDeviceCapabilities::new()
+            .with_network_status(NetworkStatus::Wifi)
+            .with_battery_state(BatteryState {
+                level_pct: Some(92),
+                charging: false,
+            })
+            .with_device_info(DeviceInfo {
+                os: "ios".to_string(),
+                model: "iPhone 16".to_string(),
+                os_version: "18.0".to_string(),
+                sdk_int: None,
+                app_version: "1.0.0".to_string(),
+            });
+
+        let services = PlatformServices::in_memory()
+            .with_permissions(perms)
+            .with_haptics(haptics)
+            .with_share(share)
+            .with_secure_storage(storage)
+            .with_device_capabilities(device);
+
+        let outcome = services.request_permissions(&[Permission::Camera, Permission::Photos]);
+        assert_eq!(outcome.len(), 2);
+        assert!(outcome[0].is_granted());
+        assert!(outcome[0].should_show_rationale);
+        assert_eq!(outcome[1].status, PermissionStatus::Limited);
+        assert!(services.trigger_haptic(HapticStyle::Medium));
+        assert!(services.share(&SharePayload::text("CraftUI")));
+        assert!(services.set_secret("k", "v"));
+        assert_eq!(services.get_secret("k").as_deref(), Some("v"));
+        assert_eq!(services.network_status(), NetworkStatus::Wifi);
+        assert_eq!(services.battery_state().level_pct, Some(92));
+        assert_eq!(services.device_info().os, "ios");
+        assert_ne!(AppLifecycleEvent::Resumed, AppLifecycleEvent::MemoryWarning);
+
+        let _noop_perm: NoopPermissionBackend = NoopPermissionBackend;
+        let _noop_haptics: NoopHaptics = NoopHaptics;
+        let _noop_share: NoopShare = NoopShare;
+        let _spec: Vec<AndroidPermissionSpec> = Permission::Camera.android_permissions();
+        let _trait_check: (
+            &dyn PermissionBackend,
+            &dyn HapticsBackend,
+            &dyn ShareBackend,
+        ) = (&_noop_perm, &_noop_haptics, &_noop_share);
+        let _sec: &dyn SecureStorageBackend = &MemorySecureStorage::new();
+        let _dev: &dyn DeviceCapabilitiesBackend = &MockDeviceCapabilities::new();
+        let _outcome: PermissionOutcome = outcome[0].clone();
+    }
+
+    #[test]
+    fn cui_macro_supports_phase5_safe_area_segmented_accordion_and_data_table() {
+        reset_runtime();
+        let cx = Scope::root();
+        let seg_idx = cx.signal(0usize);
+        let acc_open = cx.signal(false);
+        let tbl_sel = cx.signal(0usize);
+        let sorted_col = Rc::new(Cell::new(None::<usize>));
+        let sorted_c = sorted_col.clone();
+
+        let view = cui! {
+            SafeArea(id: "safe", padding: 8) {
+                Column(id: "inner", width: pct(100), gap: 10) {
+                    SegmentedControl(
+                        id: "seg",
+                        items: vec!["Permissions".into(), "Sensors".into()],
+                        selected <=> seg_idx,
+                        on_change: move |_i| {}
+                    )
+                    Accordion(
+                        id: "acc",
+                        title: "Manifest Permissions",
+                        expanded <=> acc_open,
+                        on_toggle: move |_exp| {}
+                    ) {
+                        Text(text: "CAMERA, LOCATION")
+                    }
+                    DataTable(
+                        id: "tbl",
+                        columns: vec!["Permission".into(), "Status".into()],
+                        rows: vec![
+                            vec!["Camera".into(), "Granted".into()],
+                            vec!["Location".into(), "Denied".into()],
+                        ],
+                        selected <=> tbl_sel,
+                        striped: true,
+                        row_height: 36.0,
+                        on_sort: move |col| sorted_c.set(Some(col))
+                    )
+                }
+            }
+        };
+
+        let mut tree = WidgetTree::new(cx);
+        tree.mount(cx, view);
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(420.0, 760.0),
+            safe_area: Insets::new(44.0, 0.0, 34.0, 0.0),
+            ..Default::default()
+        });
+        let inner_r1 = tree.rect(tree.node_by_id("inner").unwrap());
+        assert!((inner_r1.y - 52.0).abs() < 0.5);
+
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(420.0, 760.0),
+            safe_area: Insets::new(16.0, 8.0, 16.0, 8.0),
+            ..Default::default()
+        });
+        let inner_r2 = tree.rect(tree.node_by_id("inner").unwrap());
+        assert!((inner_r2.y - 24.0).abs() < 0.5);
+
+        assert!(matches!(
+            tree.nodes
+                .get(tree.node_by_id("seg").unwrap())
+                .unwrap()
+                .kind,
+            WidgetKind::SegmentedControl { .. }
+        ));
+        assert!(matches!(
+            tree.nodes
+                .get(tree.node_by_id("acc").unwrap())
+                .unwrap()
+                .kind,
+            WidgetKind::Accordion { .. }
+        ));
+        let tbl_rect = tree.rect(tree.node_by_id("tbl").unwrap());
+        // Click header cell 0 to fire on_sort
+        let sort_pt = Point::new(tbl_rect.x + 24.0, tbl_rect.y + 18.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Down,
+            position: sort_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 0,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Up,
+            position: sort_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        assert_eq!(sorted_col.get(), Some(0));
     }
 }

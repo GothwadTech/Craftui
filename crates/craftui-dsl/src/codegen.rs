@@ -645,30 +645,7 @@ fn emit_element(
                 "switch"
             };
             let checked_prop = find_prop(el, &["checked", "value"]);
-            let sig_code = match checked_prop {
-                Some(p)
-                    if p.two_way
-                        && matches!(&p.value, Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("bool")) =>
-                {
-                    let Expr::Ident(id) = &p.value else {
-                        unreachable!()
-                    };
-                    ctx.prop_access(id)
-                }
-                Some(p) => {
-                    let b = expr_to_typed_rust(&p.value, "bool", ctx);
-                    if expr_has_reactive_props(&p.value, ctx) {
-                        let captures = emit_signal_captures(ctx, &[]);
-                        let dyn_b = expr_to_typed_rust_captured(&p.value, "bool", ctx);
-                        format!(
-                            "{{ {captures} let __bsig = {cx}.signal({b}); {cx}.effect(move || {{ let v = {dyn_b}; if __bsig.get_untracked() != v {{ __bsig.set(v); }} }}); __bsig }}"
-                        )
-                    } else {
-                        format!("{cx}.signal({b})")
-                    }
-                }
-                None => format!("{cx}.signal(false)"),
-            };
+            let sig_code = emit_bool_signal_adapter(checked_prop, cx, ctx);
             let lbl = find_prop(el, &["label", "text"])
                 .map(|p| expr_to_typed_rust(&p.value, "String", ctx))
                 .unwrap_or_else(|| "String::new()".into());
@@ -828,6 +805,102 @@ fn emit_element(
                 "{indent}let {var} = {tr}.tabs({cx}, {tabs_rv}, {idx_sig});"
             );
             emit_index_change_handler(out, &var, el, indent, ctx);
+        }
+        "SegmentedControl" => {
+            let items_rv = find_prop(el, &["items", "options", "tabs"])
+                .map(|p| expr_to_reactive_string_list(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(Vec::<String>::new())".into());
+            let idx_prop = find_prop(el, &["selected", "active", "value"]);
+            let idx_sig = emit_usize_signal_adapter(idx_prop, cx, ctx);
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.segmented_control({cx}, {items_rv}, {idx_sig});"
+            );
+            emit_index_change_handler(out, &var, el, indent, ctx);
+        }
+        "Accordion" => {
+            let title_rv = find_prop(el, &["title", "label", "text"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let exp_prop = find_prop(el, &["expanded", "open"]);
+            let exp_sig = emit_bool_signal_adapter(exp_prop, cx, ctx);
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.accordion({cx}, {title_rv}, {exp_sig});"
+            );
+            if let Some(h) = find_handler(el, &["on_change", "on_toggle"]) {
+                let mut h_locals = ctx.locals.clone();
+                let mut alias_stmts = String::new();
+                for alias in ["expanded", "open", "value"] {
+                    if can_bind_handler_local(alias, ctx) {
+                        h_locals.insert(alias.into(), "bool".into());
+                        let _ = write!(alias_stmts, "let {alias} = __expanded; ");
+                    }
+                }
+                let h_ctx = EmitCtx {
+                    locals: &h_locals,
+                    use_self: false,
+                    ..*ctx
+                };
+                let captures = emit_signal_captures(ctx, &[]);
+                let body = emit_handler_body(&h.body, &h_ctx);
+                let _ = writeln!(
+                    out,
+                    "{indent}{{ {captures} {tr}.set_on_bool_change({var}, move |__expanded| {{ {alias_stmts}{body} }}); }}"
+                );
+            }
+        }
+        "DataTable" => {
+            let cols_rv = find_prop(el, &["columns"])
+                .map(|p| expr_to_reactive_string_list(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(Vec::<String>::new())".into());
+            let rows_rv = find_prop(el, &["rows", "items"])
+                .map(|p| expr_to_reactive_string_table(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(Vec::<Vec<String>>::new())".into());
+            let sel_prop = find_prop(el, &["selected"]);
+            let sel_sig = emit_usize_signal_adapter(sel_prop, cx, ctx);
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.data_table({cx}, {cols_rv}, {rows_rv}, {sel_sig});"
+            );
+            let st_prop = find_prop(el, &["striped"]);
+            let rh_prop = find_prop(el, &["row_height"]);
+            if st_prop.is_some() || rh_prop.is_some() {
+                let st_opt = match st_prop {
+                    Some(p) => format!("Some({})", expr_to_typed_rust(&p.value, "bool", ctx)),
+                    None => "None".into(),
+                };
+                let rh_opt = match rh_prop {
+                    Some(p) => format!("Some({})", expr_to_f32(&p.value, ctx, false)),
+                    None => "None".into(),
+                };
+                let _ = writeln!(
+                    out,
+                    "{indent}{tr}.set_data_table_options({var}, {st_opt}, {rh_opt});"
+                );
+            }
+            emit_index_change_handler(out, &var, el, indent, ctx);
+            if let Some(h) = find_handler(el, &["on_sort"]) {
+                let mut h_locals = ctx.locals.clone();
+                let mut alias_stmts = String::new();
+                for alias in ["column", "col", "index", "idx", "value"] {
+                    if can_bind_handler_local(alias, ctx) {
+                        h_locals.insert(alias.into(), "i32".into());
+                        let _ = write!(alias_stmts, "let {alias} = __col as i32; ");
+                    }
+                }
+                let h_ctx = EmitCtx {
+                    locals: &h_locals,
+                    use_self: false,
+                    ..*ctx
+                };
+                let captures = emit_signal_captures(ctx, &[]);
+                let body = emit_handler_body(&h.body, &h_ctx);
+                let _ = writeln!(
+                    out,
+                    "{indent}{{ {captures} {tr}.set_on_sort({var}, move |__col| {{ {alias_stmts}{body} }}); }}"
+                );
+            }
         }
         "Select" | "Dropdown" => {
             let opts_rv = find_prop(el, &["options", "items"])
@@ -1172,8 +1245,13 @@ fn emit_element(
                     ..*ctx
                 };
                 let mut body_buf = String::new();
-                let bvar =
-                    emit_element(&mut body_buf, body, counter, &format!("{indent}        "), &fac_ctx);
+                let bvar = emit_element(
+                    &mut body_buf,
+                    body,
+                    counter,
+                    &format!("{indent}        "),
+                    &fac_ctx,
+                );
                 let _ = writeln!(
                     out,
                     "{indent}let {var} = {{ {captures_fac} {tr}.virtual_list({cx}, {axis}, {cols}, {extent}, {count_rv}, LayoutStyle::column(), std::rc::Rc::new(move |__v_cx, __v_idx, __v_tree| {{ let __v_items = {vec_dyn}; if let Some({item_var}) = __v_items.get(__v_idx).cloned() {{ let {idx_ident} = __v_idx;\n{body_buf}{indent}        {bvar}\n{indent}    }} else {{ __v_tree.spacer(__v_cx) }} }})) }};"
@@ -1843,7 +1921,9 @@ fn emit_animate_curve(spec: &AnimateSpec, ctx: &EmitCtx<'_>) -> String {
         let d = dur
             .map(|(_, e)| expr_to_f32(e, ctx, false))
             .unwrap_or_else(|| "0.2".into());
-        let e = eas.map(|(_, e)| emit_easing_name(e)).unwrap_or("Easing::EaseInOut");
+        let e = eas
+            .map(|(_, e)| emit_easing_name(e))
+            .unwrap_or("Easing::EaseInOut");
         return format!("TransitionCurve::tween({d}, {e})");
     }
 
@@ -1917,7 +1997,10 @@ fn emit_expr_dependency_reads(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
     collect_expr_deps(expr, &cap_ctx, &mut deps, &mut needs_theme);
     let mut s = String::new();
     if needs_theme {
-        let _ = write!(s, "let _ = __theme_sig.get(); let _ = __theme_ov_sig.get(); ");
+        let _ = write!(
+            s,
+            "let _ = __theme_sig.get(); let _ = __theme_ov_sig.get(); "
+        );
     }
     for d in deps {
         let acc = cap_ctx.prop_access(&d);
@@ -2275,6 +2358,33 @@ fn emit_reactive_toast_list(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
     }
 }
 
+fn emit_bool_signal_adapter(prop: Option<&PropBinding>, cx: &str, ctx: &EmitCtx<'_>) -> String {
+    match prop {
+        Some(p)
+            if p.two_way
+                && matches!(&p.value, Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("bool")) =>
+        {
+            let Expr::Ident(id) = &p.value else {
+                unreachable!()
+            };
+            ctx.prop_access(id)
+        }
+        Some(p) => {
+            let b = expr_to_typed_rust(&p.value, "bool", ctx);
+            if expr_has_reactive_props(&p.value, ctx) {
+                let captures = emit_signal_captures(ctx, &[]);
+                let dyn_b = expr_to_typed_rust_captured(&p.value, "bool", ctx);
+                format!(
+                    "{{ {captures} let __bsig = {cx}.signal({b}); {cx}.effect(move || {{ let v = {dyn_b}; if __bsig.get_untracked() != v {{ __bsig.set(v); }} }}); __bsig }}"
+                )
+            } else {
+                format!("{cx}.signal({b})")
+            }
+        }
+        None => format!("{cx}.signal(false)"),
+    }
+}
+
 fn emit_usize_signal_adapter(prop: Option<&PropBinding>, cx: &str, ctx: &EmitCtx<'_>) -> String {
     match prop {
         Some(p) if p.two_way => match &p.value {
@@ -2407,10 +2517,7 @@ enum LValueStep<'a> {
     Index(&'a Expr),
 }
 
-fn extract_lvalue_path<'a>(
-    expr: &'a Expr,
-    steps: &mut Vec<LValueStep<'a>>,
-) -> Option<&'a str> {
+fn extract_lvalue_path<'a>(expr: &'a Expr, steps: &mut Vec<LValueStep<'a>>) -> Option<&'a str> {
     match expr {
         Expr::Ident(id) => Some(id.as_str()),
         Expr::Member(base, field) => {
@@ -2484,9 +2591,7 @@ fn emit_nested_lvalue_apply(
 
     let inner = build_steps(steps, 0, "__root", &assign_leaf);
     let _ = &mut pre_indices;
-    format!(
-        "{{ let __rhs = {rhs_expr}; {root_sym}.update(|__root| {{ {inner} }}); }}"
-    )
+    format!("{{ let __rhs = {rhs_expr}; {root_sym}.update(|__root| {{ {inner} }}); }}")
 }
 
 fn emit_handler_body(stmts: &[Stmt], ctx: &EmitCtx<'_>) -> String {
@@ -2505,7 +2610,8 @@ fn emit_handler_body(stmts: &[Stmt], ctx: &EmitCtx<'_>) -> String {
                     if steps.is_empty() {
                         match op {
                             AssignOp::Set => {
-                                let _ = write!(out, "let __rhs = {rhs_code}; {root_name}.set(__rhs); ");
+                                let _ =
+                                    write!(out, "let __rhs = {rhs_code}; {root_name}.set(__rhs); ");
                             }
                             AssignOp::Add if leaf_ty == "String" => {
                                 let _ = write!(
@@ -2713,11 +2819,10 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                 .first()
                 .map(|a| format!("Option<{}>", infer_expr_type(a, ctx)))
                 .unwrap_or_else(|| "Option<String>".into()),
-            "abs" | "round" | "floor" | "ceil" | "min" | "max" | "clamp" => {
-                args.first()
-                    .map(|a| infer_expr_type(a, ctx))
-                    .unwrap_or_else(|| "f32".into())
-            }
+            "abs" | "round" | "floor" | "ceil" | "min" | "max" | "clamp" => args
+                .first()
+                .map(|a| infer_expr_type(a, ctx))
+                .unwrap_or_else(|| "f32".into()),
             _ => "String".into(),
         },
     }
@@ -2877,6 +2982,12 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
             }
         }
         Expr::Array(items) => {
+            if items.is_empty() {
+                if let Some(inner) = ty.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+                    return format!("Vec::<{inner}>::new()");
+                }
+                return "Vec::<String>::new()".into();
+            }
             let elem_ty = if ty.starts_with("Vec<") {
                 unwrap_list_item_type(ty)
             } else {
@@ -3160,12 +3271,33 @@ fn expr_to_reactive_string(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
 }
 
 fn expr_to_reactive_string_list(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+    if let Expr::Ident(id) = expr
+        && ctx.signal_type(id.as_str()) == Some("Vec<String>")
+    {
+        return format!("ReactiveValue::from({})", ctx.prop_access(id));
+    }
     if expr_has_reactive_props(expr, ctx) {
         let captures = emit_signal_captures(ctx, &[]);
         let body = expr_to_typed_rust_captured(expr, "Vec<String>", ctx);
         format!("{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {body})) }}")
     } else {
         let init = expr_to_typed_rust(expr, "Vec<String>", ctx);
+        format!("ReactiveValue::Static({init})")
+    }
+}
+
+fn expr_to_reactive_string_table(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+    if let Expr::Ident(id) = expr
+        && ctx.signal_type(id.as_str()) == Some("Vec<Vec<String>>")
+    {
+        return format!("ReactiveValue::from({})", ctx.prop_access(id));
+    }
+    if expr_has_reactive_props(expr, ctx) {
+        let captures = emit_signal_captures(ctx, &[]);
+        let body = expr_to_typed_rust_captured(expr, "Vec<Vec<String>>", ctx);
+        format!("{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {body})) }}")
+    } else {
+        let init = expr_to_typed_rust(expr, "Vec<Vec<String>>", ctx);
         format!("ReactiveValue::Static({init})")
     }
 }
@@ -3619,7 +3751,10 @@ mod tests {
 
         let rust = generate_rust(&parsed.file);
         // `on_hover` must use `__hovered` and avoid shadowing the component's `hovered` Signal.
-        assert!(rust.contains("move |__hovered|"), "missing __hovered param:\n{rust}");
+        assert!(
+            rust.contains("move |__hovered|"),
+            "missing __hovered param:\n{rust}"
+        );
         assert!(
             !rust.contains("let hovered = __hovered;"),
             "on_hover shadowed `hovered` property:\n{rust}"
@@ -3767,11 +3902,23 @@ export component SiblingPropsC {
         assert!(comp_a.contains("let index = self.index;"));
         assert!(comp_a.contains("let checked = self.checked;"));
         assert!(comp_a.contains("let text = self.text;"));
-        assert!(!comp_a.contains("let ratio = __"), "shadowed `ratio`:\n{comp_a}");
+        assert!(
+            !comp_a.contains("let ratio = __"),
+            "shadowed `ratio`:\n{comp_a}"
+        );
         assert!(!comp_a.contains("let id = __"), "shadowed `id`:\n{comp_a}");
-        assert!(!comp_a.contains("let index = __"), "shadowed `index`:\n{comp_a}");
-        assert!(!comp_a.contains("let checked = __"), "shadowed `checked`:\n{comp_a}");
-        assert!(!comp_a.contains("let text = __"), "shadowed `text`:\n{comp_a}");
+        assert!(
+            !comp_a.contains("let index = __"),
+            "shadowed `index`:\n{comp_a}"
+        );
+        assert!(
+            !comp_a.contains("let checked = __"),
+            "shadowed `checked`:\n{comp_a}"
+        );
+        assert!(
+            !comp_a.contains("let text = __"),
+            "shadowed `text`:\n{comp_a}"
+        );
         assert!(comp_a.contains("ratio.set(__rhs);"));
         assert!(comp_a.contains("id.set(__rhs);"));
         assert!(comp_a.contains("index.set(__rhs);"));
@@ -3782,9 +3929,18 @@ export component SiblingPropsC {
         assert!(comp_menu.contains("let selected = self.selected;"));
         assert!(comp_menu.contains("let active = self.active;"));
         assert!(comp_menu.contains("let idx = self.idx;"));
-        assert!(!comp_menu.contains("let selected = __"), "shadowed `selected`:\n{comp_menu}");
-        assert!(!comp_menu.contains("let active = __"), "shadowed `active`:\n{comp_menu}");
-        assert!(!comp_menu.contains("let idx = __"), "shadowed `idx`:\n{comp_menu}");
+        assert!(
+            !comp_menu.contains("let selected = __"),
+            "shadowed `selected`:\n{comp_menu}"
+        );
+        assert!(
+            !comp_menu.contains("let active = __"),
+            "shadowed `active`:\n{comp_menu}"
+        );
+        assert!(
+            !comp_menu.contains("let idx = __"),
+            "shadowed `idx`:\n{comp_menu}"
+        );
         assert!(comp_menu.contains("let index = __idx as i32;"));
         assert!(comp_menu.contains("let value = __idx as i32;"));
         assert!(comp_menu.contains("selected.set(__rhs);"));
@@ -3793,18 +3949,90 @@ export component SiblingPropsC {
 
         let comp_b = slice_between("impl SiblingPropsB", Some("pub struct SiblingPropsC"));
         assert!(comp_b.contains("let value = self.value;"));
-        assert!(!comp_b.contains("let value = __"), "shadowed `value`:\n{comp_b}");
+        assert!(
+            !comp_b.contains("let value = __"),
+            "shadowed `value`:\n{comp_b}"
+        );
         assert!(comp_b.contains("value.set(__rhs);"));
 
         let comp_c = slice_between("impl SiblingPropsC", None);
         assert!(comp_c.contains("let value = self.value;"));
-        assert!(!comp_c.contains("let value = __"), "shadowed `value`:\n{comp_c}");
+        assert!(
+            !comp_c.contains("let value = __"),
+            "shadowed `value`:\n{comp_c}"
+        );
         assert!(comp_c.contains("let text = __val;"));
         assert!(comp_c.contains("let arg0 = __arg_0;"));
         assert!(comp_c.contains("value.set(__rhs);"));
 
-        assert!(!rust.contains("move |value|"), "raw |value| param leaked:\n{rust}");
-        assert!(!rust.contains("move |checked|"), "raw |checked| param leaked:\n{rust}");
-        assert!(!rust.contains("move |hovered|"), "raw |hovered| param leaked:\n{rust}");
+        assert!(
+            !rust.contains("move |value|"),
+            "raw |value| param leaked:\n{rust}"
+        );
+        assert!(
+            !rust.contains("move |checked|"),
+            "raw |checked| param leaked:\n{rust}"
+        );
+        assert!(
+            !rust.contains("move |hovered|"),
+            "raw |hovered| param leaked:\n{rust}"
+        );
+    }
+
+    #[test]
+    fn codegen_and_validator_support_phase5_mobile_widgets_and_nested_tables() {
+        let src = r#"export component MobilePanel {
+    in-out property <int> mode: 0;
+    in-out property <bool> details_open: false;
+    in-out property <int> selected_row: 0;
+    in-out property <int> sort_col: 0;
+    in property <[[string]]> perm_rows: [["Camera", "Granted"], ["Location", "Denied"]];
+
+    SafeArea {
+        Column {
+            padding: 16;
+            gap: 12;
+            SegmentedControl {
+                items: ["Permissions", "Sensors", "Device"];
+                selected <=> mode;
+                on_change => { mode = index; }
+            }
+            Accordion {
+                title: "Runtime Details";
+                expanded <=> details_open;
+                on_toggle => { details_open = expanded; }
+                Text { text: "Permission explanations"; }
+            }
+            DataTable {
+                columns: ["Capability", "Status"];
+                rows: perm_rows;
+                selected <=> selected_row;
+                striped: true;
+                row_height: 40;
+                on_select => { selected_row = index; }
+                on_sort => { sort_col = column; }
+            }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        let diags = validate(&parsed.file);
+        assert!(diags.is_empty(), "semantic diags: {diags:?}");
+
+        let rust = generate_rust(&parsed.file);
+        assert!(rust.contains("pub perm_rows: Signal<Vec<Vec<String>>>,"));
+        assert!(rust.contains(".safe_area(cx)"));
+        assert!(rust.contains(".segmented_control(cx,"));
+        assert!(rust.contains(".accordion(cx,"));
+        assert!(rust.contains(".set_on_bool_change("));
+        assert!(rust.contains(".data_table(cx,"));
+        assert!(rust.contains(".set_data_table_options("));
+        assert!(rust.contains(".set_on_sort("));
     }
 }

@@ -1,0 +1,115 @@
+{
+  "name": "craftui",
+  "displayName": "CraftUI",
+  "description": "Official language support for CraftUI (.cui), fast syntax highlighting, LSP diagnostics, completions, hover docs, live hot-reload preview, and manifest auditing.",
+  "version": "0.1.0",
+  "publisher": "craftui",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Linters"
+  ],
+  "keywords": [
+    "craftui",
+    "cui",
+    "rust",
+    "ui",
+    "declarative",
+    "hot-reload"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:craftui"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "craftui",
+        "aliases": [
+          "CraftUI",
+          "craftui",
+          "cui"
+        ],
+        "extensions": [
+          ".cui"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "craftui",
+        "scopeName": "source.cui",
+        "path": "./syntaxes/craftui.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "craftui.preview",
+        "title": "CraftUI: Open Live Preview Window",
+        "category": "CraftUI"
+      },
+      {
+        "command": "craftui.check",
+        "title": "CraftUI: Validate Current .cui File",
+        "category": "CraftUI"
+      },
+      {
+        "command": "craftui.permissionsCheck",
+        "title": "CraftUI: Audit Permissions (craftui.toml)",
+        "category": "CraftUI"
+      },
+      {
+        "command": "craftui.restartLsp",
+        "title": "CraftUI: Restart Language Server",
+        "category": "CraftUI"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "craftui.preview",
+          "when": "resourceExtname == .cui",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "craftui.preview",
+          "when": "resourceExtname == .cui",
+          "group": "1_modification"
+        },
+        {
+          "command": "craftui.check",
+          "when": "resourceExtname == .cui",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "title": "CraftUI",
+      "properties": {
+        "craftui.lspPath": {
+          "type": "string",
+          "default": "craftui-lsp",
+          "description": "Path to the craftui-lsp binary (defaults to searching PATH and local target directories)."
+        },
+        "craftui.cliPath": {
+          "type": "string",
+          "default": "craftui",
+          "description": "Path to the craftui CLI binary (defaults to searching PATH and local target directories)."
+        },
+        "craftui.enableLsp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable craftui-lsp background language server for diagnostics, hover, completions, and color pickers."
+        }
+      }
+    }
+  }
+}

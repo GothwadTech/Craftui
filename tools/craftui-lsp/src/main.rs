@@ -373,10 +373,16 @@ pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
         CursorContext::AnimateBlock => {
             for (k, d) in [
                 ("duration", "Tween animation duration (e.g. 180ms or 0.2s)"),
-                ("easing", "Tween easing curve (Linear, EaseIn, EaseOut, EaseInOut)"),
+                (
+                    "easing",
+                    "Tween easing curve (Linear, EaseIn, EaseOut, EaseInOut)",
+                ),
                 ("stiffness", "Spring stiffness constant (e.g. 340)"),
                 ("damping", "Spring damping constant (e.g. 28)"),
-                ("curve", "Preset curve call: snappy(), gentle(), instant(), spring(s, d), tween(ms, EaseOut)"),
+                (
+                    "curve",
+                    "Preset curve call: snappy(), gentle(), instant(), spring(s, d), tween(ms, EaseOut)",
+                ),
                 ("snappy()", "Snappy critically damped spring preset"),
                 ("gentle()", "Gentle spring preset"),
                 ("instant()", "Immediate 0ms transition preset"),
@@ -410,13 +416,7 @@ pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
                     "Crosshair",
                 ],
                 "blend_mode" => &[
-                    "Normal",
-                    "Multiply",
-                    "Screen",
-                    "Overlay",
-                    "Darken",
-                    "Lighten",
-                    "Plus",
+                    "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten", "Plus",
                 ],
                 "justify" => &[
                     "Start",
@@ -532,12 +532,7 @@ pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
             return items;
         }
         CursorContext::ComponentBody => {
-            for kw in [
-                "in property",
-                "out property",
-                "in-out property",
-                "callback",
-            ] {
+            for kw in ["in property", "out property", "in-out property", "callback"] {
                 items.push(CompletionItem {
                     label: kw.to_string(),
                     kind: Some(CompletionItemKind::KEYWORD),
@@ -662,6 +657,15 @@ pub fn lookup_hover(text: &str, pos: Position) -> Option<Hover> {
             "Boolean toggle control supporting `<=>` two-way `checked` binding and `on_change`."
         }
         "Tabs" | "TabBar" => "Tab navigation bar (`tabs`, `<=> active`, `on_change`).",
+        "SegmentedControl" => {
+            "Sliding pill segmented switcher (`items`, `<=> selected`, `on_change`)."
+        }
+        "Accordion" => {
+            "Collapsible disclosure panel with header caret (`title`, `<=> expanded`, `on_toggle`)."
+        }
+        "DataTable" => {
+            "Scrollable multi-column data table with sortable headers & striped rows (`columns`, `rows`, `<=> selected`, `striped`, `row_height`, `on_select`, `on_sort`)."
+        }
         "Select" | "Dropdown" => {
             "Single-selection dropdown picker with floating menu (`options`, `<=> selected`, `placeholder`)."
         }
@@ -697,11 +701,21 @@ pub fn lookup_hover(text: &str, pos: Position) -> Option<Hover> {
             "Reactive `ThemeTokens` design system palette (`background`, `surface`, `primary`, `border`, etc.)."
         }
         "ThemeMode" => "Theme variant enum (`Light`, `Dark`, `Amoled`, `HighContrast`).",
-        "animate" => "Declarative property transition block (`animate opacity { duration: 180ms; easing: EaseOut; }`).",
-        "backdrop_blur" => "Frosted glass background blur radius in `dp` (`gpu-sdf` blurs underlying scene).",
-        "backdrop_tint" => "Optional color overlay blended onto the frosted `backdrop_blur` surface.",
-        "blend_mode" => "Porter-Duff/blend compositing mode (`Normal`, `Multiply`, `Screen`, `Overlay`, etc.).",
-        "cursor" => "Hover pointer cursor shape (`Default`, `Pointer`, `Text`, `Grab`, `NotAllowed`, etc.).",
+        "animate" => {
+            "Declarative property transition block (`animate opacity { duration: 180ms; easing: EaseOut; }`)."
+        }
+        "backdrop_blur" => {
+            "Frosted glass background blur radius in `dp` (`gpu-sdf` blurs underlying scene)."
+        }
+        "backdrop_tint" => {
+            "Optional color overlay blended onto the frosted `backdrop_blur` surface."
+        }
+        "blend_mode" => {
+            "Porter-Duff/blend compositing mode (`Normal`, `Multiply`, `Screen`, `Overlay`, etc.)."
+        }
+        "cursor" => {
+            "Hover pointer cursor shape (`Default`, `Pointer`, `Text`, `Grab`, `NotAllowed`, etc.)."
+        }
         w if BUILTIN_EVENTS.contains(&w) => "CraftUI widget event handler (`on_tap => { ... }`).",
         w if BUILTIN_PROPS.contains(&w) => {
             "CraftUI element property (`px`, `dp`, `%`, Color, Enum, or reactive binding)."
@@ -882,6 +896,28 @@ export component App {
             HoverContents::Scalar(MarkedString::String(s)) => assert!(s.contains("Tab")),
             _ => panic!("expected scalar hover"),
         }
+
+        let phase5_src = r#"export component Mobile {
+    in-out property <int> mode: 0;
+    in-out property <bool> open: false;
+    in-out property <int> row: 0;
+    SafeArea {
+        SegmentedControl { items: ["A", "B"]; selected <=> mode; }
+        Accordion { title: "Info"; expanded <=> open; Text { text: "Body"; } }
+        DataTable { columns: ["Name"]; rows: [["Cam"]]; selected <=> row; }
+    }
+}"#;
+        assert!(analyze_cui_diagnostics(phase5_src).is_empty());
+        assert!(lookup_hover(phase5_src, Position::new(5, 10)).is_some());
+        assert!(lookup_hover(phase5_src, Position::new(6, 10)).is_some());
+        assert!(lookup_hover(phase5_src, Position::new(7, 10)).is_some());
+
+        let acc_comps = build_completions(phase5_src, Position::new(6, 20));
+        assert!(acc_comps.iter().any(|c| c.label == "expanded"));
+        assert!(acc_comps.iter().any(|c| c.label == "on_toggle"));
+        let tbl_comps = build_completions(phase5_src, Position::new(7, 20));
+        assert!(tbl_comps.iter().any(|c| c.label == "rows"));
+        assert!(tbl_comps.iter().any(|c| c.label == "on_sort"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
