@@ -344,6 +344,22 @@ pub enum WidgetKind {
         selected: Signal<usize>,
         on_change: Option<IndexCallback>,
     },
+    BottomNavBar {
+        items: ReactiveValue<Vec<String>>,
+        icons: ReactiveValue<Vec<String>>,
+        selected: Signal<usize>,
+        on_change: Option<IndexCallback>,
+    },
+    FloatingActionButton {
+        icon: ReactiveValue<String>,
+        label: Option<ReactiveValue<String>>,
+        disabled: ReactiveValue<bool>,
+        foreground: Option<ReactiveValue<Color>>,
+        background: Option<ReactiveValue<Color>>,
+        on_tap: Option<TapHandler>,
+        hovered: bool,
+        pressed: bool,
+    },
     Accordion {
         title: ReactiveValue<String>,
         expanded: Signal<bool>,

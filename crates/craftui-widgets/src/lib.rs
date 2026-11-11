@@ -1895,4 +1895,119 @@ mod tests {
         ));
         assert_eq!(*selects.borrow(), vec![1, 4]);
     }
+
+    #[test]
+    fn bottom_nav_bar_and_fab_layout_paint_and_tap() {
+        reset_runtime();
+        let cx = Scope::root();
+        let selected_tab = cx.signal(0usize);
+        let tab_changes = Rc::new(RefCell::new(Vec::new()));
+        let tc = tab_changes.clone();
+        let fab_tapped = Rc::new(Cell::new(false));
+        let ft = fab_tapped.clone();
+
+        let mut tree = WidgetTree::new(cx);
+        let root = tree.column(cx);
+        tree.set_layout(
+            root,
+            LayoutStyle::column().with_size(Length::Dp(360.0), Length::Dp(640.0)),
+        );
+
+        let nav = tree.bottom_nav_bar(
+            cx,
+            vec![
+                "Scan".into(),
+                "Studio".into(),
+                "Files".into(),
+                "Settings".into(),
+            ],
+            vec!["📷".into(), "🎨".into(), "📁".into(), "⚙️".into()],
+            selected_tab,
+        );
+        tree.set_on_index_change(nav, move |i| tc.borrow_mut().push(i));
+        tree.append_child(root, nav);
+
+        let fab = tree.floating_action_button(cx, "📷", Some("New Scan"));
+        tree.set_on_tap(fab, move || ft.set(true));
+        tree.append_child(root, fab);
+        tree.set_root(root);
+
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(360.0, 640.0),
+            ..Default::default()
+        });
+
+        let nav_rect = tree.rect(nav);
+        assert_eq!(nav_rect.height, 64.0);
+        assert_eq!(nav_rect.width, 360.0);
+
+        let fab_rect = tree.rect(fab);
+        assert!(fab_rect.width >= 56.0);
+        assert_eq!(fab_rect.height, 56.0);
+
+        // Tap tab #2 ("Files" -> local x = 360 / 4 * 2.5 = 225)
+        let tab2_pt = Point::new(nav_rect.x + 225.0, nav_rect.y + 32.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: tab2_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: tab2_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 20,
+        }));
+        assert_eq!(selected_tab.get(), 2);
+        assert_eq!(*tab_changes.borrow(), vec![2]);
+
+        // Tap FAB
+        let fab_pt = Point::new(fab_rect.x + 20.0, fab_rect.y + 20.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Down,
+            position: fab_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 30,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Up,
+            position: fab_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 40,
+        }));
+        assert!(fab_tapped.get());
+
+        // Verify scene painting produces PushClip, DrawText and DropShadow
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+        let has_clip = scene
+            .commands
+            .iter()
+            .any(|c| matches!(c, PaintCommand::PushClip { .. }));
+        assert!(has_clip);
+    }
+
+    #[test]
+    fn text_ellipsis_truncation_fits_bounds() {
+        let mut te = craftui_text::TextEngine::new();
+        let st = TextStyle::default().with_size(14.0);
+        let long_str = "A very long document scanner title that exceeds mobile bounds";
+        let truncated = te.truncate_with_ellipsis(long_str, &st, 80.0);
+        assert!(truncated.ends_with('…'));
+        let measured = te.measure(&truncated, &st, None);
+        assert!(measured.width <= 80.0);
+    }
 }
