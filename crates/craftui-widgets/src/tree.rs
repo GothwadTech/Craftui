@@ -221,6 +221,13 @@ enum ControlVisualAnim {
     SegmentedControl {
         active_t: AnimatedFloat,
     },
+    BottomNavBar {
+        active_t: AnimatedFloat,
+    },
+    FloatingActionButton {
+        hover_t: AnimatedFloat,
+        press_t: AnimatedFloat,
+    },
     Slider {
         frac_t: AnimatedFloat,
         hover_t: AnimatedFloat,
@@ -236,12 +243,15 @@ enum ControlVisualAnim {
 impl ControlVisualAnim {
     fn is_animating(&self) -> bool {
         match self {
-            Self::Button { hover_t, press_t } => hover_t.is_animating() || press_t.is_animating(),
+            Self::Button { hover_t, press_t }
+            | Self::FloatingActionButton { hover_t, press_t } => {
+                hover_t.is_animating() || press_t.is_animating()
+            }
             Self::Switch { knob_t } => knob_t.is_animating(),
             Self::Checkbox { check_t } => check_t.is_animating(),
-            Self::Tabs { active_t } | Self::SegmentedControl { active_t } => {
-                active_t.is_animating()
-            }
+            Self::Tabs { active_t }
+            | Self::SegmentedControl { active_t }
+            | Self::BottomNavBar { active_t } => active_t.is_animating(),
             Self::Slider {
                 frac_t,
                 hover_t,
@@ -254,14 +264,17 @@ impl ControlVisualAnim {
 
     fn step(&mut self, dt_sec: f32) -> bool {
         match self {
-            Self::Button { hover_t, press_t } => {
+            Self::Button { hover_t, press_t }
+            | Self::FloatingActionButton { hover_t, press_t } => {
                 let a = hover_t.step(dt_sec);
                 let b = press_t.step(dt_sec);
                 a || b
             }
             Self::Switch { knob_t } => knob_t.step(dt_sec),
             Self::Checkbox { check_t } => check_t.step(dt_sec),
-            Self::Tabs { active_t } | Self::SegmentedControl { active_t } => active_t.step(dt_sec),
+            Self::Tabs { active_t }
+            | Self::SegmentedControl { active_t }
+            | Self::BottomNavBar { active_t } => active_t.step(dt_sec),
             Self::Slider {
                 frac_t,
                 hover_t,
@@ -470,6 +483,20 @@ impl WidgetTree {
                     ),
                 })
             }
+            WidgetKind::BottomNavBar { selected, .. } => {
+                Some(ControlVisualAnim::BottomNavBar {
+                    active_t: AnimatedFloat::new(
+                        selected.get_untracked() as f32,
+                        TransitionCurve::spring(360.0, 30.0),
+                    ),
+                })
+            }
+            WidgetKind::FloatingActionButton { .. } => {
+                Some(ControlVisualAnim::FloatingActionButton {
+                    hover_t: AnimatedFloat::new(0.0, TransitionCurve::spring(500.0, 36.0)),
+                    press_t: AnimatedFloat::new(0.0, TransitionCurve::spring(600.0, 40.0)),
+                })
+            }
             WidgetKind::Slider {
                 value, min, max, ..
             } => {
@@ -545,6 +572,26 @@ impl WidgetTree {
                 if count > 0 {
                     active_t.set_target(selected.get_untracked().min(count - 1) as f32);
                 }
+            }
+            (
+                WidgetKind::BottomNavBar {
+                    items, selected, ..
+                },
+                ControlVisualAnim::BottomNavBar { active_t },
+            ) => {
+                let count = items.get().len();
+                if count > 0 {
+                    active_t.set_target(selected.get_untracked().min(count - 1) as f32);
+                }
+            }
+            (
+                WidgetKind::FloatingActionButton {
+                    hovered, pressed, ..
+                },
+                ControlVisualAnim::FloatingActionButton { hover_t, press_t },
+            ) => {
+                hover_t.set_target(if *hovered { 1.0 } else { 0.0 });
+                press_t.set_target(if *pressed { 1.0 } else { 0.0 });
             }
             (
                 WidgetKind::Slider {
@@ -836,6 +883,58 @@ impl WidgetTree {
                     scope.effect(move || {
                         let _ = items.get();
                         mark_node_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                    });
+                }
+            }
+            WidgetKind::BottomNavBar {
+                items,
+                icons,
+                selected,
+                ..
+            } => {
+                selected.bind_node(id, DirtyFlags::PAINT | DirtyFlags::A11Y);
+                let items = items.clone();
+                let icons = icons.clone();
+                if items.is_dynamic() || icons.is_dynamic() {
+                    scope.effect(move || {
+                        let _ = items.get();
+                        let _ = icons.get();
+                        mark_node_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                    });
+                }
+            }
+            WidgetKind::FloatingActionButton {
+                icon,
+                label,
+                disabled,
+                foreground,
+                background,
+                ..
+            } => {
+                let icon = icon.clone();
+                let label = label.clone();
+                let disabled = disabled.clone();
+                let foreground = foreground.clone();
+                let background = background.clone();
+                if icon.is_dynamic()
+                    || label.as_ref().map(|l| l.is_dynamic()).unwrap_or(false)
+                    || disabled.is_dynamic()
+                    || foreground.as_ref().map(|f| f.is_dynamic()).unwrap_or(false)
+                    || background.as_ref().map(|b| b.is_dynamic()).unwrap_or(false)
+                {
+                    scope.effect(move || {
+                        let _ = icon.get();
+                        if let Some(ref l) = label {
+                            let _ = l.get();
+                        }
+                        let _ = disabled.get();
+                        if let Some(ref f) = foreground {
+                            let _ = f.get();
+                        }
+                        if let Some(ref b) = background {
+                            let _ = b.get();
+                        }
+                        mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::A11Y);
                     });
                 }
             }
@@ -1637,6 +1736,60 @@ impl WidgetTree {
             n.box_style.radius = CornerRadii::all(10.0);
             n.a11y.role = A11yRole::TabList;
             n.a11y.numeric_value = Some(selected.get_untracked() as f64);
+            n.a11y.focusable = true;
+        }
+        id
+    }
+
+    pub fn bottom_nav_bar(
+        &mut self,
+        scope: Scope,
+        items: impl Into<ReactiveValue<Vec<String>>>,
+        icons: impl Into<ReactiveValue<Vec<String>>>,
+        selected: Signal<usize>,
+    ) -> NodeId {
+        let id = self.spawn_node(
+            "BottomNavBar",
+            WidgetKind::BottomNavBar {
+                items: items.into(),
+                icons: icons.into(),
+                selected,
+                on_change: None,
+            },
+            LayoutStyle::row().with_height(Length::Dp(64.0)),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::TabList;
+            n.a11y.numeric_value = Some(selected.get_untracked() as f64);
+            n.a11y.focusable = true;
+        }
+        id
+    }
+
+    pub fn floating_action_button(
+        &mut self,
+        scope: Scope,
+        icon: impl Into<ReactiveValue<String>>,
+        label: Option<impl Into<ReactiveValue<String>>>,
+    ) -> NodeId {
+        let id = self.spawn_node(
+            "FloatingActionButton",
+            WidgetKind::FloatingActionButton {
+                icon: icon.into(),
+                label: label.map(|l| l.into()),
+                disabled: false.into(),
+                foreground: None,
+                background: None,
+                on_tap: None,
+                hovered: false,
+                pressed: false,
+            },
+            LayoutStyle::row().with_size(Length::Dp(56.0), Length::Dp(56.0)),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::Button;
             n.a11y.focusable = true;
         }
         id
@@ -2666,10 +2819,12 @@ impl WidgetTree {
         }
         match &node.kind {
             WidgetKind::Button { .. }
+            | WidgetKind::FloatingActionButton { .. }
             | WidgetKind::Checkbox { .. }
             | WidgetKind::Switch { .. }
             | WidgetKind::Tabs { .. }
             | WidgetKind::SegmentedControl { .. }
+            | WidgetKind::BottomNavBar { .. }
             | WidgetKind::Accordion { .. }
             | WidgetKind::DataTable { .. }
             | WidgetKind::Select { .. }
@@ -2885,10 +3040,14 @@ impl WidgetTree {
     pub fn set_on_tap(&mut self, node: NodeId, cb: impl FnMut() + 'static) {
         if let Some(n) = self.nodes.get_mut(node) {
             let rc: TapHandler = Rc::new(RefCell::new(cb));
-            if let WidgetKind::Button { on_tap, .. } = &mut n.kind {
-                *on_tap = Some(rc);
-            } else {
-                n.on_tap = Some(rc);
+            match &mut n.kind {
+                WidgetKind::Button { on_tap, .. }
+                | WidgetKind::FloatingActionButton { on_tap, .. } => {
+                    *on_tap = Some(rc);
+                }
+                _ => {
+                    n.on_tap = Some(rc);
+                }
             }
         }
     }
@@ -2957,6 +3116,7 @@ impl WidgetTree {
             match &mut n.kind {
                 WidgetKind::Tabs { on_change, .. }
                 | WidgetKind::SegmentedControl { on_change, .. }
+                | WidgetKind::BottomNavBar { on_change, .. }
                 | WidgetKind::Select { on_change, .. }
                 | WidgetKind::RadioGroup { on_change, .. } => {
                     *on_change = Some(rc);
@@ -3662,8 +3822,23 @@ impl WidgetTree {
                     WidgetKind::Tabs { active, .. } => {
                         node.a11y.numeric_value = Some(active.get_untracked() as f64);
                     }
-                    WidgetKind::SegmentedControl { selected, .. } => {
+                    WidgetKind::SegmentedControl { selected, .. }
+                    | WidgetKind::BottomNavBar { selected, .. } => {
                         node.a11y.numeric_value = Some(selected.get_untracked() as f64);
+                    }
+                    WidgetKind::FloatingActionButton {
+                        label,
+                        icon,
+                        disabled,
+                        ..
+                    } => {
+                        let l = label
+                            .as_ref()
+                            .map(|s| s.get())
+                            .unwrap_or_else(|| icon.get());
+                        node.cached_text = l.clone();
+                        node.a11y.label = Some(l);
+                        node.a11y.disabled = node_disabled || disabled.get();
                     }
                     WidgetKind::Accordion {
                         title, expanded, ..
@@ -3873,6 +4048,26 @@ impl WidgetTree {
                             })
                             .sum();
                         Size::new(total_w.max(140.0), 36.0)
+                    }
+                    WidgetKind::BottomNavBar { .. } => {
+                        let w = if constraints.max_width.is_finite() {
+                            constraints.max_width
+                        } else {
+                            360.0
+                        };
+                        Size::new(w, 64.0)
+                    }
+                    WidgetKind::FloatingActionButton { label, icon, .. } => {
+                        if let Some(lbl) = label {
+                            let l = lbl.get();
+                            let i = icon.get();
+                            let st = TextStyle::default().with_size(14.0).with_weight(600.0);
+                            let isz = text_engine.measure(&i, &st, None);
+                            let lsz = text_engine.measure(&l, &st, None);
+                            Size::new((isz.width + lsz.width + 36.0).max(96.0), 52.0)
+                        } else {
+                            Size::new(56.0, 56.0)
+                        }
                     }
                     WidgetKind::Accordion {
                         title, expanded, ..
@@ -4693,8 +4888,11 @@ impl WidgetTree {
             scene.drop_shadow(rect, box_style.radius, s);
         }
 
-        // Background fill (Button paints its own interactive hover/press fill once)
-        if !matches!(kind, WidgetKind::Button { .. }) {
+        // Background fill (Button & FAB paint their own interactive hover/press fill once)
+        if !matches!(
+            kind,
+            WidgetKind::Button { .. } | WidgetKind::FloatingActionButton { .. }
+        ) {
             let effective_bg = match (anim_bg, &box_style.background) {
                 (Some(c), Some(rv)) if matches!(rv.get(), Brush::Solid(_)) => Some(Brush::Solid(c)),
                 (_, Some(rv)) => Some(rv.get()),
@@ -5410,22 +5608,211 @@ impl WidgetTree {
                     );
                     let act_weight = (1.0 - (anim_idx - i as f32).abs()).clamp(0.0, 1.0);
                     let tst = TextStyle::default()
-                        .with_size(13.5)
+                        .with_size(12.5)
                         .with_weight(if act_weight > 0.5 { 600.0 } else { 500.0 })
                         .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
-                    let measured = self.text_engine.measure(title, &tst, None);
+                    let max_w = (sr.width - 8.0).max(10.0);
+                    let display_title =
+                        self.text_engine.truncate_with_ellipsis(title, &tst, max_w);
+                    let measured = self.text_engine.measure(&display_title, &tst, None);
+                    scene.push_clip(sr, CornerRadii::all(6.0));
                     scene.draw_text(
                         Point::new(
                             sr.x + (sr.width - measured.width).max(0.0) * 0.5,
                             sr.y + (sr.height - measured.height).max(0.0) * 0.5,
                         ),
-                        title,
+                        display_title,
                         tst,
-                        Some((sr.width - 8.0).max(12.0)),
+                        Some(max_w),
                     );
+                    scene.pop_clip();
                 }
                 if is_focused {
                     scene.stroke_rect(rect.inflate(1.5, 1.5), theme.primary, 1.5, track_rad);
+                }
+            }
+            WidgetKind::BottomNavBar {
+                items,
+                icons,
+                selected,
+                ..
+            } => {
+                let list = items.get();
+                let icon_list = icons.get();
+                let count = list.len().max(1);
+                let sel_idx = selected.get_untracked().min(count - 1);
+                let anim_idx = match &ctrl_anim {
+                    Some(ControlVisualAnim::BottomNavBar { active_t }) => {
+                        active_t.value.clamp(0.0, (count - 1) as f32)
+                    }
+                    _ => sel_idx as f32,
+                };
+
+                let bg_color = match &box_style.background {
+                    Some(b) => match b.get() {
+                        Brush::Solid(c) => c,
+                        _ => theme.surface,
+                    },
+                    None => theme.surface,
+                };
+                scene.fill_rect(rect, bg_color, box_style.radius);
+                scene.stroke_rect(
+                    Rect::new(rect.x, rect.y, rect.width, 1.0),
+                    theme.border.with_alpha(0.4),
+                    1.0,
+                    CornerRadii::ZERO,
+                );
+
+                let item_w = rect.width / count as f32;
+
+                // Active indicator pill (Material 3 style: 64x32dp rounded pill)
+                let pill_w = (item_w * 0.65).clamp(44.0, 72.0);
+                let pill_h = 32.0f32.min(rect.height * 0.55);
+                let pill_cx = rect.x + (anim_idx + 0.5) * item_w;
+                let pill_cy = rect.y + 18.0;
+                let pill_r =
+                    Rect::new(pill_cx - pill_w * 0.5, pill_cy - pill_h * 0.5, pill_w, pill_h);
+
+                let pill_bg = theme.primary.with_alpha(0.18);
+                scene.fill_rect(pill_r, pill_bg, CornerRadii::all(16.0));
+
+                for (i, title) in list.iter().enumerate() {
+                    let cx = rect.x + (i as f32 + 0.5) * item_w;
+                    let act_dist = (anim_idx - i as f32).abs();
+                    let act_weight = (1.0 - act_dist).clamp(0.0, 1.0);
+
+                    let icon_glyph = icon_list.get(i).map(|s| s.as_str()).unwrap_or("");
+                    let icon_color = theme.text_secondary.lerp(theme.primary, act_weight);
+
+                    if !icon_glyph.is_empty() {
+                        let icon_st = TextStyle::default()
+                            .with_size(18.0)
+                            .with_color(icon_color);
+                        let isz = self.text_engine.measure(icon_glyph, &icon_st, None);
+                        scene.draw_text(
+                            Point::new(cx - isz.width * 0.5, rect.y + 9.0),
+                            icon_glyph,
+                            icon_st,
+                            None,
+                        );
+                    }
+
+                    let lbl_st = TextStyle::default()
+                        .with_size(11.5)
+                        .with_weight(if act_weight > 0.5 { 600.0 } else { 500.0 })
+                        .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
+                    let max_lbl_w = (item_w - 6.0).max(10.0);
+                    let display_lbl =
+                        self.text_engine.truncate_with_ellipsis(title, &lbl_st, max_lbl_w);
+                    let lsz = self.text_engine.measure(&display_lbl, &lbl_st, None);
+
+                    let item_rect =
+                        Rect::new(rect.x + i as f32 * item_w, rect.y, item_w, rect.height);
+                    scene.push_clip(item_rect, CornerRadii::ZERO);
+                    scene.draw_text(
+                        Point::new(cx - lsz.width * 0.5, rect.y + rect.height - lsz.height - 6.0),
+                        display_lbl,
+                        lbl_st,
+                        Some(max_lbl_w),
+                    );
+                    scene.pop_clip();
+                }
+            }
+            WidgetKind::FloatingActionButton {
+                icon,
+                label,
+                disabled,
+                foreground,
+                background,
+                hovered,
+                pressed,
+                ..
+            } => {
+                let is_dis = is_disabled || disabled.get();
+                let (hover_t, press_t) = match &ctrl_anim {
+                    Some(ControlVisualAnim::FloatingActionButton { hover_t, press_t }) => {
+                        (hover_t.value.clamp(0.0, 1.0), press_t.value.clamp(0.0, 1.0))
+                    }
+                    _ => (
+                        if hovered { 1.0 } else { 0.0 },
+                        if pressed { 1.0 } else { 0.0 },
+                    ),
+                };
+                let bg = if is_dis {
+                    theme.surface_variant
+                } else if let Some(bg_rv) = background {
+                    bg_rv.get()
+                } else {
+                    theme.primary
+                };
+                let fg = if is_dis {
+                    theme.text_secondary
+                } else if let Some(fg_rv) = foreground {
+                    fg_rv.get()
+                } else {
+                    Color::WHITE
+                };
+
+                let rad = CornerRadii::all(rect.height * 0.5);
+                let shadow_blur = 10.0 + hover_t * 6.0 - press_t * 3.0;
+                let shadow_y = 3.5 + hover_t * 2.0 - press_t * 1.5;
+                scene.drop_shadow(
+                    rect,
+                    rad,
+                    BoxShadow::drop(0.0, shadow_y, shadow_blur, 0.0, Color::rgba(0, 0, 0, 70)),
+                );
+
+                scene.fill_rect(rect, bg, rad);
+                if hover_t > 0.01 {
+                    scene.fill_rect(
+                        rect,
+                        Color::rgba(255, 255, 255, (hover_t * 30.0) as u8),
+                        rad,
+                    );
+                }
+
+                let icon_str = icon.get();
+                let label_str = label.as_ref().map(|l| l.get());
+
+                if let Some(lbl) = label_str {
+                    let icon_st = TextStyle::default().with_size(18.0).with_color(fg);
+                    let lbl_st = TextStyle::default()
+                        .with_size(14.0)
+                        .with_weight(600.0)
+                        .with_color(fg);
+                    let isz = self.text_engine.measure(&icon_str, &icon_st, None);
+                    let lsz = self.text_engine.measure(&lbl, &lbl_st, None);
+                    let gap = 8.0;
+                    let total_w = isz.width + gap + lsz.width;
+                    let start_x = rect.x + (rect.width - total_w).max(0.0) * 0.5;
+
+                    scene.draw_text(
+                        Point::new(start_x, rect.y + (rect.height - isz.height) * 0.5),
+                        icon_str,
+                        icon_st,
+                        None,
+                    );
+                    scene.draw_text(
+                        Point::new(
+                            start_x + isz.width + gap,
+                            rect.y + (rect.height - lsz.height) * 0.5,
+                        ),
+                        lbl,
+                        lbl_st,
+                        None,
+                    );
+                } else {
+                    let icon_st = TextStyle::default().with_size(24.0).with_color(fg);
+                    let isz = self.text_engine.measure(&icon_str, &icon_st, None);
+                    scene.draw_text(
+                        Point::new(
+                            rect.x + (rect.width - isz.width) * 0.5,
+                            rect.y + (rect.height - isz.height) * 0.5,
+                        ),
+                        icon_str,
+                        icon_st,
+                        None,
+                    );
                 }
             }
             WidgetKind::Accordion {
@@ -6190,6 +6577,8 @@ impl WidgetTree {
                     | WidgetKind::Slider { .. }
                     | WidgetKind::Tabs { .. }
                     | WidgetKind::SegmentedControl { .. }
+                    | WidgetKind::BottomNavBar { .. }
+                    | WidgetKind::FloatingActionButton { .. }
                     | WidgetKind::Accordion { .. }
                     | WidgetKind::DataTable { .. }
                     | WidgetKind::Select { .. }
@@ -6277,13 +6666,22 @@ impl WidgetTree {
         // Update hovered state, hover control animations, and fire on_hover callbacks
         if hit != self.hovered {
             if let Some(prev) = self.hovered {
-                if let Some(n) = self.nodes.get_mut(prev)
-                    && let WidgetKind::Button { hovered, .. } = &mut n.kind
-                    && *hovered
-                {
-                    *hovered = false;
-                    n.dirty |= DirtyFlags::PAINT;
-                    changed = true;
+                if let Some(n) = self.nodes.get_mut(prev) {
+                    let mut unhover = false;
+                    match &mut n.kind {
+                        WidgetKind::Button { hovered, .. }
+                        | WidgetKind::FloatingActionButton { hovered, .. } => {
+                            if *hovered {
+                                *hovered = false;
+                                unhover = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if unhover {
+                        n.dirty |= DirtyFlags::PAINT;
+                        changed = true;
+                    }
                 }
                 if let Some(ControlVisualAnim::Slider { hover_t, .. }) =
                     self.control_anims.get_mut(prev)
@@ -6305,13 +6703,22 @@ impl WidgetTree {
             self.hovered = hit;
             if let Some(curr) = hit {
                 let dis = self.nodes.get(curr).is_some_and(WidgetNode::is_disabled);
-                if let Some(n) = self.nodes.get_mut(curr)
-                    && let WidgetKind::Button { hovered, .. } = &mut n.kind
-                    && !*hovered
-                {
-                    *hovered = true;
-                    n.dirty |= DirtyFlags::PAINT;
-                    changed = true;
+                if let Some(n) = self.nodes.get_mut(curr) {
+                    let mut do_hover = false;
+                    match &mut n.kind {
+                        WidgetKind::Button { hovered, .. }
+                        | WidgetKind::FloatingActionButton { hovered, .. } => {
+                            if !*hovered {
+                                *hovered = true;
+                                do_hover = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if do_hover {
+                        n.dirty |= DirtyFlags::PAINT;
+                        changed = true;
+                    }
                 }
                 if !dis
                     && let Some(ControlVisualAnim::Slider { hover_t, .. }) =
@@ -6386,7 +6793,8 @@ impl WidgetTree {
             let h_local = self.screen_to_node_local_point(h, pe.position);
             if let Some(n) = self.nodes.get_mut(h) {
                 match &mut n.kind {
-                    WidgetKind::Button { pressed, .. } => {
+                    WidgetKind::Button { pressed, .. }
+                    | WidgetKind::FloatingActionButton { pressed, .. } => {
                         *pressed = true;
                         n.dirty |= DirtyFlags::PAINT;
                         changed = true;
@@ -6435,7 +6843,10 @@ impl WidgetTree {
             let mut released = Vec::new();
             for (nid, node) in &mut self.nodes {
                 match &mut node.kind {
-                    WidgetKind::Button { pressed, .. } if *pressed => {
+                    WidgetKind::Button { pressed, .. }
+                    | WidgetKind::FloatingActionButton { pressed, .. }
+                        if *pressed =>
+                    {
                         *pressed = false;
                         node.dirty |= DirtyFlags::PAINT;
                         released.push(nid);
@@ -6579,6 +6990,9 @@ impl WidgetTree {
             match &mut node.kind {
                 WidgetKind::Button {
                     disabled, on_tap, ..
+                }
+                | WidgetKind::FloatingActionButton {
+                    disabled, on_tap, ..
                 } => {
                     if !disabled.get() {
                         action = on_tap.clone();
@@ -6653,6 +7067,12 @@ impl WidgetTree {
                     items,
                     selected,
                     on_change,
+                }
+                | WidgetKind::BottomNavBar {
+                    items,
+                    selected,
+                    on_change,
+                    ..
                 } => {
                     let count = items.get().len();
                     if count > 0 && rect.width > 0.0 {
@@ -7557,6 +7977,12 @@ impl WidgetTree {
                     items,
                     selected,
                     on_change,
+                }
+                | WidgetKind::BottomNavBar {
+                    items,
+                    selected,
+                    on_change,
+                    ..
                 } => {
                     let count = items.get().len();
                     if count > 0 {

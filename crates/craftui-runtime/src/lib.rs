@@ -796,6 +796,27 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
             wire_index_change(n, el, env, tree);
             n
         }
+        "BottomNavBar" => {
+            let items_rv = find_prop(el, &["items", "options", "tabs"])
+                .map(|p| expr_to_reactive_string_list(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(Vec::new()));
+            let icons_rv = find_prop(el, &["icons"])
+                .map(|p| expr_to_reactive_string_list(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(Vec::new()));
+            let idx_prop = find_prop(el, &["selected", "active", "value"]);
+            let idx_sig = bind_usize_signal(scope, idx_prop, env, 0);
+            let n = tree.bottom_nav_bar(scope, items_rv, icons_rv, idx_sig);
+            wire_index_change(n, el, env, tree);
+            n
+        }
+        "FloatingActionButton" => {
+            let icon_rv = find_prop(el, &["icon"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            let label_opt = find_prop(el, &["label", "text"])
+                .map(|p| expr_to_reactive_string(&p.value, env));
+            tree.floating_action_button(scope, icon_rv, label_opt)
+        }
         "Accordion" => {
             let title_rv = find_prop(el, &["title", "label", "text"])
                 .map(|p| expr_to_reactive_string(&p.value, env))

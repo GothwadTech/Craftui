@@ -818,6 +818,33 @@ fn emit_element(
             );
             emit_index_change_handler(out, &var, el, indent, ctx);
         }
+        "BottomNavBar" => {
+            let items_rv = find_prop(el, &["items", "options", "tabs"])
+                .map(|p| expr_to_reactive_string_list(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(Vec::<String>::new())".into());
+            let icons_rv = find_prop(el, &["icons"])
+                .map(|p| expr_to_reactive_string_list(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(Vec::<String>::new())".into());
+            let idx_prop = find_prop(el, &["selected", "active", "value"]);
+            let idx_sig = emit_usize_signal_adapter(idx_prop, cx, ctx);
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.bottom_nav_bar({cx}, {items_rv}, {icons_rv}, {idx_sig});"
+            );
+            emit_index_change_handler(out, &var, el, indent, ctx);
+        }
+        "FloatingActionButton" => {
+            let icon_rv = find_prop(el, &["icon"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let label_opt = find_prop(el, &["label", "text"])
+                .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
+                .unwrap_or_else(|| "None::<ReactiveValue<String>>".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.floating_action_button({cx}, {icon_rv}, {label_opt});"
+            );
+        }
         "Accordion" => {
             let title_rv = find_prop(el, &["title", "label", "text"])
                 .map(|p| expr_to_reactive_string(&p.value, ctx))

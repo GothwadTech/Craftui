@@ -153,6 +153,14 @@ impl PaintScene {
         self.commands.push(PaintCommand::PopTransform);
     }
 
+    pub fn push_clip(&mut self, rect: Rect, radius: CornerRadii) {
+        self.commands.push(PaintCommand::PushClip { rect, radius });
+    }
+
+    pub fn pop_clip(&mut self) {
+        self.commands.push(PaintCommand::PopClip);
+    }
+
     pub fn push_layer(&mut self, rect: Rect, opacity: f32, blend_mode: BlendMode) {
         self.commands.push(PaintCommand::PushLayer {
             rect,

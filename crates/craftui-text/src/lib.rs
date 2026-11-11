@@ -26,6 +26,15 @@ pub enum TextAlign {
     Justify,
 }
 
+/// How text overflow should be handled when exceeding maximum width/bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TextOverflow {
+    #[default]
+    Clip,
+    Ellipsis,
+    Wrap,
+}
+
 /// Text styling configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextStyle {
@@ -37,6 +46,8 @@ pub struct TextStyle {
     pub line_height: f32,
     pub align: TextAlign,
     pub underline: bool,
+    pub overflow: TextOverflow,
+    pub max_lines: Option<usize>,
 }
 
 impl Default for TextStyle {
@@ -50,6 +61,8 @@ impl Default for TextStyle {
             line_height: 1.3,
             align: TextAlign::Start,
             underline: false,
+            overflow: TextOverflow::Clip,
+            max_lines: None,
         }
     }
 }
@@ -72,6 +85,16 @@ impl TextStyle {
 
     pub fn with_align(mut self, align: TextAlign) -> Self {
         self.align = align;
+        self
+    }
+
+    pub fn with_overflow(mut self, overflow: TextOverflow) -> Self {
+        self.overflow = overflow;
+        self
+    }
+
+    pub fn with_max_lines(mut self, max_lines: usize) -> Self {
+        self.max_lines = Some(max_lines);
         self
     }
 }
@@ -336,6 +359,45 @@ impl TextEngine {
                 .max(style.font_size * style.line_height)
                 .ceil(),
         )
+    }
+
+    /// Truncate text with ellipsis `...` so that its rendered width fits strictly within `max_width`.
+    pub fn truncate_with_ellipsis(&mut self, text: &str, style: &TextStyle, max_width: f32) -> String {
+        let max_w = max_width.max(0.0);
+        if text.is_empty() || max_w <= 0.0 {
+            return String::new();
+        }
+        let measured = self.measure(text, style, None);
+        if measured.width <= max_w {
+            return text.to_string();
+        }
+        let ellipsis = "…";
+        let el_size = self.measure(ellipsis, style, None);
+        if el_size.width >= max_w {
+            return ellipsis.to_string();
+        }
+        let avail_w = max_w - el_size.width;
+        let chars: Vec<char> = text.chars().collect();
+        let mut low = 0;
+        let mut high = chars.len();
+        let mut best = 0;
+        while low <= high {
+            let mid = (low + high) / 2;
+            let sub: String = chars[..mid].iter().collect();
+            let sub_w = self.measure(&sub, style, None).width;
+            if sub_w <= avail_w {
+                best = mid;
+                low = mid + 1;
+            } else {
+                if mid == 0 {
+                    break;
+                }
+                high = mid - 1;
+            }
+        }
+        let mut res: String = chars[..best].iter().collect();
+        res.push_str(ellipsis);
+        res
     }
 
     /// Compute cursor rectangle in local layout coordinates.

@@ -29,6 +29,8 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "Tabs",
     "TabBar",
     "SegmentedControl",
+    "BottomNavBar",
+    "FloatingActionButton",
     "Accordion",
     "DataTable",
     "Select",
@@ -319,6 +321,15 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "Tabs" | "TabBar" | "SegmentedControl" => {
             out.extend_from_slice(&["tabs", "items", "options", "active", "selected", "value"]);
         }
+        "BottomNavBar" => {
+            out.extend_from_slice(&["items", "options", "icons", "active", "selected", "value"]);
+        }
+        "FloatingActionButton" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&[
+                "icon", "label", "text", "disabled", "foreground", "background", "color",
+            ]);
+        }
         "Accordion" => {
             out.extend_from_slice(CONTAINER_PROPS);
             out.extend_from_slice(&["title", "label", "text", "expanded", "open"]);
@@ -388,7 +399,7 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
     match kind {
         "Slider" | "Checkbox" | "Switch" | "SplitPane" => out.push("on_change"),
         "TextInput" | "TextArea" => out.extend_from_slice(&["on_change", "on_submit"]),
-        "Tabs" | "TabBar" | "SegmentedControl" | "Select" | "Dropdown" | "RadioGroup" => {
+        "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" | "Select" | "Dropdown" | "RadioGroup" => {
             out.extend_from_slice(&["on_change", "on_select"]);
         }
         "Accordion" => out.extend_from_slice(&["on_change", "on_toggle"]),
@@ -407,7 +418,9 @@ fn widget_supports_two_way(kind: &str, prop: &str) -> bool {
         "Slider" => prop == "value",
         "SplitPane" => prop == "ratio",
         "Checkbox" | "Switch" => matches!(prop, "checked" | "value"),
-        "Tabs" | "TabBar" | "SegmentedControl" => matches!(prop, "active" | "selected" | "value"),
+        "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" => {
+            matches!(prop, "active" | "selected" | "value")
+        }
         "Accordion" => matches!(prop, "expanded" | "open"),
         "DataTable" => prop == "selected",
         "Select" | "Dropdown" | "RadioGroup" => matches!(prop, "selected" | "value"),
@@ -830,8 +843,8 @@ fn populate_handler_locals(
             locals.insert("text".into(), TypeExpr::Named("string".into()));
         }
         (
-            "Tabs" | "TabBar" | "SegmentedControl" | "Select" | "Dropdown" | "RadioGroup"
-            | "PopupMenu",
+            "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" | "Select" | "Dropdown"
+            | "RadioGroup" | "PopupMenu",
             "on_change" | "on_select",
         ) => {
             locals.insert("index".into(), TypeExpr::Named("int".into()));

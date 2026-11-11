@@ -911,6 +911,74 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 #chg
             }
         }
+        "BottomNavBar" => {
+            let items = find_arg(&["items", "options", "tabs"])
+                .map(|e| {
+                    if matches!(e, Expr::Closure(_)) {
+                        quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                    } else {
+                        quote!(#e)
+                    }
+                })
+                .unwrap_or_else(|| quote!(Vec::<String>::new()));
+            let icons = find_arg(&["icons"])
+                .map(|e| {
+                    if matches!(e, Expr::Closure(_)) {
+                        quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                    } else {
+                        quote!(#e)
+                    }
+                })
+                .unwrap_or_else(|| quote!(Vec::<String>::new()));
+            let sel_sig = match find_prop(&["selected", "active", "value"]) {
+                Some(sel_prop) => {
+                    let sel = &sel_prop.value;
+                    if is_two_way_signal_expr(sel_prop) {
+                        quote!(#sel)
+                    } else {
+                        quote! {{
+                            let __s = __cx.signal((#sel)() as usize);
+                            __cx.effect(move || {
+                                let __nv = (#sel)() as usize;
+                                if __s.get_untracked() != __nv { __s.set(__nv); }
+                            });
+                            __s
+                        }}
+                    }
+                }
+                None => quote!(__cx.signal(0usize)),
+            };
+            let chg = find_arg(&["on_change", "on_select"])
+                .map(|cb| quote! { __tree.set_on_index_change(#var, #cb); });
+            quote! {
+                let #var = __tree.bottom_nav_bar(__cx, #items, #icons, #sel_sig);
+                #chg
+            }
+        }
+        "FloatingActionButton" => {
+            let icon = find_arg(&["icon"])
+                .map(|e| {
+                    if matches!(e, Expr::Closure(_)) {
+                        quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                    } else {
+                        quote!(#e)
+                    }
+                })
+                .unwrap_or_else(|| quote!(""));
+            let label_opt = find_arg(&["label", "text"]).map(|e| {
+                if matches!(e, Expr::Closure(_)) {
+                    quote!(Some(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e))))
+                } else {
+                    quote!(Some(#e))
+                }
+            }).unwrap_or_else(|| quote!(None::<String>));
+            let tap = find_arg(&["on_tap", "on_click"])
+                .map(|cb| quote! { __tree.set_on_tap(#var, #cb); });
+            quote! {
+                let #var = __tree.floating_action_button(__cx, #icon, #label_opt);
+                #tap
+            }
+        }
         "Accordion" => {
             let title = find_arg(&["title", "label", "text"])
                 .map(|e| {
