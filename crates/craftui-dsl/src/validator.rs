@@ -280,7 +280,16 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         }
         "Button" => {
             out.extend_from_slice(CONTAINER_PROPS);
-            out.extend_from_slice(&["text", "title", "label", "foreground", "color"]);
+            out.extend_from_slice(&[
+                "text",
+                "title",
+                "label",
+                "foreground",
+                "color",
+                "font_size",
+                "font_weight",
+                "disabled",
+            ]);
         }
         "Modal" | "BottomSheet" => {
             out.extend_from_slice(CONTAINER_PROPS);

@@ -1,6 +1,6 @@
 export component ScanCraftApp {
     in-out property <int> active_tab: 0;
-    in-out property <string> doc_title: "Receipt_2026_Nov.pdf";
+    in-out property <string> doc_title: "Contract_Agreement_v2.pdf";
     in-out property <int> scan_preset: 0;
     in-out property <int> filter_mode: 2;
     in-out property <float> brightness: 0.0;
@@ -8,12 +8,16 @@ export component ScanCraftApp {
     in-out property <int> rotation_deg: 0;
     in-out property <string> search_query: "";
     in-out property <int> selected_doc_index: 0;
-    in-out property <string> status_message: "ScanCraft Ready — Camera Viewfinder Active";
+    in-out property <string> status_message: "ScanApp Ready — AI Document Scanner Active";
     in-out property <string> battery_status: "94% Battery";
     in-out property <string> storage_status: "52.4 GB Free";
     in-out property <string> camera_perm_badge: "Camera: Granted";
     in-out property <int> export_format: 0;
     in-out property <bool> is_processing: false;
+    in-out property <bool> search_open: false;
+    in-out property <bool> ocr_modal_open: false;
+    in-out property <bool> pdf_modal_open: false;
+    in-out property <string> ocr_text: "TAX INVOICE\nDate: 11-09-2026\nItem: Antigravity AI Engine\nAmount: $0.00\nStatus: VERIFIED_PAID";
     in-out property <bool> capture_btn_hovered: false;
     in-out property <bool> gallery_btn_hovered: false;
     in-out property <bool> share_btn_hovered: false;
@@ -21,10 +25,10 @@ export component ScanCraftApp {
     in-out property <bool> accordion_open: true;
 
     in property <[[string]]> doc_table_rows: [
-        ["DOC-001", "Contract_Agreement_v2.pdf", "Legal", "2026-11-09", "1.4 MB", "Indexed"],
-        ["DOC-002", "Tax_Invoice_Nov.pdf", "Finance", "2026-11-10", "480 KB", "Ready"],
-        ["DOC-003", "Medical_Prescription.png", "Health", "2026-11-10", "890 KB", "Ready"],
-        ["DOC-004", "Equipment_Warranty.pdf", "Personal", "2026-11-11", "2.1 MB", "Synced"],
+        ["DOC-001", "Contract_Agreement_v2.pdf", "Legal", "09/11/26 21:46", "3 Pages", "Indexed"],
+        ["DOC-002", "New Doc 11-09-2026 15.11", "Finance", "09/11/26 15:13", "9 Pages", "Ready"],
+        ["DOC-003", "New Doc 11-09-2026 13.00", "Health", "09/11/26 13:00", "3 Pages", "Ready"],
+        ["DOC-004", "Equipment_Warranty.pdf", "Personal", "2026-11-11", "1.2 MB", "Synced"],
         ["DOC-005", "Whiteboard_Brainstorm.jpeg", "Work", "2026-11-11", "3.6 MB", "Draft"]
     ];
 
@@ -43,110 +47,753 @@ export component ScanCraftApp {
             width: 100%;
             height: 100%;
             background: Theme.background;
-            padding: 14dp;
+            padding: 12dp;
             gap: 12dp;
 
-            // --- Top App Bar & Device Telemetry Header ---
-            Row {
-                width: 100%;
-                justify: SpaceBetween;
-                align: Center;
-
-                Row {
-                    gap: 10dp;
-                    align: Center;
-
-                    Text {
-                        text: "ScanCraft Pro";
-                        font_size: 20;
-                        font_weight: 700;
-                        color: Theme.text_primary;
-                    }
-
-                    Badge {
-                        label: "Mobile Dogfood";
-                        background: #10B981;
-                        color: #FFFFFF;
-                    }
-
-                    Badge {
-                        label: camera_perm_badge;
-                        background: Theme.surface_variant;
-                        color: Theme.text_primary;
-                    }
-                }
-
-                Row {
-                    gap: 8dp;
-                    align: Center;
-
-                    Badge {
-                        label: battery_status;
-                        background: Theme.surface_variant;
-                        color: Theme.text_secondary;
-                    }
-
-                    Badge {
-                        label: storage_status;
-                        background: Theme.surface_variant;
-                        color: Theme.text_secondary;
-                    }
-
-                    Button {
-                        id: "theme_toggle_btn";
-                        text: "Theme";
-                        background: Theme.surface_variant;
-                        foreground: Theme.text_primary;
-                        border_radius: 8dp;
-                        cursor: Pointer;
-                        on_tap => {
-                            on_theme_toggle();
-                        }
-                    }
-                }
-            }
-
-            // --- Main Section Navigation Tabs ---
-            SegmentedControl {
-                items: ["1. Camera Viewfinder", "2. Filter & Enhance", "3. Document Library", "4. Export & Info"];
-                selected <=> active_tab;
-                on_change => {
-                    status_message = "Active tab changed to #" + index;
-                }
-            }
-
-            // --- Status Strip ---
-            Row {
-                width: 100%;
-                background: Theme.surface_variant;
-                padding: 8dp;
-                border_radius: 8dp;
-                justify: SpaceBetween;
-                align: Center;
-
-                Text {
-                    text: status_message;
-                    font_size: 13;
-                    color: Theme.text_secondary;
-                }
-
-                if is_processing : Spinner {
-                    size: 18;
-                    color: Theme.primary;
-                }
-            }
-
-            // --- TAB 0: Camera Viewfinder & Ingestion ---
+            // =========================================================================
+            // VIEW 0: MAIN SCREEN (Matches User Screenshot Exactly)
+            // =========================================================================
             if active_tab == 0 : Column {
                 flex_grow: 1.0;
                 width: 100%;
                 gap: 12dp;
 
-                // Viewfinder HUD Container
+                // --- Top Header Bar ---
+                Row {
+                    width: 100%;
+                    justify: SpaceBetween;
+                    align: Center;
+
+                    // User Profile Avatar
+                    Button {
+                        id: "profile_avatar_btn";
+                        text: "👤";
+                        background: #0E2938;
+                        foreground: #00BCD4;
+                        font_size: 18;
+                        border_radius: 20dp;
+                        width: 40dp;
+                        height: 40dp;
+                        on_tap => {
+                            status_message = "Profile & Settings opened";
+                        }
+                    }
+
+                    // App Title & Aperture Logo
+                    Row {
+                        gap: 8dp;
+                        align: Center;
+
+                        Icon {
+                            svg: "aperture";
+                            size: 24;
+                            color: #00BCD4;
+                        }
+
+                        Text {
+                            text: "ScanApp";
+                            font_size: 22;
+                            font_weight: 800;
+                            color: #00BCD4;
+                        }
+                    }
+
+                    // Right Actions (Theme Toggle & Search Toggle)
+                    Row {
+                        gap: 8dp;
+                        align: Center;
+
+                        Button {
+                            id: "theme_toggle_btn";
+                            text: "☀️";
+                            background: #1E293B;
+                            foreground: #FACC15;
+                            font_size: 16;
+                            border_radius: 18dp;
+                            width: 36dp;
+                            height: 36dp;
+                            on_tap => {
+                                on_theme_toggle();
+                            }
+                        }
+
+                        Button {
+                            id: "search_toggle_btn";
+                            text: "🔍";
+                            background: #1E293B;
+                            foreground: #FFFFFF;
+                            font_size: 14;
+                            border_radius: 18dp;
+                            width: 36dp;
+                            height: 36dp;
+                            on_tap => {
+                                search_open = !search_open;
+                            }
+                        }
+                    }
+                }
+
+                // --- Optional Live Search Bar ---
+                if search_open : Row {
+                    width: 100%;
+                    background: #1E293B;
+                    border_radius: 12dp;
+                    padding: 8dp;
+                    gap: 8dp;
+                    align: Center;
+
+                    Icon {
+                        svg: "search";
+                        size: 16;
+                        color: #94A3B8;
+                    }
+
+                    TextInput {
+                        id: "search_input_box";
+                        placeholder: "Search documents by name...";
+                        value <=> search_query;
+                        flex_grow: 1.0;
+                    }
+                }
+
+                // --- Quick Action Grid (2 Rows x 4 Columns) ---
+                Column {
+                    width: 100%;
+                    gap: 14dp;
+                    padding_y: 4dp;
+
+                    // Row 1 (Smart Scan, Import Photos, Import Files, ID Card)
+                    Row {
+                        width: 100%;
+                        justify: SpaceAround;
+                        align: Center;
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_smart_scan";
+                                text: "📷";
+                                background: #083344;
+                                foreground: #06B6D4;
+                                font_size: 20;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    on_capture_photo();
+                                }
+                            }
+
+                            Text {
+                                text: "Smart Scan";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_import_photos";
+                                text: "🖼️";
+                                background: #172554;
+                                foreground: #3B82F6;
+                                font_size: 20;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    on_import_gallery();
+                                }
+                            }
+
+                            Text {
+                                text: "Import Photos";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_import_files";
+                                text: "📁";
+                                background: #451A03;
+                                foreground: #F97316;
+                                font_size: 20;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    on_import_gallery();
+                                }
+                            }
+
+                            Text {
+                                text: "Import Files";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_id_card";
+                                text: "🪪";
+                                background: #042F2E;
+                                foreground: #06B6D4;
+                                font_size: 20;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    on_capture_photo();
+                                }
+                            }
+
+                            Text {
+                                text: "ID Card";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+                    }
+
+                    // Row 2 (To Text (OCR), PDF Tools, Watermark, All Tools)
+                    Row {
+                        width: 100%;
+                        justify: SpaceAround;
+                        align: Center;
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_ocr";
+                                text: "TT";
+                                background: #3B0764;
+                                foreground: #C084FC;
+                                font_size: 18;
+                                font_weight: 700;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    active_tab = 2;
+                                }
+                            }
+
+                            Text {
+                                text: "To Text (OCR)";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_pdf_tools";
+                                text: "📄";
+                                background: #450A0A;
+                                foreground: #EF4444;
+                                font_size: 20;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    active_tab = 3;
+                                }
+                            }
+
+                            Text {
+                                text: "PDF Tools";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_watermark";
+                                text: "💧";
+                                background: #022C22;
+                                foreground: #10B981;
+                                font_size: 20;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    active_tab = 1;
+                                }
+                            }
+
+                            Text {
+                                text: "Watermark";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+
+                        Column {
+                            align: Center;
+                            gap: 6dp;
+
+                            Button {
+                                id: "grid_all_tools";
+                                text: "▦";
+                                background: #1E293B;
+                                foreground: #94A3B8;
+                                font_size: 18;
+                                border_radius: 28dp;
+                                width: 56dp;
+                                height: 56dp;
+                                on_tap => {
+                                    active_tab = 2;
+                                }
+                            }
+
+                            Text {
+                                text: "All Tools";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: Theme.text_primary;
+                            }
+                        }
+                    }
+                }
+
+                // --- Recent Docs Section Header ---
+                Row {
+                    width: 100%;
+                    justify: SpaceBetween;
+                    align: Center;
+                    padding_y: 4dp;
+
+                    Column {
+                        gap: 2dp;
+
+                        Text {
+                            text: "Recent Docs";
+                            font_size: 19;
+                            font_weight: 700;
+                            color: Theme.text_primary;
+                        }
+
+                        Text {
+                            text: "All docs (5) ▼";
+                            font_size: 12;
+                            color: Theme.text_secondary;
+                        }
+                    }
+
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+
+                        Button {
+                            id: "action_folder";
+                            text: "📁+";
+                            background: #1E293B;
+                            foreground: #94A3B8;
+                            font_size: 12;
+                            border_radius: 8dp;
+                            padding: 6dp;
+                            on_tap => {
+                                status_message = "New Folder Dialog";
+                            }
+                        }
+
+                        Button {
+                            id: "action_sort";
+                            text: "⇅";
+                            background: #1E293B;
+                            foreground: #94A3B8;
+                            font_size: 14;
+                            border_radius: 8dp;
+                            padding: 6dp;
+                            on_tap => {
+                                status_message = "Sorted by newest first";
+                            }
+                        }
+
+                        Button {
+                            id: "action_view_mode";
+                            text: "▦";
+                            background: #1E293B;
+                            foreground: #94A3B8;
+                            font_size: 12;
+                            border_radius: 8dp;
+                            padding: 6dp;
+                            on_tap => {
+                                status_message = "Toggled view mode";
+                            }
+                        }
+
+                        Button {
+                            id: "action_multi_select";
+                            text: "✓✓";
+                            background: #1E293B;
+                            foreground: #94A3B8;
+                            font_size: 12;
+                            border_radius: 8dp;
+                            padding: 6dp;
+                            on_tap => {
+                                status_message = "Batch selection mode";
+                            }
+                        }
+                    }
+                }
+
+                // --- Recent Docs Scrollable Card List ---
+                ScrollView {
+                    width: 100%;
+                    flex_grow: 1.0;
+
+                    Column {
+                        width: 100%;
+                        gap: 10dp;
+                        padding_y: 12dp;
+
+                        // Card 1
+                        Row {
+                            width: 100%;
+                            background: Theme.surface;
+                            border_radius: 14dp;
+                            padding: 10dp;
+                            gap: 12dp;
+                            align: Center;
+
+                            // Thumbnail with Badge
+                            Column {
+                                width: 68dp;
+                                height: 80dp;
+                                border_radius: 8dp;
+                                background: #1E293B;
+                                padding: 6dp;
+                                justify: SpaceBetween;
+
+                                Column {
+                                    gap: 3dp;
+                                    Row { width: 100%; height: 4dp; background: #38BDF8; border_radius: 2dp; }
+                                    Row { width: 80%; height: 3dp; background: #64748B; border_radius: 2dp; }
+                                    Row { width: 90%; height: 3dp; background: #475569; border_radius: 2dp; }
+                                    Row { width: 60%; height: 3dp; background: #475569; border_radius: 2dp; }
+                                }
+
+                                Row {
+                                    width: 100%;
+                                    justify: End;
+                                    Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
+                                }
+                            }
+
+                            // Info Column
+                            Column {
+                                flex_grow: 1.0;
+                                gap: 4dp;
+
+                                Text {
+                                    text: "Contract_Agreement_v2.pdf";
+                                    font_size: 15;
+                                    font_weight: 600;
+                                    color: Theme.text_primary;
+                                }
+
+                                Text {
+                                    text: "09/11/26 21:46";
+                                    font_size: 12;
+                                    color: Theme.text_secondary;
+                                }
+
+                                Row {
+                                    gap: 6dp;
+                                    align: Center;
+                                    Text { text: "❐ 3"; font_size: 12; color: #64748B; }
+                                    Badge { label: "Indexed"; background: #064E3B; color: #34D399; }
+                                }
+                            }
+
+                            Button {
+                                id: "doc_opt_btn_0";
+                                text: "⋮";
+                                background: #00000000;
+                                foreground: Theme.text_secondary;
+                                font_size: 18;
+                                on_tap => {
+                                    on_share_doc();
+                                }
+                            }
+                        }
+
+                        // Card 2
+                        Row {
+                            width: 100%;
+                            background: Theme.surface;
+                            border_radius: 14dp;
+                            padding: 10dp;
+                            gap: 12dp;
+                            align: Center;
+
+                            Column {
+                                width: 68dp;
+                                height: 80dp;
+                                border_radius: 8dp;
+                                background: #1E293B;
+                                padding: 6dp;
+                                justify: SpaceBetween;
+
+                                Column {
+                                    gap: 3dp;
+                                    Row { width: 100%; height: 4dp; background: #A855F7; border_radius: 2dp; }
+                                    Row { width: 75%; height: 3dp; background: #64748B; border_radius: 2dp; }
+                                    Row { width: 85%; height: 3dp; background: #475569; border_radius: 2dp; }
+                                }
+
+                                Row {
+                                    width: 100%;
+                                    justify: End;
+                                    Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
+                                }
+                            }
+
+                            Column {
+                                flex_grow: 1.0;
+                                gap: 4dp;
+
+                                Text {
+                                    text: "New Doc 11-09-2026 15.11";
+                                    font_size: 15;
+                                    font_weight: 600;
+                                    color: Theme.text_primary;
+                                }
+
+                                Text {
+                                    text: "09/11/26 15:13";
+                                    font_size: 12;
+                                    color: Theme.text_secondary;
+                                }
+
+                                Row {
+                                    gap: 6dp;
+                                    align: Center;
+                                    Text { text: "❐ 9"; font_size: 12; color: #64748B; }
+                                    Badge { label: "Ready"; background: #1E3A5F; color: #60A5FA; }
+                                }
+                            }
+
+                            Button {
+                                id: "doc_opt_btn_1";
+                                text: "⋮";
+                                background: #00000000;
+                                foreground: Theme.text_secondary;
+                                font_size: 18;
+                                on_tap => {
+                                    on_share_doc();
+                                }
+                            }
+                        }
+
+                        // Card 3
+                        Row {
+                            width: 100%;
+                            background: Theme.surface;
+                            border_radius: 14dp;
+                            padding: 10dp;
+                            gap: 12dp;
+                            align: Center;
+
+                            Column {
+                                width: 68dp;
+                                height: 80dp;
+                                border_radius: 8dp;
+                                background: #1E293B;
+                                padding: 6dp;
+                                justify: SpaceBetween;
+
+                                Column {
+                                    gap: 3dp;
+                                    Row { width: 100%; height: 4dp; background: #10B981; border_radius: 2dp; }
+                                    Row { width: 90%; height: 3dp; background: #64748B; border_radius: 2dp; }
+                                }
+
+                                Row {
+                                    width: 100%;
+                                    justify: End;
+                                    Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
+                                }
+                            }
+
+                            Column {
+                                flex_grow: 1.0;
+                                gap: 4dp;
+
+                                Text {
+                                    text: "New Doc 11-09-2026 13.00";
+                                    font_size: 15;
+                                    font_weight: 600;
+                                    color: Theme.text_primary;
+                                }
+
+                                Text {
+                                    text: "09/11/26 13:00";
+                                    font_size: 12;
+                                    color: Theme.text_secondary;
+                                }
+
+                                Row {
+                                    gap: 6dp;
+                                    align: Center;
+                                    Text { text: "❐ 3"; font_size: 12; color: #64748B; }
+                                    Badge { label: "Ready"; background: #1E3A5F; color: #60A5FA; }
+                                }
+                            }
+
+                            Button {
+                                id: "doc_opt_btn_2";
+                                text: "⋮";
+                                background: #00000000;
+                                foreground: Theme.text_secondary;
+                                font_size: 18;
+                                on_tap => {
+                                    on_share_doc();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // --- Mobile Bottom Navigation Bar with Center Camera FAB ---
+                Row {
+                    width: 100%;
+                    height: 64dp;
+                    background: #090D14;
+                    border_radius: 24dp;
+                    align: Center;
+                    justify: SpaceAround;
+                    padding_x: 16dp;
+
+                    // Documents Tab (Active)
+                    Button {
+                        id: "nav_tab_documents";
+                        text: "📄 Documents";
+                        background: #083344;
+                        foreground: #00BCD4;
+                        font_size: 14;
+                        font_weight: 600;
+                        border_radius: 16dp;
+                        padding: 8dp;
+                        on_tap => {
+                            active_tab = 0;
+                        }
+                    }
+
+                    // Center Camera FAB Button
+                    Button {
+                        id: "nav_camera_fab";
+                        text: "📷";
+                        background: #00897B;
+                        foreground: #FFFFFF;
+                        font_size: 24;
+                        border_radius: 28dp;
+                        width: 56dp;
+                        height: 56dp;
+                        on_tap => {
+                            on_capture_photo();
+                        }
+                    }
+
+                    // Tools Tab
+                    Button {
+                        id: "nav_tab_tools";
+                        text: "🛠️ Tools";
+                        background: #00000000;
+                        foreground: #94A3B8;
+                        font_size: 14;
+                        font_weight: 600;
+                        border_radius: 16dp;
+                        padding: 8dp;
+                        on_tap => {
+                            active_tab = 2;
+                        }
+                    }
+                }
+            }
+
+            // =========================================================================
+            // VIEW 1: ENHANCEMENT & FILTER STUDIO
+            // =========================================================================
+            if active_tab == 1 : Column {
+                flex_grow: 1.0;
+                width: 100%;
+                gap: 12dp;
+
+                // Studio Header
+                Row {
+                    width: 100%;
+                    justify: SpaceBetween;
+                    align: Center;
+
+                    Button {
+                        id: "back_to_docs_btn";
+                        text: "← Back";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        on_tap => {
+                            active_tab = 0;
+                        }
+                    }
+
+                    Text {
+                        text: doc_title;
+                        font_size: 16;
+                        font_weight: 700;
+                        color: Theme.text_primary;
+                    }
+
+                    Button {
+                        id: "save_studio_btn";
+                        text: "Save";
+                        background: #10B981;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        on_tap => {
+                            on_save_doc();
+                        }
+                    }
+                }
+
+                // Document Canvas Viewport
                 Column {
                     width: 100%;
                     flex_grow: 1.0;
-                    min_height: 240dp;
+                    min_height: 220dp;
                     background: #0B0F19;
                     border_radius: 12dp;
                     border_width: 1.5;
@@ -157,265 +804,129 @@ export component ScanCraftApp {
                     Row {
                         width: 100%;
                         justify: SpaceBetween;
-                        align: Center;
-
-                        Badge {
-                            label: "LIVE VIEW 60FPS";
-                            background: #EF4444;
-                            color: #FFFFFF;
-                        }
-
-                        Text {
-                            text: "Automatic Document Edge Detection: ACTIVE";
-                            font_size: 12;
-                            color: #38BDF8;
-                        }
+                        Badge { label: "120 FPS Pure-Rust Preview"; background: #0369A1; color: #FFFFFF; }
+                        Text { text: "Rotation: 0°"; font_size: 12; color: #94A3B8; }
                     }
 
-                    // Viewfinder Center Overlay Simulation
                     Column {
                         width: 100%;
                         align: Center;
                         gap: 8dp;
-
-                        Text {
-                            text: "[  Document Bounds Locked  ]";
-                            font_size: 18;
-                            font_weight: 600;
-                            color: #F8FAFC;
-                        }
-
-                        Text {
-                            text: "Hold steady. Optical contrast scan optimizing...";
-                            font_size: 13;
-                            color: #94A3B8;
-                        }
+                        Text { text: "ScanApp Document Enhancement Studio"; font_size: 16; font_weight: 700; color: #38BDF8; }
+                        Text { text: "Magic Color • High-Contrast B&W • Smart OCR"; font_size: 13; color: #94A3B8; }
                     }
 
                     Row {
                         width: 100%;
                         justify: SpaceBetween;
-                        align: Center;
+                        Text { text: "Resolution: 300 DPI"; font_size: 12; color: #64748B; }
+                        Text { text: "Enhanced via CraftUI GPU"; font_size: 12; color: #10B981; }
+                    }
+                }
 
-                        Text {
-                            text: "Mode: Auto-Crop & Perspective Flattening";
-                            font_size: 12;
-                            color: #E2E8F0;
+                // Filter Presets Row
+                Row {
+                    width: 100%;
+                    gap: 8dp;
+                    justify: SpaceBetween;
+
+                    Button {
+                        text: "Original";
+                        background: #1E293B;
+                        foreground: #E2E8F0;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        flex_grow: 1.0;
+                        on_tap => {
+                            on_apply_filter(0);
                         }
+                    }
 
-                        SegmentedControl {
-                            items: ["Document", "Receipt", "Whiteboard", "ID Card"];
-                            selected <=> scan_preset;
-                            on_change => {
-                                status_message = "Preset mode switched to: " + index;
-                            }
+                    Button {
+                        text: "Magic Color";
+                        background: #0369A1;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        flex_grow: 1.0;
+                        on_tap => {
+                            on_apply_filter(3);
+                        }
+                    }
+
+                    Button {
+                        text: "B&W Document";
+                        background: #334155;
+                        foreground: #F8FAFC;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        flex_grow: 1.0;
+                        on_tap => {
+                            on_apply_filter(2);
+                        }
+                    }
+
+                    Button {
+                        text: "Grayscale";
+                        background: #1E293B;
+                        foreground: #CBD5E1;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        flex_grow: 1.0;
+                        on_tap => {
+                            on_apply_filter(1);
                         }
                     }
                 }
 
-                // Action Bar
+                // Adjustments (Brightness, Contrast, Rotation)
                 Row {
                     width: 100%;
                     gap: 12dp;
-                    justify: Center;
                     align: Center;
 
                     Button {
-                        id: "capture_action_btn";
-                        text: "Snap Document (Haptic)";
-                        background: Theme.primary;
-                        foreground: Theme.on_primary;
-                        border_radius: 10dp;
-                        cursor: Pointer;
-                        scale: capture_btn_hovered ? 1.03 : 1.0;
-                        animate scale { curve: snappy(); }
-                        on_hover => { capture_btn_hovered = value; }
-                        on_tap => {
-                            on_capture_photo();
-                        }
-                    }
-
-                    Button {
-                        id: "gallery_action_btn";
-                        text: "Import from Photos";
+                        text: "↻ Rotate 90°";
                         background: Theme.surface_variant;
                         foreground: Theme.text_primary;
-                        border_radius: 10dp;
-                        cursor: Pointer;
-                        scale: gallery_btn_hovered ? 1.03 : 1.0;
-                        animate scale { curve: snappy(); }
-                        on_hover => { gallery_btn_hovered = value; }
+                        border_radius: 8dp;
+                        padding: 8dp;
+                        flex_grow: 1.0;
                         on_tap => {
-                            on_import_gallery();
+                            on_rotate();
                         }
                     }
 
                     Button {
-                        id: "perm_req_btn";
-                        text: "Request Permissions";
-                        background: Theme.surface;
-                        foreground: Theme.primary;
-                        border_color: Theme.primary;
-                        border_width: 1;
-                        border_radius: 10dp;
-                        cursor: Pointer;
-                        on_tap => {
-                            on_request_permissions();
-                        }
-                    }
-                }
-            }
-
-            // --- TAB 1: Filter & Image Enhancement Studio ---
-            if active_tab == 1 : Column {
-                flex_grow: 1.0;
-                width: 100%;
-                gap: 12dp;
-
-                Row {
-                    width: 100%;
-                    flex_grow: 1.0;
-                    gap: 16dp;
-
-                    // Image Canvas Panel
-                    Column {
+                        text: "🗑️ Delete";
+                        background: #7F1D1D;
+                        foreground: #FCA5A5;
+                        border_radius: 8dp;
+                        padding: 8dp;
                         flex_grow: 1.0;
-                        background: Theme.surface;
-                        border_radius: 12dp;
-                        padding: 16dp;
-                        gap: 8dp;
-                        align: Center;
-                        justify: Center;
-
-                        Text {
-                            text: doc_title + " (" + rotation_deg + " deg)";
-                            font_size: 15;
-                            font_weight: 600;
-                            color: Theme.text_primary;
-                        }
-
-                        // Document preview canvas placeholder card
-                        Column {
-                            width: 90%;
-                            flex_grow: 1.0;
-                            min_height: 200dp;
-                            background: #F1F5F9;
-                            border_radius: 8dp;
-                            border_width: 1;
-                            border_color: #CBD5E1;
-                            padding: 20dp;
-                            justify: Center;
-                            align: Center;
-                            gap: 10dp;
-
-                            Text {
-                                text: "DOCUMENT ENHANCEMENT CANVAS";
-                                font_size: 14;
-                                font_weight: 700;
-                                color: #1E293B;
-                            }
-
-                            Text {
-                                text: "Filter: " + (filter_mode == 0 ? "Original" : (filter_mode == 1 ? "Grayscale" : (filter_mode == 2 ? "High-Contrast B&W" : "Color Boost")));
-                                font_size: 13;
-                                color: #0284C7;
-                            }
-
-                            Text {
-                                text: "Brightness: " + brightness + " | Contrast: " + contrast + "x";
-                                font_size: 12;
-                                color: #64748B;
-                            }
+                        on_tap => {
+                            on_delete_doc();
+                            active_tab = 0;
                         }
                     }
 
-                    // Filter Parameter Controls Sidebar
-                    Column {
-                        width: 280dp;
-                        background: Theme.surface;
-                        border_radius: 12dp;
-                        padding: 16dp;
-                        gap: 12dp;
-
-                        Text {
-                            text: "Enhancement Presets";
-                            font_size: 15;
-                            font_weight: 600;
-                            color: Theme.text_primary;
-                        }
-
-                        SegmentedControl {
-                            items: ["Original", "Gray", "B&W Doc", "Boost"];
-                            selected <=> filter_mode;
-                            on_change => {
-                                on_apply_filter(index);
-                            }
-                        }
-
-                        Text {
-                            text: "Brightness Tuning";
-                            font_size: 13;
-                            color: Theme.text_secondary;
-                        }
-
-                        Slider {
-                            value <=> brightness;
-                            min: -50.0;
-                            max: 50.0;
-                            on_change => {
-                                status_message = "Brightness adjusted: " + value;
-                            }
-                        }
-
-                        Text {
-                            text: "Contrast Multiplier";
-                            font_size: 13;
-                            color: Theme.text_secondary;
-                        }
-
-                        Slider {
-                            value <=> contrast;
-                            min: 0.5;
-                            max: 2.0;
-                            on_change => {
-                                status_message = "Contrast adjusted: " + value;
-                            }
-                        }
-
-                        Row {
-                            width: 100%;
-                            gap: 8dp;
-
-                            Button {
-                                id: "rotate_doc_btn";
-                                text: "Rotate 90";
-                                background: Theme.surface_variant;
-                                foreground: Theme.text_primary;
-                                cursor: Pointer;
-                                on_tap => {
-                                    on_rotate();
-                                }
-                            }
-
-                            Button {
-                                id: "save_enhanced_btn";
-                                text: "Save to Library";
-                                background: Theme.primary;
-                                foreground: Theme.on_primary;
-                                cursor: Pointer;
-                                scale: save_btn_hovered ? 1.03 : 1.0;
-                                animate scale { curve: snappy(); }
-                                on_hover => { save_btn_hovered = value; }
-                                on_tap => {
-                                    on_save_doc();
-                                }
-                            }
+                    Button {
+                        text: "📤 Share";
+                        background: #0284C7;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 8dp;
+                        flex_grow: 1.0;
+                        on_tap => {
+                            on_share_doc();
                         }
                     }
                 }
             }
 
-            // --- TAB 2: Document Library & Management ---
+            // =========================================================================
+            // VIEW 2: AI TOOLS, OCR & DEVICE TELEMETRY
+            // =========================================================================
             if active_tab == 2 : Column {
                 flex_grow: 1.0;
                 width: 100%;
@@ -423,73 +934,109 @@ export component ScanCraftApp {
 
                 Row {
                     width: 100%;
-                    gap: 12dp;
+                    justify: SpaceBetween;
                     align: Center;
 
-                    TextInput {
-                        id: "search_input";
-                        width: 320dp;
-                        placeholder: "Search scanned documents...";
-                        text <=> search_query;
-                        on_change => {
-                            status_message = "Filtering documents by: " + text;
+                    Button {
+                        text: "← Back";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        on_tap => {
+                            active_tab = 0;
                         }
                     }
 
-                    Badge {
-                        label: "5 Stored Items";
-                        background: Theme.surface_variant;
-                        color: Theme.text_secondary;
+                    Text {
+                        text: "AI Scanner Tools";
+                        font_size: 18;
+                        font_weight: 700;
+                        color: Theme.text_primary;
                     }
-
-                    Badge {
-                        label: "8.4 MB Total";
-                        background: Theme.surface_variant;
-                        color: Theme.text_secondary;
-                    }
-                }
-
-                // Document Registry Table
-                DataTable {
-                    columns: ["Document ID", "Filename", "Category", "Captured", "Size", "Sync Status"];
-                    rows: doc_table_rows;
-                    selected <=> selected_doc_index;
-                    striped: true;
-                    row_height: 38;
-                    on_sort => {
-                        status_message = "Library sorted by column #" + column;
-                    }
-                }
-
-                Row {
-                    gap: 12dp;
 
                     Button {
-                        id: "open_in_editor_btn";
-                        text: "Open Selected in Editor";
-                        background: Theme.primary;
-                        foreground: Theme.on_primary;
-                        cursor: Pointer;
+                        text: "Done";
+                        background: #10B981;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 6dp;
                         on_tap => {
-                            active_tab = 1;
-                            status_message = "Opened document in editor studio";
+                            active_tab = 0;
                         }
                     }
+                }
+
+                // OCR Extraction Card
+                Column {
+                    width: 100%;
+                    background: Theme.surface;
+                    border_radius: 12dp;
+                    padding: 12dp;
+                    gap: 8dp;
+
+                    Row {
+                        width: 100%;
+                        justify: SpaceBetween;
+                        align: Center;
+                        Text { text: "AI Optical Character Recognition (OCR)"; font_size: 15; font_weight: 600; color: Theme.text_primary; }
+                        Badge { label: "Multi-Language"; background: #065F46; color: #6EE7B7; }
+                    }
+
+                    Text {
+                        text: ocr_text;
+                        font_size: 13;
+                        color: Theme.text_secondary;
+                    }
+
+                    Row {
+                        gap: 8dp;
+                        Button {
+                            text: "📋 Copy Text to Clipboard";
+                            background: #0284C7;
+                            foreground: #FFFFFF;
+                            border_radius: 8dp;
+                            padding: 8dp;
+                            on_tap => {
+                                status_message = "OCR Text copied to clipboard!";
+                            }
+                        }
+                    }
+                }
+
+                // Device Capabilities & Permissions Card
+                Column {
+                    width: 100%;
+                    background: Theme.surface;
+                    border_radius: 12dp;
+                    padding: 12dp;
+                    gap: 8dp;
+
+                    Text { text: "Hardware & Permissions Telemetry"; font_size: 15; font_weight: 600; color: Theme.text_primary; }
+
+                    Row {
+                        gap: 8dp;
+                        Badge { label: camera_perm_badge; background: #059669; color: #FFFFFF; }
+                        Badge { label: battery_status; background: Theme.surface_variant; color: Theme.text_primary; }
+                        Badge { label: storage_status; background: Theme.surface_variant; color: Theme.text_secondary; }
+                    }
 
                     Button {
-                        id: "delete_doc_btn";
-                        text: "Delete Document";
+                        text: "Request Camera & Storage Permissions";
                         background: Theme.surface_variant;
-                        foreground: #EF4444;
-                        cursor: Pointer;
+                        foreground: Theme.text_primary;
+                        border_radius: 8dp;
+                        padding: 8dp;
                         on_tap => {
-                            on_delete_doc();
+                            on_request_permissions();
                         }
                     }
                 }
             }
 
-            // --- TAB 3: Export, Permissions & Architecture Info ---
+            // =========================================================================
+            // VIEW 3: PDF TOOLS & EXPORT
+            // =========================================================================
             if active_tab == 3 : Column {
                 flex_grow: 1.0;
                 width: 100%;
@@ -497,93 +1044,78 @@ export component ScanCraftApp {
 
                 Row {
                     width: 100%;
-                    gap: 16dp;
+                    justify: SpaceBetween;
+                    align: Center;
 
-                    // Export Card
-                    Column {
-                        flex_grow: 1.0;
-                        background: Theme.surface;
-                        border_radius: 12dp;
-                        padding: 16dp;
-                        gap: 12dp;
-
-                        Text {
-                            text: "Export & Share Document";
-                            font_size: 16;
-                            font_weight: 600;
-                            color: Theme.text_primary;
-                        }
-
-                        Text {
-                            text: "Document: " + doc_title;
-                            font_size: 14;
-                            color: Theme.text_secondary;
-                        }
-
-                        SegmentedControl {
-                            items: ["PDF (Standard)", "PDF (Compressed)", "PNG Image", "JPEG"];
-                            selected <=> export_format;
-                            on_change => {
-                                status_message = "Export format chosen: " + index;
-                            }
-                        }
-
-                        Row {
-                            gap: 12dp;
-
-                            Button {
-                                id: "share_sheet_btn";
-                                text: "Share via OS Sheet";
-                                background: Theme.primary;
-                                foreground: Theme.on_primary;
-                                cursor: Pointer;
-                                scale: share_btn_hovered ? 1.03 : 1.0;
-                                animate scale { curve: snappy(); }
-                                on_hover => { share_btn_hovered = value; }
-                                on_tap => {
-                                    on_share_doc();
-                                }
-                            }
+                    Button {
+                        text: "← Back";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        on_tap => {
+                            active_tab = 0;
                         }
                     }
 
-                    // System Capabilities Card
-                    Column {
-                        width: 380dp;
-                        background: Theme.surface;
-                        border_radius: 12dp;
-                        padding: 16dp;
-                        gap: 10dp;
+                    Text {
+                        text: "PDF Tools Studio";
+                        font_size: 18;
+                        font_weight: 700;
+                        color: Theme.text_primary;
+                    }
 
-                        Accordion {
-                            title: "Mobile Permissions Architecture";
-                            expanded <=> accordion_open;
-                            on_toggle => {
-                                status_message = "Accordion toggled: " + expanded;
-                            }
+                    Button {
+                        text: "Done";
+                        background: #10B981;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        on_tap => {
+                            active_tab = 0;
+                        }
+                    }
+                }
 
-                            Column {
-                                gap: 6dp;
-                                padding: 8dp;
+                Column {
+                    width: 100%;
+                    background: Theme.surface;
+                    border_radius: 12dp;
+                    padding: 12dp;
+                    gap: 10dp;
 
-                                Text {
-                                    text: "Camera & Photos: Direct hardware access with runtime prompt.";
-                                    font_size: 12;
-                                    color: Theme.text_secondary;
-                                }
+                    Text { text: "Export & PDF Conversion Options"; font_size: 15; font_weight: 600; color: Theme.text_primary; }
 
-                                Text {
-                                    text: "Vibrate: Native haptic feedback on successful scan.";
-                                    font_size: 12;
-                                    color: Theme.text_secondary;
-                                }
+                    Button {
+                        text: "📄 Export as High-Quality Searchable PDF (A4)";
+                        background: #0284C7;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 10dp;
+                        on_tap => {
+                            on_share_doc();
+                        }
+                    }
 
-                                Text {
-                                    text: "Storage: Scoped Android SAF & desktop file portal.";
-                                    font_size: 12;
-                                    color: Theme.text_secondary;
-                                }
-                            }
+                    Button {
+                        text: "🗜️ Compress PDF to Under 1 MB";
+                        background: #1E293B;
+                        foreground: #E2E8F0;
+                        border_radius: 8dp;
+                        padding: 10dp;
+                        on_tap => {
+                            status_message = "Compressed PDF ready!";
+                        }
+                    }
+
+                    Button {
+                        text: "🔒 Add Password Protection & Security";
+                        background: #1E293B;
+                        foreground: #E2E8F0;
+                        border_radius: 8dp;
+                        padding: 10dp;
+                        on_tap => {
+                            status_message = "PDF Security settings applied";
                         }
                     }
                 }

@@ -549,4 +549,45 @@ mod tests {
         // Ensure non-blank buffer
         assert!(rgba.iter().any(|&b| b > 0));
     }
+
+    #[test]
+    fn scanapp_mobile_portrait_scene_render_and_png_snapshot() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let (root, _) = mount_scancraft_app(cx, &mut tree);
+        tree.set_root(root);
+
+        let w = 412;
+        let h = 915;
+        let metrics = WindowMetrics {
+            logical_size: Size::new(w as f32, h as f32),
+            safe_area: Insets::new(48.0, 0.0, 34.0, 0.0),
+            ..Default::default()
+        };
+
+        tree.layout(metrics);
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+
+        let textures = TextureRegistry::new();
+        let mut text_engine = craftui::text::TextEngine::new();
+
+        let rgba = render_scene_to_rgba(
+            BackendKind::VelloCpu,
+            &scene,
+            w,
+            h,
+            1.0,
+            Color::BLACK,
+            &textures,
+            &mut text_engine,
+        );
+
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        assert!(rgba.iter().any(|&b| b > 0));
+
+        let out_path = std::env::temp_dir().join("scanapp_mobile_render.png");
+        let _ = craftui::render::write_rgba_png(&out_path, w, h, &rgba);
+    }
 }

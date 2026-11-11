@@ -1,7 +1,7 @@
 [app]
-name = "ScanCraft"
-id = "dev.craftui.scancraft"
-version = "0.1.0"
+name = "ScanApp"
+id = "dev.craftui.scanapp"
+version = "0.2.0"
 
 [android]
 min_sdk = 26
