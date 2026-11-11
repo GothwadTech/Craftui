@@ -13,8 +13,8 @@ use craftui_layout::LayoutStyle;
 use craftui_reactive::{Scope, Signal};
 use craftui_text::TextStyle;
 use craftui_widgets::{
-    AnimatableProp, Easing, IndexCallback, ReactiveValue, TapHandler, TransitionCurve,
-    VirtualItemFactory, WidgetTree,
+    AnimatableProp, Easing, IndexCallback, ReactiveValue, TapHandler, ToastItem, ToastSeverity,
+    TransitionCurve, VirtualItemFactory, WidgetTree,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -857,6 +857,139 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
             };
             tree.progress_indicator(scope, prog_rv)
         }
+        "Spinner" => {
+            let sz_p = find_prop(el, &["size"]);
+            let th_p = find_prop(el, &["thickness"]);
+            let col_p = find_prop(el, &["color", "foreground"]);
+            let init_sz = sz_p
+                .map(|p| eval_expr(&p.value, env).as_f32())
+                .unwrap_or(24.0);
+            let n = tree.spinner(scope, init_sz);
+            let th_opt = th_p.map(|p| eval_expr(&p.value, env).as_f32());
+            let col_opt = col_p.map(|p| {
+                expr_to_reactive_color(&p.value, env, env.theme_sig.get_untracked().primary)
+            });
+            if th_opt.is_some() || col_opt.is_some() {
+                tree.set_spinner_style(n, None, th_opt, col_opt);
+            }
+            let sz_dyn = sz_p.is_some_and(|p| expr_has_reactivity(&p.value, env));
+            let th_dyn = th_p.is_some_and(|p| expr_has_reactivity(&p.value, env));
+            if sz_dyn || th_dyn {
+                let sz_tr = sz_p.map(|p| p.value.clone());
+                let th_tr = th_p.map(|p| p.value.clone());
+                let sz_ap = sz_tr.clone();
+                let th_ap = th_tr.clone();
+                let env_tr = env.clone();
+                let env_ap = env.clone();
+                tree.bind_dynamic_prop(
+                    n,
+                    DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+                    move || {
+                        if let Some(ref e) = sz_tr {
+                            let _ = eval_expr_tracked(e, &env_tr, true);
+                        }
+                        if let Some(ref e) = th_tr {
+                            let _ = eval_expr_tracked(e, &env_tr, true);
+                        }
+                    },
+                    move |id, tr| {
+                        let sz = sz_ap.as_ref().map(|e| eval_expr(e, &env_ap).as_f32());
+                        let th = th_ap.as_ref().map(|e| eval_expr(e, &env_ap).as_f32());
+                        tr.set_spinner_style(id, sz, th, None);
+                    },
+                );
+            }
+            n
+        }
+        "Badge" => {
+            let lbl_rv = find_prop(el, &["label", "text"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            let n = tree.badge(scope, lbl_rv);
+            let fg_opt = find_prop(el, &["color", "foreground"]).map(|p| {
+                expr_to_reactive_color(&p.value, env, env.theme_sig.get_untracked().text_primary)
+            });
+            let bg_opt = find_prop(el, &["background"]).map(|p| {
+                expr_to_reactive_color(&p.value, env, env.theme_sig.get_untracked().surface_variant)
+            });
+            if fg_opt.is_some() || bg_opt.is_some() {
+                tree.set_badge_colors(n, fg_opt, bg_opt);
+            }
+            if let Some(ip) = find_prop(el, &["icon"]) {
+                let icon_rv = expr_to_reactive_string(&ip.value, env);
+                tree.set_badge_icon(n, Some(icon_rv));
+            }
+            n
+        }
+        "SplitPane" => {
+            let axis = match find_prop(el, &["direction"]).map(|p| &p.value) {
+                Some(Expr::Ident(s)) if s == "Vertical" => Axis::Vertical,
+                _ => Axis::Horizontal,
+            };
+            let ratio_prop = find_prop(el, &["ratio"]);
+            let ratio_sig = bind_f32_signal(scope, ratio_prop, env, 0.5);
+            let n = tree.split_pane(scope, axis, ratio_sig);
+            let mf = find_prop(el, &["min_first"]);
+            let ms = find_prop(el, &["min_second"]);
+            let ds = find_prop(el, &["divider_size"]);
+            if mf.is_some() || ms.is_some() || ds.is_some() {
+                let mf_v = mf
+                    .map(|p| eval_expr(&p.value, env).as_f32())
+                    .unwrap_or(80.0);
+                let ms_v = ms
+                    .map(|p| eval_expr(&p.value, env).as_f32())
+                    .unwrap_or(80.0);
+                let ds_v = ds
+                    .map(|p| eval_expr(&p.value, env).as_f32())
+                    .unwrap_or(8.0);
+                tree.set_split_pane_config(n, mf_v, ms_v, ds_v);
+            }
+            if let Some(h) = el.handlers.iter().find(|h| h.event == "on_change") {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_float_change(n, move |value| {
+                    let mut h_env = env_c.clone();
+                    h_env
+                        .locals
+                        .insert("value".into(), DynValue::Float(value as f64));
+                    h_env
+                        .locals
+                        .insert("ratio".into(), DynValue::Float(value as f64));
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            n
+        }
+        "ToastHost" => {
+            let items_rv = match find_prop(el, &["items"]) {
+                Some(p) => {
+                    if expr_has_reactivity(&p.value, env) {
+                        let expr = p.value.clone();
+                        let env_c = env.clone();
+                        ReactiveValue::Dynamic(Rc::new(move || {
+                            dyn_value_to_toast_list(&eval_expr_tracked(&expr, &env_c, true))
+                        }))
+                    } else {
+                        ReactiveValue::Static(dyn_value_to_toast_list(&eval_expr(&p.value, env)))
+                    }
+                }
+                None => ReactiveValue::Static(Vec::new()),
+            };
+            let n = tree.toast_host_custom(scope, items_rv, None);
+            if let Some(h) = el.handlers.iter().find(|h| h.event == "on_dismiss") {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_dismiss(n, move |tid| {
+                    let mut h_env = env_c.clone();
+                    h_env.locals.insert("id".into(), DynValue::Int(tid as i64));
+                    h_env
+                        .locals
+                        .insert("value".into(), DynValue::Int(tid as i64));
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            n
+        }
         "Modal" | "BottomSheet" => {
             let is_sheet = el.kind == "BottomSheet";
             let open_prop = find_prop(el, &["open", "visible"]);
@@ -1211,7 +1344,9 @@ fn apply_common_props_and_events(
         .unwrap_or_default();
     let mut box_dirty = false;
 
-    if let Some(bg_prop) = find_prop(el, &["background"]) {
+    if el.kind != "Badge"
+        && let Some(bg_prop) = find_prop(el, &["background"])
+    {
         if expr_has_reactivity(&bg_prop.value, env) {
             let expr = bg_prop.value.clone();
             let env_c = env.clone();
@@ -2353,6 +2488,42 @@ fn expr_to_reactive_color(expr: &Expr, env: &DynEnv, fallback: Color) -> Reactiv
     }
 }
 
+fn dyn_value_to_toast_item(v: &DynValue) -> Option<ToastItem> {
+    let DynValue::Struct { fields, .. } = v else {
+        return None;
+    };
+    let id = fields
+        .get("id")
+        .map(|x| x.as_i64().max(0) as u64)
+        .unwrap_or(0);
+    let title = fields.get("title").map(DynValue::as_str).unwrap_or_default();
+    let message = fields
+        .get("message")
+        .map(DynValue::as_str)
+        .unwrap_or_default();
+    let severity = match fields.get("severity") {
+        Some(DynValue::Enum(_, s) | DynValue::String(s)) => match s.as_str() {
+            "Success" => ToastSeverity::Success,
+            "Warning" => ToastSeverity::Warning,
+            "Error" => ToastSeverity::Error,
+            _ => ToastSeverity::Info,
+        },
+        _ => ToastSeverity::Info,
+    };
+    let duration_ms = fields
+        .get("duration_ms")
+        .map(|x| x.as_i64().max(0) as u64)
+        .unwrap_or(0);
+    Some(ToastItem::new(id, title, message, severity, duration_ms))
+}
+
+fn dyn_value_to_toast_list(v: &DynValue) -> Vec<ToastItem> {
+    match v {
+        DynValue::List(items) => items.iter().filter_map(dyn_value_to_toast_item).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn emit_reactive_text_style(
     size_prop: Option<&Expr>,
     weight_prop: Option<&Expr>,
@@ -2467,7 +2638,16 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
         }
         Expr::StructLit { name, fields } => {
             let mut map = BTreeMap::new();
-            if let Some(st) = env.file.structs.iter().find(|s| s.name == *name) {
+            if name == "ToastItem" {
+                map.insert("id".into(), DynValue::Int(0));
+                map.insert("title".into(), DynValue::String(String::new()));
+                map.insert("message".into(), DynValue::String(String::new()));
+                map.insert(
+                    "severity".into(),
+                    DynValue::Enum("ToastSeverity".into(), "Info".into()),
+                );
+                map.insert("duration_ms".into(), DynValue::Int(0));
+            } else if let Some(st) = env.file.structs.iter().find(|s| s.name == *name) {
                 for f in &st.fields {
                     let def = f
                         .default_value
@@ -2518,7 +2698,10 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
                     };
                     return DynValue::Color(ov.color(field).unwrap_or(theme.primary));
                 }
-                if root == "ThemeMode" || env.file.enums.iter().any(|e| e.name == *root) {
+                if root == "ThemeMode"
+                    || root == "ToastSeverity"
+                    || env.file.enums.iter().any(|e| e.name == *root)
+                {
                     return DynValue::Enum(root.clone(), field.clone());
                 }
             }
@@ -3191,5 +3374,137 @@ export component ShowcasePhase3 {
             WidgetKind::Text { content, .. } => assert_eq!(content.get(), "0: Build!"),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn runtime_supports_phase4_spinner_badge_split_pane_and_toast_host() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let mut session = HotReloadSession::new(cx);
+
+        let src = r#"export component Phase4Widgets {
+    in-out property <float> split_ratio: 0.35;
+    in-out property <int> dismissed_id: 0;
+    in-out property <[ToastItem]> notifications: [
+        ToastItem {
+            id: 9,
+            title: "Build",
+            message: "Artifact ready",
+            severity: ToastSeverity.Success,
+            duration_ms: 0,
+        }
+    ];
+
+    Stack {
+        width: 100%;
+        height: 100%;
+
+        SplitPane {
+            id: "main_split";
+            direction: Horizontal;
+            ratio <=> split_ratio;
+            min_first: 80dp;
+            min_second: 80dp;
+            divider_size: 10dp;
+
+            Column {
+                id: "left_pane";
+                padding: 8dp;
+                gap: 8dp;
+                Spinner {
+                    id: "load_spin";
+                    size: 26dp;
+                    thickness: 3dp;
+                    color: Theme.primary;
+                }
+                Row {
+                    Badge {
+                        id: "status_badge";
+                        label: "Ready";
+                        icon: "check";
+                        background: #10B981;
+                        color: #FFFFFF;
+                    }
+                }
+            }
+
+            Column {
+                id: "right_pane";
+                Text { text: "Preview"; }
+            }
+        }
+
+        ToastHost {
+            id: "toasts";
+            items: notifications;
+            on_dismiss => {
+                dismissed_id = id;
+            }
+        }
+    }
+}"#;
+        session.reload(src, Some("Phase4Widgets"), &mut tree).unwrap();
+        let metrics = WindowMetrics {
+            logical_size: Size::new(500.0, 320.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        let badge_id = tree.node_by_id("status_badge").unwrap();
+        let badge_node = tree.nodes.get(badge_id).unwrap();
+        assert!(badge_node.box_style.background.is_none());
+        match &badge_node.kind {
+            WidgetKind::Badge {
+                label,
+                foreground,
+                background,
+                icon,
+            } => {
+                assert_eq!(label.get(), "Ready");
+                assert!(foreground.is_some());
+                assert!(background.is_some());
+                assert_eq!(icon.as_ref().unwrap().get(), "check");
+            }
+            _ => panic!("expected Badge widget"),
+        }
+
+        let spin_id = tree.node_by_id("load_spin").unwrap();
+        match &tree.nodes.get(spin_id).unwrap().kind {
+            WidgetKind::Spinner { size, thickness, .. } => {
+                assert!((*size - 26.0).abs() < 0.01);
+                assert!((*thickness - 3.0).abs() < 0.01);
+            }
+            _ => panic!("expected Spinner widget"),
+        }
+
+        let left_r = tree.rect(tree.node_by_id("left_pane").unwrap());
+        let right_r = tree.rect(tree.node_by_id("right_pane").unwrap());
+        assert!(left_r.width < right_r.width);
+
+        // Click the close button of the toast card in ToastHost (500x320 -> close center (465, 259)) -> fires `on_dismiss` setting `dismissed_id = 9`
+        let close_pt = Point::new(465.0, 259.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Down,
+            position: close_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 0,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Up,
+            position: close_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        assert_eq!(
+            session.store.props.get("dismissed_id").unwrap().get(),
+            DynValue::Int(9)
+        );
     }
 }

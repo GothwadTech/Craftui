@@ -114,7 +114,8 @@ pub mod prelude {
         CanvasPointerFn, CustomWidget, Easing, FloatCallback, GestureArena, HoverCallback,
         IndexCallback, InspectorState, PinchRotateCallback, ReactiveValue, RecognizedGesture,
         Router, RouterTransition, ScrollPhysics, Spring, TapHandler, TextCallback,
-        TransitionCurve, Tween, View, ViewFn, VirtualItemFactory, WidgetKind, WidgetTree,
+        ToastDismissCallback, ToastItem, ToastManager, ToastSeverity, TransitionCurve, Tween, View,
+        ViewFn, VirtualItemFactory, WidgetKind, WidgetTree,
     };
 
     #[cfg(feature = "desktop")]
@@ -375,5 +376,81 @@ mod tests {
             WidgetKind::Text { content, .. } => assert_eq!(content.get(), "0:BetaUpdated"),
             _ => panic!("expected Text node reuse"),
         }
+    }
+
+    #[test]
+    fn cui_macro_supports_phase4_spinner_badge_split_pane_and_toast_host() {
+        reset_runtime();
+        let cx = Scope::root();
+        let ratio = cx.signal(0.35f32);
+        let toasts = ToastManager::new(cx);
+        let toast_id = toasts.push_at(0, "Saved", "Layout ready", ToastSeverity::Success, 0);
+
+        let view = cui! {
+            Stack(width: pct(100), height: pct(100)) {
+                SplitPane(
+                    id: "split",
+                    direction: Axis::Horizontal,
+                    ratio <=> ratio,
+                    min_first: 80.0,
+                    min_second: 80.0,
+                    divider_size: 10.0
+                ) {
+                    Column(id: "pane_a", padding: 12, gap: 8) {
+                        Spinner(id: "spin", size: 28, thickness: 3.5, color: theme.primary)
+                        Row {
+                            Badge(
+                                id: "badge",
+                                label: "Production",
+                                icon: "check",
+                                bg: theme.primary,
+                                fg: theme.on_primary
+                            )
+                        }
+                    }
+                    Column(id: "pane_b", padding: 12) {
+                        Text(text: "Details")
+                    }
+                }
+                ToastHost(id: "toasts", manager: toasts)
+            }
+        };
+
+        let mut tree = WidgetTree::new(cx);
+        tree.mount(cx, view);
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(500.0, 320.0),
+            ..Default::default()
+        });
+
+        let badge = tree.node_by_id("badge").unwrap();
+        assert!(tree.nodes.get(badge).unwrap().box_style.background.is_none());
+        let pane_a = tree.rect(tree.node_by_id("pane_a").unwrap());
+        let pane_b = tree.rect(tree.node_by_id("pane_b").unwrap());
+        assert!(pane_a.width < pane_b.width);
+        assert_eq!(toasts.len(), 1);
+
+        // Dismiss via click on ToastHost card close button (500x320 -> card y=240..304, close center=(465, 259))
+        let close_pt = Point::new(465.0, 259.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Down,
+            position: close_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 0,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(0),
+            phase: PointerPhase::Up,
+            position: close_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 15,
+        }));
+        assert!(toasts.is_empty());
+        assert!(!toasts.dismiss(toast_id));
     }
 }

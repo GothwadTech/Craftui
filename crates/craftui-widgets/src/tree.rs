@@ -4,9 +4,11 @@ use crate::anim::{
 use crate::gesture::{GestureArena, RecognizedGesture, ScrollPhysics};
 use crate::inspector::InspectorState;
 use crate::router::{Router, RouterTransition};
+use crate::toast::{ToastItem, ToastManager, ToastSeverity};
 use crate::widgets::{
     BoolCallback, BoxStyle, CanvasPointerFn, CustomWidget, FloatCallback, HoverCallback,
-    IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, WidgetKind,
+    IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, ToastDismissCallback,
+    WidgetKind,
 };
 use craftui_a11y::{A11yAction, A11yBridge, A11yMetadata, A11yRole, A11ySnapshotNode};
 use craftui_core::{
@@ -111,6 +113,10 @@ struct PropEffectScopes {
     box_border_color: Option<Scope>,
     divider_color: Option<Scope>,
     button_fg: Option<Scope>,
+    spinner_color: Option<Scope>,
+    badge_fg: Option<Scope>,
+    badge_bg: Option<Scope>,
+    badge_icon: Option<Scope>,
     disabled: Option<Scope>,
     visible_when: Option<Scope>,
     dynamic_props: Vec<Scope>,
@@ -280,6 +286,7 @@ pub struct WidgetTree {
     pub direction: Direction,
     pub focused: Option<NodeId>,
     pub hovered: Option<NodeId>,
+    last_pointer_pos: Option<Point>,
     pub metrics: WindowMetrics,
     pub clipboard_text: String,
     virtual_hosts: SecondaryMap<NodeId, VirtualListHost>,
@@ -322,6 +329,7 @@ impl WidgetTree {
             direction: Direction::Ltr,
             focused: None,
             hovered: None,
+            last_pointer_pos: None,
             metrics: WindowMetrics::default(),
             clipboard_text: String::new(),
             virtual_hosts: SecondaryMap::new(),
@@ -719,6 +727,60 @@ impl WidgetTree {
                     });
                 }
             }
+            WidgetKind::Spinner { color, .. } => {
+                if let Some(c) = color.clone().filter(|c| c.is_dynamic()) {
+                    scope.effect(move || {
+                        let _ = c.get();
+                        mark_node_dirty(id, DirtyFlags::PAINT);
+                    });
+                }
+            }
+            WidgetKind::Badge {
+                label,
+                foreground,
+                background,
+                icon,
+            } => {
+                let label = label.clone();
+                let icon_dyn = icon.clone().filter(|i| i.is_dynamic());
+                if label.is_dynamic() || icon_dyn.is_some() {
+                    scope.effect(move || {
+                        let _ = label.get();
+                        if let Some(ref ic) = icon_dyn {
+                            let _ = ic.get();
+                        }
+                        mark_node_dirty(
+                            id,
+                            DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::A11Y,
+                        );
+                    });
+                }
+                let fg_dyn = foreground.clone().filter(|f| f.is_dynamic());
+                let bg_dyn = background.clone().filter(|b| b.is_dynamic());
+                if fg_dyn.is_some() || bg_dyn.is_some() {
+                    scope.effect(move || {
+                        if let Some(ref fg) = fg_dyn {
+                            let _ = fg.get();
+                        }
+                        if let Some(ref bg) = bg_dyn {
+                            let _ = bg.get();
+                        }
+                        mark_node_dirty(id, DirtyFlags::PAINT);
+                    });
+                }
+            }
+            WidgetKind::SplitPane { ratio, .. } => {
+                ratio.bind_node(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+            }
+            WidgetKind::ToastHost { items, .. } => {
+                let items = items.clone();
+                if items.is_dynamic() {
+                    scope.effect(move || {
+                        let _ = items.get();
+                        mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::A11Y);
+                    });
+                }
+            }
             WidgetKind::Overlay { open, .. } => {
                 let open = open.clone();
                 if open.is_dynamic() {
@@ -795,6 +857,10 @@ impl WidgetTree {
                 scopes.box_border_color.take(),
                 scopes.divider_color.take(),
                 scopes.button_fg.take(),
+                scopes.spinner_color.take(),
+                scopes.badge_fg.take(),
+                scopes.badge_bg.take(),
+                scopes.badge_icon.take(),
                 scopes.disabled.take(),
                 scopes.visible_when.take(),
             ]
@@ -1536,6 +1602,326 @@ impl WidgetTree {
         id
     }
 
+    pub fn spinner(&mut self, scope: Scope, size: f32) -> NodeId {
+        let sz = size.max(12.0);
+        let id = self.spawn_node(
+            "Spinner",
+            WidgetKind::Spinner {
+                size: sz,
+                thickness: (sz * 0.12).clamp(2.0, 6.0),
+                color: None,
+                phase: 0.0,
+            },
+            LayoutStyle::row().with_size(Length::Dp(sz), Length::Dp(sz)),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::ProgressIndicator;
+            n.a11y.label = Some("Loading".to_string());
+        }
+        id
+    }
+
+    pub fn set_spinner_style(
+        &mut self,
+        node: NodeId,
+        size: Option<f32>,
+        thickness: Option<f32>,
+        color: Option<ReactiveValue<Color>>,
+    ) {
+        if !self
+            .nodes
+            .get(node)
+            .is_some_and(|n| matches!(n.kind, WidgetKind::Spinner { .. }))
+        {
+            return;
+        }
+        if let Some(c) = color.clone() {
+            if c.is_dynamic() {
+                if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.spinner_color) {
+                    let cc = c.clone();
+                    eff_scope.effect(move || {
+                        let _ = cc.get();
+                        mark_node_dirty(node, DirtyFlags::PAINT);
+                    });
+                }
+            } else {
+                self.dispose_prop_effect(node, |s| &mut s.spinner_color);
+            }
+        }
+        let mut updated_layout = None;
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::Spinner {
+                size: sz_slot,
+                thickness: th_slot,
+                color: col_slot,
+                ..
+            } = &mut n.kind
+        {
+            if let Some(sz) = size {
+                let next_sz = sz.max(12.0);
+                *sz_slot = next_sz;
+                n.layout.width = Length::Dp(next_sz);
+                n.layout.height = Length::Dp(next_sz);
+                updated_layout = Some(n.layout.clone());
+                n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+            }
+            if let Some(th) = thickness {
+                *th_slot = th.max(1.5);
+                n.dirty |= DirtyFlags::PAINT;
+            }
+            if let Some(c) = color {
+                *col_slot = Some(c);
+                n.dirty |= DirtyFlags::PAINT;
+            }
+        }
+        if let Some(st) = updated_layout {
+            self.layout_engine.upsert_node(node, st);
+            self.layout_engine.mark_dirty(node);
+        }
+    }
+
+    pub fn badge(
+        &mut self,
+        scope: Scope,
+        label: impl Into<ReactiveValue<String>>,
+    ) -> NodeId {
+        let rv = label.into();
+        let text = rv.get();
+        let id = self.spawn_node(
+            "Badge",
+            WidgetKind::Badge {
+                label: rv,
+                foreground: None,
+                background: None,
+                icon: None,
+            },
+            LayoutStyle::row()
+                .with_padding(Insets::symmetric(10.0, 4.0))
+                .with_align(Alignment::Center),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.box_style.radius = CornerRadii::all(12.0);
+            n.a11y.role = A11yRole::Label;
+            n.a11y.label = Some(text);
+        }
+        id
+    }
+
+    pub fn set_badge_colors(
+        &mut self,
+        node: NodeId,
+        foreground: Option<ReactiveValue<Color>>,
+        background: Option<ReactiveValue<Color>>,
+    ) {
+        if !self
+            .nodes
+            .get(node)
+            .is_some_and(|n| matches!(n.kind, WidgetKind::Badge { .. }))
+        {
+            return;
+        }
+        if let Some(fg) = foreground.clone() {
+            if fg.is_dynamic() {
+                if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.badge_fg) {
+                    let fg_c = fg.clone();
+                    eff_scope.effect(move || {
+                        let _ = fg_c.get();
+                        mark_node_dirty(node, DirtyFlags::PAINT);
+                    });
+                }
+            } else {
+                self.dispose_prop_effect(node, |s| &mut s.badge_fg);
+            }
+        }
+        if let Some(bg) = background.clone() {
+            if bg.is_dynamic() {
+                if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.badge_bg) {
+                    let bg_c = bg.clone();
+                    eff_scope.effect(move || {
+                        let _ = bg_c.get();
+                        mark_node_dirty(node, DirtyFlags::PAINT);
+                    });
+                }
+            } else {
+                self.dispose_prop_effect(node, |s| &mut s.badge_bg);
+            }
+        }
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::Badge {
+                foreground: fg_slot,
+                background: bg_slot,
+                ..
+            } = &mut n.kind
+        {
+            if foreground.is_some() {
+                *fg_slot = foreground;
+            }
+            if background.is_some() {
+                *bg_slot = background;
+            }
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_badge_icon(&mut self, node: NodeId, icon: Option<ReactiveValue<String>>) {
+        if !self
+            .nodes
+            .get(node)
+            .is_some_and(|n| matches!(n.kind, WidgetKind::Badge { .. }))
+        {
+            return;
+        }
+        if let Some(ic) = icon.clone() {
+            if ic.is_dynamic() {
+                if let Some(eff_scope) = self.reset_prop_effect(node, |s| &mut s.badge_icon) {
+                    let ic_c = ic.clone();
+                    eff_scope.effect(move || {
+                        let _ = ic_c.get();
+                        mark_node_dirty(node, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                    });
+                }
+            } else {
+                self.dispose_prop_effect(node, |s| &mut s.badge_icon);
+            }
+        } else {
+            self.dispose_prop_effect(node, |s| &mut s.badge_icon);
+        }
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::Badge { icon: slot, .. } = &mut n.kind
+        {
+            *slot = icon;
+            n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+            self.layout_engine.mark_dirty(node);
+        }
+    }
+
+    pub fn split_pane(&mut self, scope: Scope, axis: Axis, ratio: Signal<f32>) -> NodeId {
+        let div = 8.0;
+        let mut layout = match axis {
+            Axis::Horizontal => LayoutStyle::row(),
+            Axis::Vertical => LayoutStyle::column(),
+        };
+        layout.align_items = Alignment::Stretch;
+        layout.width = Length::Pct(100.0);
+        layout.height = Length::Pct(100.0);
+        layout.clip_overflow = true;
+        match axis {
+            Axis::Horizontal => layout.gap_x = div,
+            Axis::Vertical => layout.gap_y = div,
+        }
+        let id = self.spawn_node(
+            "SplitPane",
+            WidgetKind::SplitPane {
+                axis,
+                ratio,
+                min_first: 80.0,
+                min_second: 80.0,
+                divider_size: div,
+                dragging: false,
+                on_change: None,
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.box_style.clip = true;
+            n.a11y.role = A11yRole::Container;
+        }
+        id
+    }
+
+    pub fn set_split_pane_config(
+        &mut self,
+        node: NodeId,
+        min_first: f32,
+        min_second: f32,
+        divider_size: f32,
+    ) {
+        let mut updated_layout = None;
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::SplitPane {
+                axis,
+                min_first: mf,
+                min_second: ms,
+                divider_size: ds,
+                ..
+            } = &mut n.kind
+        {
+            *mf = min_first.max(0.0);
+            *ms = min_second.max(0.0);
+            *ds = divider_size.max(4.0);
+            match axis {
+                Axis::Horizontal => n.layout.gap_x = *ds,
+                Axis::Vertical => n.layout.gap_y = *ds,
+            }
+            n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+            updated_layout = Some(n.layout.clone());
+        }
+        if let Some(st) = updated_layout {
+            self.layout_engine.upsert_node(node, st);
+            self.layout_engine.mark_dirty(node);
+        }
+    }
+
+    pub fn toast_host(&mut self, scope: Scope, manager: ToastManager) -> NodeId {
+        let mut layout = LayoutStyle::column().with_size(Length::Pct(100.0), Length::Pct(100.0));
+        layout.absolute = true;
+        layout.use_inset = true;
+        layout.inset = Insets::ZERO;
+        let id = self.spawn_node(
+            "ToastHost",
+            WidgetKind::ToastHost {
+                items: ReactiveValue::from(manager.items_signal()),
+                on_dismiss: None,
+                manager: Some(manager),
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::Alert;
+            n.a11y.label = Some("Notifications".to_string());
+        }
+        id
+    }
+
+    pub fn toast_host_custom(
+        &mut self,
+        scope: Scope,
+        items: impl Into<ReactiveValue<Vec<ToastItem>>>,
+        on_dismiss: Option<ToastDismissCallback>,
+    ) -> NodeId {
+        let mut layout = LayoutStyle::column().with_size(Length::Pct(100.0), Length::Pct(100.0));
+        layout.absolute = true;
+        layout.use_inset = true;
+        layout.inset = Insets::ZERO;
+        let id = self.spawn_node(
+            "ToastHost",
+            WidgetKind::ToastHost {
+                items: items.into(),
+                on_dismiss,
+                manager: None,
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::Alert;
+            n.a11y.label = Some("Notifications".to_string());
+        }
+        id
+    }
+
+    pub fn set_on_dismiss(&mut self, node: NodeId, cb: impl FnMut(u64) + 'static) {
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::ToastHost { on_dismiss, .. } = &mut n.kind
+        {
+            *on_dismiss = Some(Rc::new(RefCell::new(cb)));
+        }
+    }
+
     pub fn overlay(
         &mut self,
         scope: Scope,
@@ -2054,6 +2440,10 @@ impl WidgetTree {
             | WidgetKind::RadioGroup { .. } => CursorIcon::Pointer,
             WidgetKind::TextInput { .. } => CursorIcon::Text,
             WidgetKind::Slider { .. } => CursorIcon::Grab,
+            WidgetKind::SplitPane { axis, .. } => match axis {
+                Axis::Horizontal => CursorIcon::ResizeHorizontal,
+                Axis::Vertical => CursorIcon::ResizeVertical,
+            },
             _ if node.on_tap.is_some()
                 || node.on_double_tap.is_some()
                 || node.on_long_press.is_some() =>
@@ -2064,18 +2454,40 @@ impl WidgetTree {
         }
     }
 
-    /// Resolve cursor shape hint for a hovered node, checking ancestor overrides first.
+    /// Resolve cursor shape hint for a hovered node, checking active drags and ancestor overrides first.
     pub fn hovered_cursor(&self) -> CursorIcon {
-        self.cursor_for_node(self.hovered)
+        self.cursor_for_node_at(self.hovered, self.last_pointer_pos)
     }
 
     /// Hit-test `point` and return the effective [`CursorIcon`] under the pointer.
     pub fn cursor_at(&self, point: Point) -> CursorIcon {
         let hit = self.hit_test(point);
-        self.cursor_for_node(hit)
+        self.cursor_for_node_at(hit, Some(point))
     }
 
-    fn cursor_for_node(&self, start: Option<NodeId>) -> CursorIcon {
+    fn cursor_for_node_at(&self, start: Option<NodeId>, point_opt: Option<Point>) -> CursorIcon {
+        for n in self.nodes.values() {
+            if let WidgetKind::SplitPane {
+                axis,
+                dragging: true,
+                ..
+            } = &n.kind
+            {
+                return match axis {
+                    Axis::Horizontal => CursorIcon::ResizeHorizontal,
+                    Axis::Vertical => CursorIcon::ResizeVertical,
+                };
+            }
+        }
+        if self.control_anims.values().any(|anim| {
+            matches!(
+                anim,
+                ControlVisualAnim::Slider { dragging: true, .. }
+            )
+        }) {
+            return CursorIcon::Grabbing;
+        }
+
         if let Some(id) = start {
             if let Some(ControlVisualAnim::Slider { dragging: true, .. }) =
                 self.control_anims.get(id)
@@ -2093,9 +2505,53 @@ impl WidgetTree {
                         };
                     }
                     if nid == id {
-                        let sem = Self::default_cursor_for_node(n);
-                        if sem != CursorIcon::Default {
-                            return sem;
+                        if let WidgetKind::SplitPane {
+                            axis,
+                            ratio,
+                            min_first,
+                            min_second,
+                            divider_size,
+                            ..
+                        } = &n.kind
+                        {
+                            if let Some(pt) = point_opt {
+                                let local_pt = self.screen_to_node_local_point(nid, pt);
+                                let inner = self.node_visual_rect(nid).inset(n.layout.padding);
+                                let (_, _, div_rect) = Self::split_divider_geometry(
+                                    inner,
+                                    *axis,
+                                    ratio.get_untracked(),
+                                    *min_first,
+                                    *min_second,
+                                    *divider_size,
+                                );
+                                if div_rect.inflate(4.0, 4.0).contains(local_pt) {
+                                    return match axis {
+                                        Axis::Horizontal => CursorIcon::ResizeHorizontal,
+                                        Axis::Vertical => CursorIcon::ResizeVertical,
+                                    };
+                                }
+                            } else {
+                                return match axis {
+                                    Axis::Horizontal => CursorIcon::ResizeHorizontal,
+                                    Axis::Vertical => CursorIcon::ResizeVertical,
+                                };
+                            }
+                        } else if let WidgetKind::ToastHost { items, .. } = &n.kind {
+                            if let Some(pt) = point_opt {
+                                let local_pt = self.screen_to_node_local_point(nid, pt);
+                                let base_rect = self.node_visual_rect(nid);
+                                let (_, closes) =
+                                    Self::toast_card_rects(base_rect, items.get().len());
+                                if closes.iter().any(|cr| cr.inflate(6.0, 6.0).contains(local_pt)) {
+                                    return CursorIcon::Pointer;
+                                }
+                            }
+                        } else {
+                            let sem = Self::default_cursor_for_node(n);
+                            if sem != CursorIcon::Default {
+                                return sem;
+                            }
                         }
                     }
                     cur = n.parent;
@@ -2234,10 +2690,15 @@ impl WidgetTree {
     }
 
     pub fn set_on_float_change(&mut self, node: NodeId, cb: impl FnMut(f32) + 'static) {
-        if let Some(n) = self.nodes.get_mut(node)
-            && let WidgetKind::Slider { on_change, .. } = &mut n.kind
-        {
-            *on_change = Some(Rc::new(RefCell::new(cb)));
+        if let Some(n) = self.nodes.get_mut(node) {
+            let rc: FloatCallback = Rc::new(RefCell::new(cb));
+            match &mut n.kind {
+                WidgetKind::Slider { on_change, .. }
+                | WidgetKind::SplitPane { on_change, .. } => {
+                    *on_change = Some(rc);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2684,6 +3145,35 @@ impl WidgetTree {
         self.layout_engine.rect(node)
     }
 
+    fn is_effectively_hidden(&self, id: NodeId) -> bool {
+        let mut cur = Some(id);
+        while let Some(nid) = cur {
+            let Some(node) = self.nodes.get(nid) else {
+                return true;
+            };
+            if node.layout.hidden {
+                return true;
+            }
+            if node
+                .visible_when
+                .as_ref()
+                .is_some_and(|v| craftui_reactive::untrack(|| !v.get()))
+            {
+                return true;
+            }
+            match &node.kind {
+                WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. }
+                    if craftui_reactive::untrack(|| !open.get()) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+            cur = node.parent;
+        }
+        false
+    }
+
     // === Frame Step: Animations, Dirty Sync, Layout, Virtualization, Paint, A11y ===
 
     /// Advance spring animations, inertial scroll flings, and return whether another animation frame is needed.
@@ -2729,6 +3219,7 @@ impl WidgetTree {
         let ids: Vec<NodeId> = self.nodes.keys().collect();
         for id in ids {
             let rect = self.layout_engine.rect(id);
+            let effectively_hidden = self.is_effectively_hidden(id);
             let physics = self.scroll_physics;
             if let Some(node) = self.nodes.get_mut(id) {
                 match &mut node.kind {
@@ -2780,9 +3271,14 @@ impl WidgetTree {
                         }
                     }
                     WidgetKind::ProgressIndicator { progress, phase }
-                        if progress.get().is_none() =>
+                        if !effectively_hidden && progress.get().is_none() =>
                     {
                         *phase = (*phase + dt_sec * 1.4) % 1.0;
+                        node.dirty |= DirtyFlags::PAINT;
+                        active = true;
+                    }
+                    WidgetKind::Spinner { phase, .. } if !effectively_hidden => {
+                        *phase = (*phase + dt_sec * 1.25) % 1.0;
                         node.dirty |= DirtyFlags::PAINT;
                         active = true;
                     }
@@ -2809,11 +3305,14 @@ impl WidgetTree {
         {
             return true;
         }
-        self.nodes.values().any(|node| match &node.kind {
+        self.nodes.iter().any(|(id, node)| match &node.kind {
             WidgetKind::ScrollView { velocity, .. } | WidgetKind::VirtualList { velocity, .. } => {
                 velocity.abs() > 0.0
             }
-            WidgetKind::ProgressIndicator { progress, .. } => progress.get().is_none(),
+            WidgetKind::ProgressIndicator { progress, .. } => {
+                !self.is_effectively_hidden(id) && progress.get().is_none()
+            }
+            WidgetKind::Spinner { .. } => !self.is_effectively_hidden(id),
             _ => false,
         })
     }
@@ -2920,6 +3419,13 @@ impl WidgetTree {
                     WidgetKind::Tooltip { text } => {
                         node.a11y.label = Some(text.get());
                     }
+                    WidgetKind::Badge { label, .. } => {
+                        node.a11y.label = Some(label.get());
+                    }
+                    WidgetKind::ToastHost { items, .. } => {
+                        let list = items.get();
+                        node.a11y.value = list.last().map(|t| format!("{}: {}", t.title, t.message));
+                    }
                     WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. } => {
                         let should_show = open.get();
                         let hidden = !should_show;
@@ -2952,8 +3458,10 @@ impl WidgetTree {
         // Pass 1: solve layout
         self.solve_taffy(root, metrics);
 
-        // Pass 2: recycle VirtualList / VirtualGrid visible items & recompute if children changed
-        if self.sync_virtual_lists() {
+        // Pass 2: recycle VirtualList / VirtualGrid visible items & sync SplitPane ratios
+        let virtual_changed = self.sync_virtual_lists();
+        let split_changed = self.sync_split_panes();
+        if virtual_changed || split_changed {
             self.solve_taffy(root, metrics);
         }
 
@@ -3105,6 +3613,18 @@ impl WidgetTree {
                         }
                     }
                     WidgetKind::ProgressIndicator { .. } => Size::new(120.0, 8.0),
+                    WidgetKind::Spinner { size, .. } => Size::new(*size, *size),
+                    WidgetKind::Badge { label, icon, .. } => {
+                        let txt = label.get();
+                        let st = TextStyle::default().with_size(12.0).with_weight(600.0);
+                        let measured = text_engine.measure(&txt, &st, None);
+                        let icon_w = if icon.as_ref().is_some_and(|i| !i.get().is_empty()) {
+                            16.0
+                        } else {
+                            0.0
+                        };
+                        Size::new(measured.width + icon_w, measured.height.max(16.0))
+                    }
                     WidgetKind::Custom(cw) => {
                         if let Ok(mut guard) = cw.try_borrow_mut() {
                             guard.measure(constraints, text_engine, &theme)
@@ -3249,6 +3769,160 @@ impl WidgetTree {
         }
 
         changed
+    }
+
+    fn split_divider_geometry(
+        inner_rect: Rect,
+        axis: Axis,
+        ratio: f32,
+        min_first: f32,
+        min_second: f32,
+        divider_size: f32,
+    ) -> (f32, f32, Rect) {
+        let div = divider_size.max(4.0);
+        let total = match axis {
+            Axis::Horizontal => inner_rect.width,
+            Axis::Vertical => inner_rect.height,
+        };
+        let usable = (total - div).max(0.0);
+        let min_f = min_first.max(0.0).min(usable);
+        let max_f = (usable - min_second.max(0.0)).max(min_f);
+        let first_px = (usable * ratio.clamp(0.0, 1.0)).clamp(min_f, max_f);
+        let second_px = (usable - first_px).max(0.0);
+        let div_rect = match axis {
+            Axis::Horizontal => {
+                Rect::new(inner_rect.x + first_px, inner_rect.y, div, inner_rect.height)
+            }
+            Axis::Vertical => {
+                Rect::new(inner_rect.x, inner_rect.y + first_px, inner_rect.width, div)
+            }
+        };
+        (first_px, second_px, div_rect)
+    }
+
+    fn sync_split_panes(&mut self) -> bool {
+        let mut changed = false;
+        let split_ids: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter_map(|(id, n)| matches!(n.kind, WidgetKind::SplitPane { .. }).then_some(id))
+            .collect();
+
+        for id in split_ids {
+            let rect = self.layout_engine.rect(id);
+            let Some((axis, ratio_val, min_first, min_second, divider_size, c0, c1, pad)) =
+                self.nodes.get(id).and_then(|n| {
+                    if n.layout.hidden {
+                        return None;
+                    }
+                    if let WidgetKind::SplitPane {
+                        axis,
+                        ratio,
+                        min_first,
+                        min_second,
+                        divider_size,
+                        ..
+                    } = &n.kind
+                        && n.children.len() >= 2
+                    {
+                        Some((
+                            *axis,
+                            ratio.get_untracked(),
+                            *min_first,
+                            *min_second,
+                            *divider_size,
+                            n.children[0],
+                            n.children[1],
+                            n.layout.padding,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+            else {
+                continue;
+            };
+
+            let inner = rect.inset(pad);
+            if inner.width <= 0.0 && inner.height <= 0.0 {
+                continue;
+            }
+            let (first_px, second_px, _) = Self::split_divider_geometry(
+                inner,
+                axis,
+                ratio_val,
+                min_first,
+                min_second,
+                divider_size,
+            );
+
+            for (cid, target_dp) in [(c0, first_px), (c1, second_px)] {
+                if let Some(cn) = self.nodes.get_mut(cid) {
+                    let mut st = cn.layout.clone();
+                    let mut child_changed = false;
+                    let want = Length::Dp(target_dp);
+                    match axis {
+                        Axis::Horizontal => {
+                            let diff = match st.width {
+                                Length::Dp(a) => (a - target_dp).abs() > 0.25,
+                                _ => true,
+                            };
+                            if diff {
+                                st.width = want;
+                                child_changed = true;
+                            }
+                        }
+                        Axis::Vertical => {
+                            let diff = match st.height {
+                                Length::Dp(a) => (a - target_dp).abs() > 0.25,
+                                _ => true,
+                            };
+                            if diff {
+                                st.height = want;
+                                child_changed = true;
+                            }
+                        }
+                    }
+                    if st.flex_grow != 0.0 {
+                        st.flex_grow = 0.0;
+                        child_changed = true;
+                    }
+                    if st.flex_shrink != 0.0 {
+                        st.flex_shrink = 0.0;
+                        child_changed = true;
+                    }
+                    if child_changed {
+                        cn.layout = st.clone();
+                        cn.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+                        self.layout_engine.upsert_node(cid, st);
+                        self.layout_engine.mark_dirty(cid);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    fn toast_card_rects(container_rect: Rect, count: usize) -> (Vec<Rect>, Vec<Rect>) {
+        let mut cards = Vec::with_capacity(count);
+        let mut closes = Vec::with_capacity(count);
+        if count == 0 {
+            return (cards, closes);
+        }
+        let card_w = (container_rect.width - 32.0).clamp(180.0, 340.0);
+        let card_h = 64.0f32;
+        let gap = 10.0f32;
+        for i in 0..count {
+            let from_bottom = count - 1 - i;
+            let y = container_rect.max_y() - 16.0 - card_h - (from_bottom as f32) * (card_h + gap);
+            let x = container_rect.max_x() - 16.0 - card_w;
+            let card_r = Rect::new(x, y, card_w, card_h);
+            let close_r = Rect::new(card_r.max_x() - 28.0, card_r.y + 10.0, 18.0, 18.0);
+            cards.push(card_r);
+            closes.push(close_r);
+        }
+        (cards, closes)
     }
 
     fn select_dropdown_rect(&self, trigger_rect: Rect, option_count: usize) -> Rect {
@@ -3538,6 +4212,7 @@ impl WidgetTree {
             .rect(id)
             .translate(scroll_offset.x, scroll_offset.y);
         let box_style = node.box_style.clone();
+        let node_padding = node.layout.padding;
         let children = node.children.clone();
         let kind = node.kind.clone();
         let is_focused = self.focused == Some(id);
@@ -4366,6 +5041,178 @@ impl WidgetTree {
                     }
                 }
             }
+            WidgetKind::Spinner {
+                size,
+                thickness,
+                color,
+                phase,
+            } => {
+                use kurbo::Shape as _;
+                let dia = rect
+                    .width
+                    .min(rect.height)
+                    .max(size.min(rect.width.max(rect.height)));
+                let stroke_w = thickness.clamp(1.5, (dia * 0.35).max(1.5));
+                let radius = ((dia - stroke_w) * 0.5).max(2.0) as f64;
+                let center = rect.center();
+                let c = (center.x as f64, center.y as f64);
+                let track_path = kurbo::Circle::new(c, radius).to_path(0.1);
+                scene.stroke_path(track_path, theme.surface_variant, stroke_w);
+                let start_angle =
+                    (phase as f64) * std::f64::consts::TAU - std::f64::consts::FRAC_PI_2;
+                let sweep = std::f64::consts::PI * 1.5;
+                let arc_path =
+                    kurbo::Arc::new(c, (radius, radius), start_angle, sweep, 0.0).to_path(0.1);
+                let fg = color.map(|cv| cv.get()).unwrap_or(theme.primary);
+                scene.stroke_path(arc_path, fg, stroke_w);
+            }
+            WidgetKind::Badge {
+                label,
+                foreground,
+                background,
+                icon,
+            } => {
+                let pill_radius = if box_style.radius == CornerRadii::ZERO
+                    || box_style.radius == CornerRadii::all(12.0)
+                {
+                    CornerRadii::all(rect.height * 0.5)
+                } else {
+                    box_style.radius
+                };
+                let fg = foreground.map(|f| f.get()).unwrap_or(theme.primary);
+                let bg = if let Some(b) = background {
+                    b.get()
+                } else if box_style.background.is_none() {
+                    fg.with_alpha(0.16)
+                } else {
+                    Color::TRANSPARENT
+                };
+                if bg != Color::TRANSPARENT {
+                    scene.fill_rect(rect, bg, pill_radius);
+                }
+                if box_style.border.is_none() {
+                    scene.stroke_rect(rect, fg.with_alpha(0.32), 1.0, pill_radius);
+                }
+                let txt = label.get();
+                let tstyle = TextStyle::default()
+                    .with_size(12.0)
+                    .with_weight(600.0)
+                    .with_color(fg);
+                let measured = self.text_engine.measure(&txt, &tstyle, None);
+                let icon_spec = icon.map(|iv| iv.get()).filter(|s| !s.is_empty());
+                let icon_total = if icon_spec.is_some() { 16.0 } else { 0.0 };
+                let content_w = icon_total + measured.width;
+                let start_x = rect.x + (rect.width - content_w).max(0.0) * 0.5;
+                if let Some(ref ic) = icon_spec {
+                    let ir = Rect::new(start_x, rect.y + (rect.height - 12.0) * 0.5, 12.0, 12.0);
+                    let _ = paint_svg_icon(scene, ir, ic, fg);
+                }
+                let tx = start_x + icon_total;
+                let ty = rect.y + (rect.height - measured.height) * 0.5;
+                scene.draw_text(Point::new(tx, ty), txt, tstyle, None);
+            }
+            WidgetKind::SplitPane {
+                axis,
+                ratio,
+                min_first,
+                min_second,
+                divider_size,
+                dragging,
+                ..
+            } => {
+                let inner = rect.inset(node_padding);
+                let (_, _, div_rect) = Self::split_divider_geometry(
+                    inner,
+                    axis,
+                    ratio.get_untracked(),
+                    min_first,
+                    min_second,
+                    divider_size,
+                );
+                let track_bg = if dragging {
+                    theme.primary.with_alpha(0.18)
+                } else {
+                    theme.surface_variant.with_alpha(0.65)
+                };
+                scene.fill_rect(div_rect, track_bg, CornerRadii::ZERO);
+                let handle = match axis {
+                    Axis::Horizontal => Rect::new(
+                        div_rect.center().x - 1.5,
+                        div_rect.center().y - 14.0,
+                        3.0,
+                        28.0,
+                    ),
+                    Axis::Vertical => Rect::new(
+                        div_rect.center().x - 14.0,
+                        div_rect.center().y - 1.5,
+                        28.0,
+                        3.0,
+                    ),
+                };
+                let handle_col = if dragging {
+                    theme.primary
+                } else {
+                    theme.text_secondary.with_alpha(0.55)
+                };
+                scene.fill_rect(handle, handle_col, CornerRadii::all(1.5));
+            }
+            WidgetKind::ToastHost { items, .. } => {
+                let list = items.get();
+                let (cards, closes) = Self::toast_card_rects(rect, list.len());
+                for ((item, card_r), close_r) in list.iter().zip(cards).zip(closes) {
+                    if card_r.max_y() < rect.y {
+                        continue;
+                    }
+                    let (accent, icon_name) = match item.severity {
+                        ToastSeverity::Info => (theme.primary, "info"),
+                        ToastSeverity::Success => (Color::rgb(16, 185, 129), "check"),
+                        ToastSeverity::Warning => (Color::rgb(245, 158, 11), "warning"),
+                        ToastSeverity::Error => (theme.danger, "warning"),
+                    };
+                    scene.drop_shadow(
+                        card_r,
+                        CornerRadii::all(10.0),
+                        BoxShadow::drop(0.0, 6.0, 16.0, 0.0, Color::rgba(0, 0, 0, 110)),
+                    );
+                    scene.fill_rect(card_r, theme.surface, CornerRadii::all(10.0));
+                    scene.stroke_rect(card_r, theme.border, 1.0, CornerRadii::all(10.0));
+                    scene.fill_rect(
+                        Rect::new(card_r.x + 6.0, card_r.y + 10.0, 4.0, card_r.height - 20.0),
+                        accent,
+                        CornerRadii::all(2.0),
+                    );
+                    let _ = paint_svg_icon(
+                        scene,
+                        Rect::new(card_r.x + 17.0, card_r.y + 14.0, 16.0, 16.0),
+                        icon_name,
+                        accent,
+                    );
+                    let max_text_w = (card_r.width - 78.0).max(40.0);
+                    scene.draw_text(
+                        Point::new(card_r.x + 41.0, card_r.y + 11.0),
+                        &item.title,
+                        TextStyle::default()
+                            .with_size(13.0)
+                            .with_weight(600.0)
+                            .with_color(theme.text_primary),
+                        Some(max_text_w),
+                    );
+                    scene.draw_text(
+                        Point::new(card_r.x + 41.0, card_r.y + 32.0),
+                        &item.message,
+                        TextStyle::default()
+                            .with_size(12.0)
+                            .with_color(theme.text_secondary),
+                        Some(max_text_w),
+                    );
+                    let _ = paint_svg_icon(
+                        scene,
+                        close_r.inset(Insets::all(3.0)),
+                        "close",
+                        theme.text_secondary,
+                    );
+                }
+            }
             WidgetKind::Overlay {
                 is_bottom_sheet, ..
             } => {
@@ -4548,6 +5395,29 @@ impl WidgetTree {
             return None;
         }
 
+        if let WidgetKind::SplitPane {
+            axis,
+            ratio,
+            min_first,
+            min_second,
+            divider_size,
+            ..
+        } = &node.kind
+        {
+            let inner = base_rect.inset(node.layout.padding);
+            let (_, _, div_rect) = Self::split_divider_geometry(
+                inner,
+                *axis,
+                ratio.get_untracked(),
+                *min_first,
+                *min_second,
+                *divider_size,
+            );
+            if base_rect.contains(local_point) && div_rect.inflate(4.0, 4.0).contains(local_point) {
+                return Some(id);
+            }
+        }
+
         let mut child_offset = scroll_offset;
         if let WidgetKind::ScrollView { axis, offset, .. } = &node.kind {
             match axis {
@@ -4563,7 +5433,22 @@ impl WidgetTree {
             }
         }
 
-        if rect.contains(local_point) && self.is_interactive(node) {
+        let hit_self = match &node.kind {
+            WidgetKind::SplitPane { .. } => {
+                rect.contains(local_point)
+                    && (node.on_tap.is_some()
+                        || node.on_double_tap.is_some()
+                        || node.on_long_press.is_some()
+                        || node.on_hover.is_some()
+                        || node.on_pinch_rotate.is_some())
+            }
+            WidgetKind::ToastHost { items, .. } => {
+                let (cards, _) = Self::toast_card_rects(base_rect, items.get().len());
+                cards.iter().any(|c| c.contains(local_point))
+            }
+            _ => rect.contains(local_point) && self.is_interactive(node),
+        };
+        if hit_self {
             Some(id)
         } else {
             None
@@ -4594,6 +5479,8 @@ impl WidgetTree {
                     | WidgetKind::RadioGroup { .. }
                     | WidgetKind::PopupMenu { .. }
                     | WidgetKind::Tooltip { .. }
+                    | WidgetKind::SplitPane { .. }
+                    | WidgetKind::ToastHost { .. }
                     | WidgetKind::Overlay { .. }
                     | WidgetKind::Custom(_)
             )
@@ -4642,6 +5529,7 @@ impl WidgetTree {
     }
 
     fn handle_pointer(&mut self, pe: &PointerEvent) -> bool {
+        self.last_pointer_pos = Some(pe.position);
         let mut changed = false;
         let hit = self.hit_test(pe.position);
 
@@ -4772,17 +5660,46 @@ impl WidgetTree {
             }
         }
 
-        // Button / Slider press feedback
+        // Button / Slider / SplitPane sash press feedback
         if matches!(pe.phase, PointerPhase::Down)
             && let Some(h) = hit
             && !self.nodes.get(h).is_some_and(WidgetNode::is_disabled)
         {
-            if let Some(n) = self.nodes.get_mut(h)
-                && let WidgetKind::Button { pressed, .. } = &mut n.kind
-            {
-                *pressed = true;
-                n.dirty |= DirtyFlags::PAINT;
-                changed = true;
+            let h_rect = self.node_visual_rect(h);
+            let h_local = self.screen_to_node_local_point(h, pe.position);
+            if let Some(n) = self.nodes.get_mut(h) {
+                match &mut n.kind {
+                    WidgetKind::Button { pressed, .. } => {
+                        *pressed = true;
+                        n.dirty |= DirtyFlags::PAINT;
+                        changed = true;
+                    }
+                    WidgetKind::SplitPane {
+                        axis,
+                        ratio,
+                        min_first,
+                        min_second,
+                        divider_size,
+                        dragging,
+                        ..
+                    } => {
+                        let inner = h_rect.inset(n.layout.padding);
+                        let (_, _, div_rect) = Self::split_divider_geometry(
+                            inner,
+                            *axis,
+                            ratio.get_untracked(),
+                            *min_first,
+                            *min_second,
+                            *divider_size,
+                        );
+                        if div_rect.inflate(4.0, 4.0).contains(h_local) {
+                            *dragging = true;
+                            n.dirty |= DirtyFlags::PAINT;
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
             }
             if let Some(ControlVisualAnim::Slider {
                 dragging, drag_t, ..
@@ -4800,13 +5717,19 @@ impl WidgetTree {
         if matches!(pe.phase, PointerPhase::Up | PointerPhase::Cancel) {
             let mut released = Vec::new();
             for (nid, node) in &mut self.nodes {
-                if let WidgetKind::Button { pressed, .. } = &mut node.kind
-                    && *pressed
-                {
-                    *pressed = false;
-                    node.dirty |= DirtyFlags::PAINT;
-                    released.push(nid);
-                    changed = true;
+                match &mut node.kind {
+                    WidgetKind::Button { pressed, .. } if *pressed => {
+                        *pressed = false;
+                        node.dirty |= DirtyFlags::PAINT;
+                        released.push(nid);
+                        changed = true;
+                    }
+                    WidgetKind::SplitPane { dragging, .. } if *dragging => {
+                        *dragging = false;
+                        node.dirty |= DirtyFlags::PAINT;
+                        changed = true;
+                    }
+                    _ => {}
                 }
             }
             for nid in released {
@@ -4913,6 +5836,7 @@ impl WidgetTree {
         let mut bool_cb: Option<(BoolCallback, bool)> = None;
         let mut float_cb: Option<(FloatCallback, f32)> = None;
         let mut idx_cb: Option<(IndexCallback, usize)> = None;
+        let mut dismiss_cb: Option<(ToastDismissCallback, u64)> = None;
         let mut reset_caret = false;
 
         // Compute popup/dropdown geometry upfront to satisfy borrow checker
@@ -5100,6 +6024,27 @@ impl WidgetTree {
                     }
                     action = on_close.clone();
                 }
+                WidgetKind::ToastHost {
+                    items,
+                    on_dismiss,
+                    manager,
+                } => {
+                    let list = items.get();
+                    let (_cards, closes) = Self::toast_card_rects(rect, list.len());
+                    for (idx, close_r) in closes.iter().enumerate() {
+                        if close_r.inflate(8.0, 8.0).contains(local_pos) {
+                            let dismissed_id = list[idx].id;
+                            if let Some(mgr) = manager {
+                                mgr.dismiss(dismissed_id);
+                            }
+                            if let Some(cb) = on_dismiss.clone() {
+                                dismiss_cb = Some((cb, dismissed_id));
+                            }
+                            node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                            break;
+                        }
+                    }
+                }
                 WidgetKind::Overlay { on_close, .. } => {
                     action = on_close.clone();
                 }
@@ -5126,6 +6071,11 @@ impl WidgetTree {
             && let Ok(mut f) = cb.try_borrow_mut()
         {
             f(i);
+        }
+        if let Some((cb, id)) = dismiss_cb
+            && let Ok(mut f) = cb.try_borrow_mut()
+        {
+            f(id);
         }
         if let Some(cb) = action
             && let Ok(mut f) = cb.try_borrow_mut()
@@ -5175,6 +6125,52 @@ impl WidgetTree {
                             next,
                         ));
                         matched = true;
+                    }
+                    WidgetKind::SplitPane {
+                        axis,
+                        ratio,
+                        min_first,
+                        min_second,
+                        divider_size,
+                        dragging,
+                        on_change,
+                    } => {
+                        let inner = r.inset(node.layout.padding);
+                        let div = (*divider_size).max(4.0);
+                        let (_, _, div_rect) = Self::split_divider_geometry(
+                            inner,
+                            *axis,
+                            ratio.get_untracked(),
+                            *min_first,
+                            *min_second,
+                            div,
+                        );
+                        if *dragging || div_rect.inflate(8.0, 8.0).contains(local_pos) {
+                            let total = match axis {
+                                Axis::Horizontal => inner.width,
+                                Axis::Vertical => inner.height,
+                            };
+                            let usable = (total - div).max(1.0);
+                            let min_f = (*min_first).max(0.0).min(usable);
+                            let max_f = (usable - (*min_second).max(0.0)).max(min_f);
+                            let coord = match axis {
+                                Axis::Horizontal => local_pos.x - inner.x,
+                                Axis::Vertical => local_pos.y - inner.y,
+                            };
+                            let first_px = (coord - div * 0.5).clamp(min_f, max_f);
+                            let next_ratio = (first_px / usable).clamp(0.0, 1.0);
+                            *dragging = true;
+                            ratio.set(next_ratio);
+                            node.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+                            slider_cb = Some((
+                                on_change.clone().unwrap_or_else(|| {
+                                    std::rc::Rc::new(std::cell::RefCell::new(|_| {}))
+                                }),
+                                next_ratio,
+                                next_ratio,
+                            ));
+                            matched = true;
+                        }
                     }
                     WidgetKind::ScrollView {
                         axis,
@@ -5255,6 +6251,13 @@ impl WidgetTree {
             if let Some(n) = self.nodes.get_mut(node_id) {
                 n.dirty |= DirtyFlags::PAINT;
             }
+        }
+        if let Some(n) = self.nodes.get_mut(node_id)
+            && let WidgetKind::SplitPane { dragging, .. } = &mut n.kind
+            && *dragging
+        {
+            *dragging = false;
+            n.dirty |= DirtyFlags::PAINT;
         }
         let mut cursor = Some(node_id);
         while let Some(nid) = cursor {

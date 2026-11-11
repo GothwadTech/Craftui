@@ -26,10 +26,22 @@ craftui-widgets.workspace = true
 craftui-runtime = { workspace = true, optional = true }
 winit.workspace = true
 softbuffer.workspace = true
+rfd.workspace = true
 accesskit.workspace = true
 accesskit_winit.workspace = true
 notify = { workspace = true, optional = true }
 tracing.workspace = true
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11-clipboard.workspace = true
+wl-clipboard-rs.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys.workspace = true
 
 [dev-dependencies]
 craftui-render = { path = "../craftui-render", features = ["cpu-vello", "cpu-tiny-skia"] }

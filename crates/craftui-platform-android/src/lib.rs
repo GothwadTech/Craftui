@@ -1,8 +1,9 @@
 //! Android platform adapter (`android-activity` `GameActivity` + Vulkan/GLES `wgpu` + JNI/IME/Surface bridges).
 
 use craftui_core::{
-    ImeEvent, Insets, KeyCode, KeyEvent, Modifiers, PlatformViewId, Point, PointerButton,
-    PointerEvent, PointerId, PointerPhase, Size, TextureId, UiDispatcher, UiEvent, WindowMetrics,
+    DirtyFlags, ImeEvent, Insets, KeyCode, KeyEvent, Modifiers, PlatformViewId, Point,
+    PointerButton, PointerEvent, PointerId, PointerPhase, Size, TextureId, UiDispatcher, UiEvent,
+    WindowMetrics,
 };
 use craftui_reactive::Scope;
 use craftui_render::{PaintScene, TextureHandle, TextureRegistry};
@@ -44,8 +45,90 @@ pub enum AndroidKeyCode {
     PageUp,
     PageDown,
     Space,
+    Cut,
+    Copy,
+    Paste,
     Character(char),
     Other,
+}
+
+/// Hardware / virtual punctuation & numpad keys mapped across US QWERTY shift layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidPunctuationKey {
+    Comma,
+    Period,
+    Minus,
+    Equals,
+    LeftBracket,
+    RightBracket,
+    Backslash,
+    Semicolon,
+    Apostrophe,
+    Slash,
+    Grave,
+    At,
+    Plus,
+    Star,
+    Pound,
+    NumpadDivide,
+    NumpadMultiply,
+    NumpadSubtract,
+    NumpadAdd,
+    NumpadDot,
+    NumpadComma,
+    NumpadEquals,
+    NumpadLeftParen,
+    NumpadRightParen,
+}
+
+/// Translate a punctuation/numpad key with active `shift` modifier into a printable character.
+pub fn map_android_punctuation(key: AndroidPunctuationKey, shift: bool) -> char {
+    match key {
+        AndroidPunctuationKey::Comma => if shift { '<' } else { ',' },
+        AndroidPunctuationKey::Period => if shift { '>' } else { '.' },
+        AndroidPunctuationKey::Minus => if shift { '_' } else { '-' },
+        AndroidPunctuationKey::Equals => if shift { '+' } else { '=' },
+        AndroidPunctuationKey::LeftBracket => if shift { '{' } else { '[' },
+        AndroidPunctuationKey::RightBracket => if shift { '}' } else { ']' },
+        AndroidPunctuationKey::Backslash => if shift { '|' } else { '\\' },
+        AndroidPunctuationKey::Semicolon => if shift { ':' } else { ';' },
+        AndroidPunctuationKey::Apostrophe => if shift { '"' } else { '\'' },
+        AndroidPunctuationKey::Slash => if shift { '?' } else { '/' },
+        AndroidPunctuationKey::Grave => if shift { '~' } else { '`' },
+        AndroidPunctuationKey::At => '@',
+        AndroidPunctuationKey::Plus => '+',
+        AndroidPunctuationKey::Star => '*',
+        AndroidPunctuationKey::Pound => '#',
+        AndroidPunctuationKey::NumpadDivide => '/',
+        AndroidPunctuationKey::NumpadMultiply => '*',
+        AndroidPunctuationKey::NumpadSubtract => '-',
+        AndroidPunctuationKey::NumpadAdd => '+',
+        AndroidPunctuationKey::NumpadDot => '.',
+        AndroidPunctuationKey::NumpadComma => ',',
+        AndroidPunctuationKey::NumpadEquals => '=',
+        AndroidPunctuationKey::NumpadLeftParen => '(',
+        AndroidPunctuationKey::NumpadRightParen => ')',
+    }
+}
+
+/// Translate top-row digits `'0'..='9'` with Shift modifier cleanly.
+pub fn map_android_digit(digit: char, shift: bool) -> char {
+    if !shift {
+        return digit;
+    }
+    match digit {
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        other => other,
+    }
 }
 
 /// Commands emitted toward Android `InputMethodManager` via `GameActivity`.
@@ -57,7 +140,24 @@ pub enum AndroidImeCommand {
         text: String,
         selection_start: usize,
         selection_end: usize,
+        compose_region: Option<(usize, usize)>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncedImeSnapshot {
+    text: String,
+    selection_start: usize,
+    selection_end: usize,
+    compose_region: Option<(usize, usize)>,
+}
+
+fn clamp_char_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 /// Platform-neutral Android lifecycle, safe-area/IME inset, back navigation, and event translator host.
@@ -71,8 +171,9 @@ pub struct AndroidHost {
     pub dispatcher: UiDispatcher,
     back_handler: Option<Box<dyn FnMut() -> bool>>,
     last_ime_visible: bool,
-    last_synced_ime_state: Option<(String, usize, usize)>,
+    last_synced_ime_state: Option<SyncedImeSnapshot>,
     needs_redraw: bool,
+    last_error: Option<String>,
 }
 
 impl AndroidHost {
@@ -96,7 +197,20 @@ impl AndroidHost {
             last_ime_visible: false,
             last_synced_ime_state: None,
             needs_redraw: true,
+            last_error: None,
         }
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+    }
+
+    pub fn record_error(&mut self, msg: impl Into<String>) {
+        self.last_error = Some(msg.into());
     }
 
     pub fn request_redraw(&mut self) {
@@ -216,10 +330,12 @@ impl AndroidHost {
             return false;
         }
 
+        let mut dispatch_mods = modifiers;
         let (craft_code, text) = match code {
-            AndroidKeyCode::Enter | AndroidKeyCode::NumpadEnter => {
-                (KeyCode::Enter, Some("\n".to_string()))
-            }
+            AndroidKeyCode::Enter | AndroidKeyCode::NumpadEnter => (
+                KeyCode::Enter,
+                (!modifiers.command()).then(|| "\n".to_string()),
+            ),
             AndroidKeyCode::Tab => (KeyCode::Tab, None),
             AndroidKeyCode::Del => (KeyCode::Backspace, None),
             AndroidKeyCode::ForwardDel => (KeyCode::Delete, None),
@@ -232,10 +348,26 @@ impl AndroidHost {
             AndroidKeyCode::MoveEnd => (KeyCode::End, None),
             AndroidKeyCode::PageUp => (KeyCode::PageUp, None),
             AndroidKeyCode::PageDown => (KeyCode::PageDown, None),
-            AndroidKeyCode::Space => (KeyCode::Space, Some(" ".to_string())),
+            AndroidKeyCode::Space => (
+                KeyCode::Space,
+                (!modifiers.command()).then(|| " ".to_string()),
+            ),
+            AndroidKeyCode::Cut => {
+                dispatch_mods.ctrl = true;
+                (KeyCode::KeyX, None)
+            }
+            AndroidKeyCode::Copy => {
+                dispatch_mods.ctrl = true;
+                (KeyCode::KeyC, None)
+            }
+            AndroidKeyCode::Paste => {
+                dispatch_mods.ctrl = true;
+                (KeyCode::KeyV, None)
+            }
             AndroidKeyCode::Character(ch) => {
                 let s = ch.to_string();
-                (KeyCode::Character(s.clone()), Some(s))
+                let txt = (!modifiers.command() && !ch.is_control()).then(|| s.clone());
+                (KeyCode::Character(s), txt)
             }
             AndroidKeyCode::Back | AndroidKeyCode::Other => (KeyCode::Unknown, None),
         };
@@ -245,7 +377,7 @@ impl AndroidHost {
             text,
             pressed,
             repeat,
-            modifiers,
+            modifiers: dispatch_mods,
         }));
         if handled {
             self.needs_redraw = true;
@@ -261,6 +393,111 @@ impl AndroidHost {
             self.needs_redraw = true;
         }
         handled
+    }
+
+    pub fn push_ime_preedit(
+        &mut self,
+        text: impl Into<String>,
+        cursor: Option<(usize, usize)>,
+    ) -> bool {
+        let handled = self
+            .tree
+            .handle_event(&UiEvent::Ime(ImeEvent::Preedit(text.into(), cursor)));
+        if handled {
+            self.needs_redraw = true;
+        }
+        handled
+    }
+
+    /// Apply a full Android `GameTextInput` buffer update (`TextEvent`) to the focused text input,
+    /// separating active `compose_region` preedit from committed text and avoiding JNI echo loops.
+    pub fn push_ime_text_state(
+        &mut self,
+        text: &str,
+        selection_start: usize,
+        selection_end: usize,
+        compose_region: Option<(usize, usize)>,
+    ) -> bool {
+        let Some(focused) = self.tree.focused else {
+            return false;
+        };
+        let sel_s = clamp_char_boundary(text, selection_start.min(selection_end));
+        let sel_e = clamp_char_boundary(text, selection_start.max(selection_end));
+        let compose = compose_region.and_then(|(s, e)| {
+            let cs = clamp_char_boundary(text, s.min(e));
+            let ce = clamp_char_boundary(text, s.max(e));
+            (cs < ce).then_some((cs, ce))
+        });
+
+        let mut changed_cb: Option<(craftui_widgets::TextCallback, String)> = None;
+        {
+            let Some(node) = self.tree.nodes.get_mut(focused) else {
+                return false;
+            };
+            let WidgetKind::TextInput {
+                editor,
+                bound_signal,
+                on_change,
+                ..
+            } = &mut node.kind
+            else {
+                return false;
+            };
+
+            let (committed, next_cursor, next_anchor, next_preedit, next_pe_cur) =
+                if let Some((cs, ce)) = compose {
+                    let pre = text[cs..ce].to_string();
+                    let pe_len = pre.len();
+                    let pe_cur = (
+                        sel_s.saturating_sub(cs).min(pe_len),
+                        sel_e.saturating_sub(cs).min(pe_len),
+                    );
+                    (
+                        format!("{}{}", &text[..cs], &text[ce..]),
+                        cs,
+                        cs,
+                        Some(pre),
+                        Some(pe_cur),
+                    )
+                } else {
+                    (text.to_string(), sel_e, sel_s, None, None)
+                };
+
+            let text_changed = editor.text != committed;
+            editor.text = committed;
+            editor.cursor = next_cursor;
+            editor.anchor = next_anchor;
+            editor.preedit = next_preedit;
+            editor.preedit_cursor = next_pe_cur;
+
+            if text_changed {
+                node.a11y.value = Some(editor.text.clone());
+                if let Some(sig) = bound_signal
+                    && sig.get_untracked() != editor.text
+                {
+                    sig.set(editor.text.clone());
+                }
+                if let Some(cb) = on_change.clone() {
+                    changed_cb = Some((cb, editor.text.clone()));
+                }
+            }
+            node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+        }
+
+        if let Some((cb, txt)) = changed_cb
+            && let Ok(mut f) = cb.try_borrow_mut()
+        {
+            f(txt);
+        }
+        self.tree.reset_caret_blink(craftui_core::monotonic_ms());
+        self.last_synced_ime_state = Some(SyncedImeSnapshot {
+            text: text.to_string(),
+            selection_start: sel_s,
+            selection_end: sel_e,
+            compose_region: compose,
+        });
+        self.needs_redraw = true;
+        true
     }
 
     /// Update or allocate a CraftUI [`TextureHandle`] from an external Android [`ExternalSurfaceTextureBridge`].
@@ -306,10 +543,33 @@ impl AndroidHost {
         let focused_input = self.tree.focused.and_then(|id| {
             self.tree.nodes.get(id).and_then(|n| match &n.kind {
                 WidgetKind::TextInput { editor, .. } => {
-                    let (s, e) = editor
-                        .selection_range()
-                        .unwrap_or((editor.cursor, editor.cursor));
-                    Some((editor.text.clone(), s, e))
+                    if let Some(pre) = editor.preedit.as_deref().filter(|p| !p.is_empty()) {
+                        let cur = editor.cursor.min(editor.text.len());
+                        let full = editor.display_text().into_owned();
+                        let compose = Some((cur, cur + pre.len()));
+                        let sel = match editor.preedit_cursor {
+                            Some((ps, pe)) => {
+                                ((cur + ps).min(full.len()), (cur + pe).min(full.len()))
+                            }
+                            None => (cur + pre.len(), cur + pre.len()),
+                        };
+                        Some(SyncedImeSnapshot {
+                            text: full,
+                            selection_start: sel.0,
+                            selection_end: sel.1,
+                            compose_region: compose,
+                        })
+                    } else {
+                        let (s, e) = editor
+                            .selection_range()
+                            .unwrap_or((editor.cursor, editor.cursor));
+                        Some(SyncedImeSnapshot {
+                            text: editor.text.clone(),
+                            selection_start: s,
+                            selection_end: e,
+                            compose_region: None,
+                        })
+                    }
                 }
                 _ => None,
             })
@@ -325,16 +585,16 @@ impl AndroidHost {
                 cmds.push(AndroidImeCommand::HideSoftInput);
             }
         }
-        if let Some((text, selection_start, selection_end)) = focused_input {
-            let next_state = (text.clone(), selection_start, selection_end);
-            if self.last_synced_ime_state.as_ref() != Some(&next_state) {
-                self.last_synced_ime_state = Some(next_state);
-                cmds.push(AndroidImeCommand::SyncTextState {
-                    text,
-                    selection_start,
-                    selection_end,
-                });
-            }
+        if let Some(next_state) = focused_input
+            && self.last_synced_ime_state.as_ref() != Some(&next_state)
+        {
+            self.last_synced_ime_state = Some(next_state.clone());
+            cmds.push(AndroidImeCommand::SyncTextState {
+                text: next_state.text,
+                selection_start: next_state.selection_start,
+                selection_end: next_state.selection_end,
+                compose_region: next_state.compose_region,
+            });
         }
 
         (animating, should_paint, cmds)
@@ -384,9 +644,19 @@ pub mod android_runtime {
         kc: Keycode,
         meta: android_activity::input::MetaState,
     ) -> AndroidKeyCode {
+        let shift = meta.shift_on();
+        let letter_upper = shift ^ meta.caps_lock_on();
+        let ch = |lower: char, upper: char| {
+            AndroidKeyCode::Character(if letter_upper { upper } else { lower })
+        };
+        let punct = |p: AndroidPunctuationKey| {
+            AndroidKeyCode::Character(map_android_punctuation(p, shift))
+        };
+        let digit = |d: char| AndroidKeyCode::Character(map_android_digit(d, shift));
+
         match kc {
             Keycode::Back => AndroidKeyCode::Back,
-            Keycode::Enter => AndroidKeyCode::Enter,
+            Keycode::Enter | Keycode::DpadCenter => AndroidKeyCode::Enter,
             Keycode::NumpadEnter => AndroidKeyCode::NumpadEnter,
             Keycode::Tab => AndroidKeyCode::Tab,
             Keycode::Del => AndroidKeyCode::Del,
@@ -401,42 +671,79 @@ pub mod android_runtime {
             Keycode::PageUp => AndroidKeyCode::PageUp,
             Keycode::PageDown => AndroidKeyCode::PageDown,
             Keycode::Space => AndroidKeyCode::Space,
-            Keycode::A => AndroidKeyCode::Character(if meta.shift_on() { 'A' } else { 'a' }),
-            Keycode::B => AndroidKeyCode::Character(if meta.shift_on() { 'B' } else { 'b' }),
-            Keycode::C => AndroidKeyCode::Character(if meta.shift_on() { 'C' } else { 'c' }),
-            Keycode::D => AndroidKeyCode::Character(if meta.shift_on() { 'D' } else { 'd' }),
-            Keycode::E => AndroidKeyCode::Character(if meta.shift_on() { 'E' } else { 'e' }),
-            Keycode::F => AndroidKeyCode::Character(if meta.shift_on() { 'F' } else { 'f' }),
-            Keycode::G => AndroidKeyCode::Character(if meta.shift_on() { 'G' } else { 'g' }),
-            Keycode::H => AndroidKeyCode::Character(if meta.shift_on() { 'H' } else { 'h' }),
-            Keycode::I => AndroidKeyCode::Character(if meta.shift_on() { 'I' } else { 'i' }),
-            Keycode::J => AndroidKeyCode::Character(if meta.shift_on() { 'J' } else { 'j' }),
-            Keycode::K => AndroidKeyCode::Character(if meta.shift_on() { 'K' } else { 'k' }),
-            Keycode::L => AndroidKeyCode::Character(if meta.shift_on() { 'L' } else { 'l' }),
-            Keycode::M => AndroidKeyCode::Character(if meta.shift_on() { 'M' } else { 'm' }),
-            Keycode::N => AndroidKeyCode::Character(if meta.shift_on() { 'N' } else { 'n' }),
-            Keycode::O => AndroidKeyCode::Character(if meta.shift_on() { 'O' } else { 'o' }),
-            Keycode::P => AndroidKeyCode::Character(if meta.shift_on() { 'P' } else { 'p' }),
-            Keycode::Q => AndroidKeyCode::Character(if meta.shift_on() { 'Q' } else { 'q' }),
-            Keycode::R => AndroidKeyCode::Character(if meta.shift_on() { 'R' } else { 'r' }),
-            Keycode::S => AndroidKeyCode::Character(if meta.shift_on() { 'S' } else { 's' }),
-            Keycode::T => AndroidKeyCode::Character(if meta.shift_on() { 'T' } else { 't' }),
-            Keycode::U => AndroidKeyCode::Character(if meta.shift_on() { 'U' } else { 'u' }),
-            Keycode::V => AndroidKeyCode::Character(if meta.shift_on() { 'V' } else { 'v' }),
-            Keycode::W => AndroidKeyCode::Character(if meta.shift_on() { 'W' } else { 'w' }),
-            Keycode::X => AndroidKeyCode::Character(if meta.shift_on() { 'X' } else { 'x' }),
-            Keycode::Y => AndroidKeyCode::Character(if meta.shift_on() { 'Y' } else { 'y' }),
-            Keycode::Z => AndroidKeyCode::Character(if meta.shift_on() { 'Z' } else { 'z' }),
-            Keycode::Keycode0 => AndroidKeyCode::Character('0'),
-            Keycode::Keycode1 => AndroidKeyCode::Character('1'),
-            Keycode::Keycode2 => AndroidKeyCode::Character('2'),
-            Keycode::Keycode3 => AndroidKeyCode::Character('3'),
-            Keycode::Keycode4 => AndroidKeyCode::Character('4'),
-            Keycode::Keycode5 => AndroidKeyCode::Character('5'),
-            Keycode::Keycode6 => AndroidKeyCode::Character('6'),
-            Keycode::Keycode7 => AndroidKeyCode::Character('7'),
-            Keycode::Keycode8 => AndroidKeyCode::Character('8'),
-            Keycode::Keycode9 => AndroidKeyCode::Character('9'),
+            Keycode::Cut => AndroidKeyCode::Cut,
+            Keycode::Copy => AndroidKeyCode::Copy,
+            Keycode::Paste => AndroidKeyCode::Paste,
+            Keycode::A => ch('a', 'A'),
+            Keycode::B => ch('b', 'B'),
+            Keycode::C => ch('c', 'C'),
+            Keycode::D => ch('d', 'D'),
+            Keycode::E => ch('e', 'E'),
+            Keycode::F => ch('f', 'F'),
+            Keycode::G => ch('g', 'G'),
+            Keycode::H => ch('h', 'H'),
+            Keycode::I => ch('i', 'I'),
+            Keycode::J => ch('j', 'J'),
+            Keycode::K => ch('k', 'K'),
+            Keycode::L => ch('l', 'L'),
+            Keycode::M => ch('m', 'M'),
+            Keycode::N => ch('n', 'N'),
+            Keycode::O => ch('o', 'O'),
+            Keycode::P => ch('p', 'P'),
+            Keycode::Q => ch('q', 'Q'),
+            Keycode::R => ch('r', 'R'),
+            Keycode::S => ch('s', 'S'),
+            Keycode::T => ch('t', 'T'),
+            Keycode::U => ch('u', 'U'),
+            Keycode::V => ch('v', 'V'),
+            Keycode::W => ch('w', 'W'),
+            Keycode::X => ch('x', 'X'),
+            Keycode::Y => ch('y', 'Y'),
+            Keycode::Z => ch('z', 'Z'),
+            Keycode::Keycode0 => digit('0'),
+            Keycode::Keycode1 => digit('1'),
+            Keycode::Keycode2 => digit('2'),
+            Keycode::Keycode3 => digit('3'),
+            Keycode::Keycode4 => digit('4'),
+            Keycode::Keycode5 => digit('5'),
+            Keycode::Keycode6 => digit('6'),
+            Keycode::Keycode7 => digit('7'),
+            Keycode::Keycode8 => digit('8'),
+            Keycode::Keycode9 => digit('9'),
+            Keycode::Numpad0 => AndroidKeyCode::Character('0'),
+            Keycode::Numpad1 => AndroidKeyCode::Character('1'),
+            Keycode::Numpad2 => AndroidKeyCode::Character('2'),
+            Keycode::Numpad3 => AndroidKeyCode::Character('3'),
+            Keycode::Numpad4 => AndroidKeyCode::Character('4'),
+            Keycode::Numpad5 => AndroidKeyCode::Character('5'),
+            Keycode::Numpad6 => AndroidKeyCode::Character('6'),
+            Keycode::Numpad7 => AndroidKeyCode::Character('7'),
+            Keycode::Numpad8 => AndroidKeyCode::Character('8'),
+            Keycode::Numpad9 => AndroidKeyCode::Character('9'),
+            Keycode::Comma => punct(AndroidPunctuationKey::Comma),
+            Keycode::Period => punct(AndroidPunctuationKey::Period),
+            Keycode::Minus => punct(AndroidPunctuationKey::Minus),
+            Keycode::Equals => punct(AndroidPunctuationKey::Equals),
+            Keycode::LeftBracket => punct(AndroidPunctuationKey::LeftBracket),
+            Keycode::RightBracket => punct(AndroidPunctuationKey::RightBracket),
+            Keycode::Backslash => punct(AndroidPunctuationKey::Backslash),
+            Keycode::Semicolon => punct(AndroidPunctuationKey::Semicolon),
+            Keycode::Apostrophe => punct(AndroidPunctuationKey::Apostrophe),
+            Keycode::Slash => punct(AndroidPunctuationKey::Slash),
+            Keycode::Grave => punct(AndroidPunctuationKey::Grave),
+            Keycode::At => punct(AndroidPunctuationKey::At),
+            Keycode::Plus => punct(AndroidPunctuationKey::Plus),
+            Keycode::Star => punct(AndroidPunctuationKey::Star),
+            Keycode::Pound => punct(AndroidPunctuationKey::Pound),
+            Keycode::NumpadDivide => punct(AndroidPunctuationKey::NumpadDivide),
+            Keycode::NumpadMultiply => punct(AndroidPunctuationKey::NumpadMultiply),
+            Keycode::NumpadSubtract => punct(AndroidPunctuationKey::NumpadSubtract),
+            Keycode::NumpadAdd => punct(AndroidPunctuationKey::NumpadAdd),
+            Keycode::NumpadDot => punct(AndroidPunctuationKey::NumpadDot),
+            Keycode::NumpadComma => punct(AndroidPunctuationKey::NumpadComma),
+            Keycode::NumpadEquals => punct(AndroidPunctuationKey::NumpadEquals),
+            Keycode::NumpadLeftParen => punct(AndroidPunctuationKey::NumpadLeftParen),
+            Keycode::NumpadRightParen => punct(AndroidPunctuationKey::NumpadRightParen),
             _ => AndroidKeyCode::Other,
         }
     }
@@ -496,10 +803,22 @@ pub mod android_runtime {
                                     raw_window_handle: tgt.window,
                                 };
                                 // SAFETY: `nw` is a live ANativeWindow until `TerminateWindow` drops `gpu`.
-                                gpu = unsafe {
+                                match unsafe {
                                     GpuSurfacePipeline::new_unsafe(raw_target, w, h, false)
+                                } {
+                                    Ok(pipeline) => {
+                                        host.clear_error();
+                                        gpu = Some(pipeline);
+                                    }
+                                    Err(err) => {
+                                        let msg = format!(
+                                            "Android Vulkan/GLES surface init failed: {err}"
+                                        );
+                                        tracing::warn!("{msg}");
+                                        host.record_error(msg);
+                                        gpu = None;
+                                    }
                                 }
-                                .ok();
                             }
                         }
                     }
@@ -578,8 +897,13 @@ pub mod android_runtime {
                                 }
                                 InputEvent::TextEvent(ts) => {
                                     let state: TextInputState = ts.clone();
-                                    if host.tree.handle_event(&UiEvent::Ime(ImeEvent::Commit(state.text)))
-                                    {
+                                    let compose = state.compose_region.map(|r| (r.start, r.end));
+                                    if host.push_ime_text_state(
+                                        &state.text,
+                                        state.selection.start,
+                                        state.selection.end,
+                                        compose,
+                                    ) {
                                         host.request_redraw();
                                     }
                                     InputStatus::Handled
@@ -603,6 +927,10 @@ pub mod android_runtime {
             let dt = (now - last_tick).as_secs_f32().clamp(0.001, 0.05);
             last_tick = now;
 
+            #[cfg_attr(
+                not(any(feature = "gpu-sdf", feature = "gpu-vello")),
+                allow(unused_variables)
+            )]
             let (still_anim, did_paint, cmds) = host.step_frame_with_redraw(dt);
             animating = still_anim;
             for cmd in cmds {
@@ -613,6 +941,7 @@ pub mod android_runtime {
                         text,
                         selection_start,
                         selection_end,
+                        compose_region,
                     } => {
                         app.set_text_input_state(TextInputState {
                             text,
@@ -620,7 +949,8 @@ pub mod android_runtime {
                                 start: selection_start,
                                 end: selection_end,
                             },
-                            compose_region: None,
+                            compose_region: compose_region
+                                .map(|(start, end)| TextSpan { start, end }),
                         });
                     }
                 }
@@ -628,13 +958,17 @@ pub mod android_runtime {
             #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
             if did_paint && let Some(g) = gpu.as_mut() {
                 let bg = host.tree.theme().background;
-                let _ = g.render_frame(
+                if let Err(err) = g.render_frame(
                     &host.scene,
                     density,
                     bg,
                     &host.textures,
                     &mut host.tree.text_engine,
-                );
+                ) {
+                    let msg = format!("Android GPU render_frame failed: {err}");
+                    tracing::warn!("{msg}");
+                    host.record_error(msg);
+                }
             }
         }
     }
@@ -701,8 +1035,93 @@ mod tests {
         let (_, cmds2) = host.step_frame(0.016);
         assert!(cmds2.iter().any(|c| matches!(
             c,
-            AndroidImeCommand::SyncTextState { text, selection_start: 7, selection_end: 7 } if text == "invoice"
+            AndroidImeCommand::SyncTextState {
+                text,
+                selection_start: 7,
+                selection_end: 7,
+                compose_region: None,
+            } if text == "invoice"
         )));
+
+        // IME preedit emits non-empty compose_region, then commit clears it back to None
+        assert!(host.push_ime_preedit("東京", Some((0, 6))));
+        let (_, cmds_comp) = host.step_frame(0.016);
+        assert!(cmds_comp.iter().any(|c| matches!(
+            c,
+            AndroidImeCommand::SyncTextState {
+                text,
+                compose_region: Some((7, 13)),
+                ..
+            } if text == "invoice東京"
+        )));
+
+        // Full Android GameTextInput TextEvent buffer replacement preserves bound editor + preedit without echoing
+        assert!(host.push_ime_text_state("hello-world", 11, 11, Some((6, 11))));
+        let (_, cmds_echo) = host.step_frame(0.016);
+        assert!(cmds_echo.is_empty());
+        let WidgetKind::TextInput { editor, .. } = &host.tree.nodes.get(inp).unwrap().kind else {
+            panic!("expected TextInput");
+        };
+        assert_eq!(editor.text, "hello-");
+        assert_eq!(editor.preedit.as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn android_punctuation_keys_clipboard_shortcuts_and_error_state() {
+        reset_runtime();
+        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Period, false), '.');
+        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Period, true), '>');
+        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Minus, true), '_');
+        assert_eq!(map_android_punctuation(AndroidPunctuationKey::Slash, true), '?');
+        assert_eq!(map_android_punctuation(AndroidPunctuationKey::At, false), '@');
+        assert_eq!(map_android_punctuation(AndroidPunctuationKey::NumpadAdd, false), '+');
+        assert_eq!(map_android_digit('2', true), '@');
+        assert_eq!(map_android_digit('8', false), '8');
+
+        let mut host = AndroidHost::new(UiDispatcher::new(), 1080, 1920, 2.0);
+        assert!(host.last_error().is_none());
+        host.record_error("vulkan init failed");
+        assert_eq!(host.last_error(), Some("vulkan init failed"));
+        host.clear_error();
+        assert!(host.last_error().is_none());
+
+        let text_sig = host.scope.signal(String::new());
+        let inp = host.tree.text_input(host.scope, "", "Email", Some(text_sig));
+        host.tree.set_root(inp);
+        let _ = host.step_frame(0.016);
+        host.tree.focused = Some(inp);
+
+        for ch in [
+            map_android_digit('1', false),
+            map_android_punctuation(AndroidPunctuationKey::At, false),
+            map_android_punctuation(AndroidPunctuationKey::Slash, true),
+        ] {
+            assert!(host.handle_android_key_event(
+                AndroidKeyCode::Character(ch),
+                true,
+                false,
+                Modifiers::default()
+            ));
+        }
+        assert_eq!(text_sig.get(), "1@?");
+
+        // Select all via Ctrl+A then hardware Cut removes selected text
+        assert!(host.handle_android_key_event(
+            AndroidKeyCode::Character('a'),
+            true,
+            false,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        ));
+        assert!(host.handle_android_key_event(
+            AndroidKeyCode::Cut,
+            true,
+            false,
+            Modifiers::default()
+        ));
+        assert_eq!(text_sig.get(), "");
     }
 
     #[test]

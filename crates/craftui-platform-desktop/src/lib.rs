@@ -1,12 +1,14 @@
-//! Desktop platform runner (`winit` + `wgpu`/`vello` + `accesskit_winit` + `notify` hot-reload)
-//! supporting Linux (Wayland/X11), macOS, and Windows with multi-window support, OS clipboard/file
-//! pickers without GPL C bindings, and timer scheduling.
+//! Desktop platform runner (`winit` + `wgpu`/`vello`/`gpu-sdf` + `accesskit_winit` + `notify` hot-reload)
+//! supporting Linux (Wayland/X11), macOS, and Windows with multi-window support, in-process native OS
+//! clipboard (`x11-clipboard`/`wl-clipboard-rs`/`objc2-app-kit`/`windows-sys`), `rfd` native file
+//! pickers (`xdg-portal` + `wayland`, AppKit, Win32 IFileDialog), cursor synchronization, and timer scheduling.
 
 use accesskit_winit::Adapter as AccessKitAdapter;
 use craftui_core::{
-    ClipboardBackend, Color, CraftError, FileDialogBackend, FileDialogRequest, ImeEvent, KeyCode,
-    KeyEvent, Modifiers, NodeId, PlatformServices, Point, PointerButton, PointerEvent, PointerId,
-    PointerPhase, Result, ScrollDelta, Size, UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
+    ClipboardBackend, Color, CraftError, CursorIcon, FileDialogBackend, FileDialogRequest,
+    ImeEvent, KeyCode, KeyEvent, Modifiers, NodeId, PlatformServices, Point, PointerButton,
+    PointerEvent, PointerId, PointerPhase, Result, ScrollDelta, Size, UiDispatcher, UiEvent,
+    WindowMetrics, monotonic_ms,
 };
 use craftui_reactive::Scope;
 #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
@@ -20,10 +22,8 @@ use craftui_widgets::WidgetTree;
 use notify::{Event as NotifyEvent, RecursiveMode, Watcher};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Write;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -35,7 +35,7 @@ use winit::event_loop::{
     ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy, OwnedDisplayHandle,
 };
 use winit::keyboard::{Key, KeyCode as WinitKeyCode, ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{CursorIcon as WinitCursorIcon, Window, WindowAttributes, WindowId};
 
 /// Desktop window configuration.
 #[derive(Debug, Clone)]
@@ -59,124 +59,221 @@ impl Default for WindowConfig {
     }
 }
 
-/// Pure permissive OS clipboard bridge (`wl-copy`/`xclip`/`xsel` on Linux, `pbcopy`/`pbpaste` on macOS,
-/// PowerShell on Windows) with an in-memory fallback cache for headless CI.
+#[derive(Default)]
+struct DesktopClipboardState {
+    fallback: String,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    x11: Option<x11_clipboard::Clipboard>,
+}
+
+/// In-process permissive OS clipboard bridge (`wl-clipboard-rs` + `x11-clipboard` on Linux/BSD,
+/// `objc2-app-kit` `NSPasteboard` on macOS, `windows-sys` Win32 Clipboard on Windows) with an
+/// in-memory fallback cache for headless CI environments without a display server.
 #[derive(Clone, Default)]
 pub struct DesktopClipboard {
-    fallback: Arc<Mutex<String>>,
+    state: Arc<Mutex<DesktopClipboardState>>,
 }
 
 impl ClipboardBackend for DesktopClipboard {
     fn get_text(&mut self) -> Option<String> {
-        if let Some(sys) = read_os_clipboard() {
-            if let Ok(mut g) = self.fallback.lock() {
-                *g = sys.clone();
-            }
+        let Ok(mut guard) = self.state.lock() else {
+            return None;
+        };
+        if let Some(sys) = read_os_clipboard(&mut guard) {
+            guard.fallback = sys.clone();
             return Some(sys);
         }
-        self.fallback.lock().ok().map(|g| g.clone())
+        Some(guard.fallback.clone())
     }
 
     fn set_text(&mut self, text: &str) -> bool {
-        if let Ok(mut g) = self.fallback.lock() {
-            *g = text.to_string();
-        }
-        write_os_clipboard(text) || true
+        let Ok(mut guard) = self.state.lock() else {
+            return false;
+        };
+        guard.fallback.clear();
+        guard.fallback.push_str(text);
+        let _ = write_os_clipboard(&mut guard, text);
+        true
     }
 }
 
-fn read_os_clipboard() -> Option<String> {
+fn read_os_clipboard(#[allow(unused_variables)] state: &mut DesktopClipboardState) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(out) = Command::new("pbpaste").output()
-            && out.status.success()
-        {
-            return String::from_utf8(out.stdout).ok();
-        }
-        return None;
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+        let pb = NSPasteboard::generalPasteboard();
+        // SAFETY: `NSPasteboardTypeString` is a static immutable AppKit UTI constant.
+        let pb_type = unsafe { NSPasteboardTypeString };
+        return pb.stringForType(pb_type).map(|ns| ns.to_string());
     }
     #[cfg(target_os = "windows")]
     {
-        if let Ok(out) = Command::new("powershell")
-            .args(["-NoProfile", "-Command", "Get-Clipboard"])
-            .output()
-            && out.status.success()
-        {
-            let s = String::from_utf8_lossy(&out.stdout)
-                .trim_end_matches(&['\r', '\n'][..])
-                .to_string();
-            return Some(s);
+        use std::ffi::c_void;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::DataExchange::{
+            CloseClipboard, GetClipboardData, OpenClipboard,
+        };
+        use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+
+        const CF_UNICODETEXT: u32 = 13;
+        struct ClipboardCloseGuard;
+        impl Drop for ClipboardCloseGuard {
+            fn drop(&mut self) {
+                // SAFETY: Paired with a successful `OpenClipboard` before guard construction.
+                unsafe {
+                    CloseClipboard();
+                }
+            }
         }
-        return None;
+
+        // SAFETY: Opening and reading global clipboard memory handle within balanced Open/Close.
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) == 0 {
+                return None;
+            }
+            let _guard = ClipboardCloseGuard;
+            let handle: HANDLE = GetClipboardData(CF_UNICODETEXT);
+            if handle.is_null() {
+                return None;
+            }
+            let ptr = GlobalLock(handle) as *const u16;
+            if ptr.is_null() {
+                return None;
+            }
+            let byte_len = GlobalSize(handle);
+            let max_u16 = byte_len / std::mem::size_of::<u16>();
+            let slice = std::slice::from_raw_parts(ptr, max_u16);
+            let nul_pos = slice.iter().position(|&u| u == 0).unwrap_or(slice.len());
+            let decoded = String::from_utf16_lossy(&slice[..nul_pos]);
+            GlobalUnlock(handle as *mut c_void);
+            return Some(decoded);
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         if std::env::var_os("WAYLAND_DISPLAY").is_some()
-            && let Ok(out) = Command::new("wl-paste").arg("--no-newline").output()
-            && out.status.success()
+            && let Ok((mut pipe, _mime)) = wl_clipboard_rs::paste::get_contents(
+                wl_clipboard_rs::paste::ClipboardType::Regular,
+                wl_clipboard_rs::paste::Seat::Unspecified,
+                wl_clipboard_rs::paste::MimeType::Text,
+            )
         {
-            return String::from_utf8(out.stdout).ok();
+            let mut buf = String::new();
+            if std::io::Read::read_to_string(&mut pipe, &mut buf).is_ok() {
+                return Some(buf);
+            }
         }
         if std::env::var_os("DISPLAY").is_some() {
-            if let Ok(out) = Command::new("xclip")
-                .args(["-o", "-selection", "clipboard"])
-                .output()
-                && out.status.success()
-            {
-                return String::from_utf8(out.stdout).ok();
+            if state.x11.is_none() {
+                state.x11 = x11_clipboard::Clipboard::new().ok();
             }
-            if let Ok(out) = Command::new("xsel").args(["-ob"]).output()
-                && out.status.success()
+            if let Some(x11) = state.x11.as_ref()
+                && let Ok(bytes) = x11.load(
+                    x11.getter.atoms.clipboard,
+                    x11.getter.atoms.utf8_string,
+                    x11.getter.atoms.property,
+                    Some(Duration::from_millis(250)),
+                )
+                && let Ok(text) = String::from_utf8(bytes)
             {
-                return String::from_utf8(out.stdout).ok();
+                return Some(text);
             }
         }
         None
     }
 }
 
-fn write_os_clipboard(text: &str) -> bool {
-    let run_stdin = |prog: &str, args: &[&str]| -> bool {
-        let Ok(mut child) = Command::new(prog)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
-            return false;
-        };
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        child.wait().is_ok_and(|s| s.success())
-    };
-
+fn write_os_clipboard(
+    #[allow(unused_variables)] state: &mut DesktopClipboardState,
+    text: &str,
+) -> bool {
     #[cfg(target_os = "macos")]
     {
-        return run_stdin("pbcopy", &[]);
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+        use objc2_foundation::NSString;
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        let ns_text = NSString::from_str(text);
+        // SAFETY: `NSPasteboardTypeString` is a static immutable AppKit UTI constant.
+        let pb_type = unsafe { NSPasteboardTypeString };
+        return pb.setString_forType(&ns_text, pb_type);
     }
     #[cfg(target_os = "windows")]
     {
-        return run_stdin(
-            "powershell",
-            &[
-                "-NoProfile",
-                "-Command",
-                "$input | Out-String -Stream | Set-Clipboard",
-            ],
-        );
+        use std::ffi::c_void;
+        use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
+        use windows_sys::Win32::System::DataExchange::{
+            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        };
+        use windows_sys::Win32::System::Memory::{
+            GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock,
+        };
+
+        const CF_UNICODETEXT: u32 = 13;
+        struct ClipboardCloseGuard;
+        impl Drop for ClipboardCloseGuard {
+            fn drop(&mut self) {
+                // SAFETY: Paired with a successful `OpenClipboard` before guard construction.
+                unsafe {
+                    CloseClipboard();
+                }
+            }
+        }
+
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let byte_len = wide.len() * std::mem::size_of::<u16>();
+        // SAFETY: Allocates movable HGLOBAL, fills UTF-16 payload, transfers ownership to clipboard on success.
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) == 0 {
+                return false;
+            }
+            let _guard = ClipboardCloseGuard;
+            if EmptyClipboard() == 0 {
+                return false;
+            }
+            let hmem: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+            if hmem.is_null() {
+                return false;
+            }
+            let ptr = GlobalLock(hmem) as *mut u16;
+            if ptr.is_null() {
+                GlobalFree(hmem);
+                return false;
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+            GlobalUnlock(hmem as *mut c_void);
+            if SetClipboardData(CF_UNICODETEXT, hmem as HANDLE).is_null() {
+                GlobalFree(hmem);
+                return false;
+            }
+            return true;
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() && run_stdin("wl-copy", &[]) {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some()
+            && wl_clipboard_rs::copy::Options::new()
+                .copy(
+                    wl_clipboard_rs::copy::Source::Bytes(text.as_bytes().into()),
+                    wl_clipboard_rs::copy::MimeType::Text,
+                )
+                .is_ok()
+        {
             return true;
         }
         if std::env::var_os("DISPLAY").is_some() {
-            if run_stdin("xclip", &["-i", "-selection", "clipboard"]) {
-                return true;
+            if state.x11.is_none() {
+                state.x11 = x11_clipboard::Clipboard::new().ok();
             }
-            if run_stdin("xsel", &["-ib"]) {
+            if let Some(x11) = state.x11.as_ref()
+                && x11
+                    .store(
+                        x11.setter.atoms.clipboard,
+                        x11.setter.atoms.utf8_string,
+                        text.as_bytes().to_vec(),
+                    )
+                    .is_ok()
+            {
                 return true;
             }
         }
@@ -184,177 +281,65 @@ fn write_os_clipboard(text: &str) -> bool {
     }
 }
 
-/// Pure permissive native OS file open/save picker (`zenity`/`kdialog` on Linux, `osascript` on macOS,
-/// PowerShell `Windows.Forms` on Windows) without GPL C dependencies.
+/// Pure permissive native OS file open/save picker powered in-process by `rfd` (`xdg-portal` + `wayland`
+/// on Linux/BSD, AppKit `NSOpenPanel`/`NSSavePanel` on macOS, Win32 `IFileDialog` on Windows).
+///
+/// Use [`PlatformServices::pick_open_file_async`], [`PlatformServices::pick_open_files_async`], or
+/// [`PlatformServices::pick_save_file_async`] from UI handlers so dialogs run off the UI thread.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DesktopFileDialog;
 
+/// Build an `rfd::FileDialog` configured from a platform-neutral [`FileDialogRequest`].
+pub fn build_rfd_dialog(request: &FileDialogRequest) -> rfd::FileDialog {
+    let mut dialog = rfd::FileDialog::new();
+    if !request.title.is_empty() {
+        dialog = dialog.set_title(&request.title);
+    }
+    if let Some(dir) = &request.default_directory {
+        dialog = dialog.set_directory(dir);
+    }
+    if let Some(name) = &request.default_name {
+        dialog = dialog.set_file_name(name);
+    }
+    for filter in &request.filters {
+        if !filter.extensions.is_empty() {
+            let exts: Vec<&str> = filter.extensions.iter().map(String::as_str).collect();
+            dialog = dialog.add_filter(&filter.name, &exts);
+        }
+    }
+    dialog
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn has_unix_display() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn has_unix_display() -> bool {
+    true
+}
+
 impl FileDialogBackend for DesktopFileDialog {
     fn open_files(&self, request: &FileDialogRequest) -> Vec<PathBuf> {
-        #[cfg(target_os = "macos")]
-        {
-            return macos_pick_files(request, false);
+        if !has_unix_display() {
+            return Vec::new();
         }
-        #[cfg(target_os = "windows")]
-        {
-            return windows_pick_files(request);
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            linux_pick_files(request)
+        let dialog = build_rfd_dialog(request);
+        match (request.directory, request.multiple) {
+            (true, true) => dialog.pick_folders().unwrap_or_default(),
+            (true, false) => dialog.pick_folder().into_iter().collect(),
+            (false, true) => dialog.pick_files().unwrap_or_default(),
+            (false, false) => dialog.pick_file().into_iter().collect(),
         }
     }
 
     fn save_file(&self, request: &FileDialogRequest) -> Option<PathBuf> {
-        #[cfg(target_os = "macos")]
-        {
-            return macos_pick_files(request, true).into_iter().next();
+        if !has_unix_display() {
+            return None;
         }
-        #[cfg(target_os = "windows")]
-        {
-            return windows_save_file(request);
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            linux_save_file(request)
-        }
+        build_rfd_dialog(request).save_file()
     }
-}
-
-pub fn parse_zenity_output(raw: &str, separator: char) -> Vec<PathBuf> {
-    raw.trim_end_matches(['\r', '\n'])
-        .split(separator)
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn linux_pick_files(request: &FileDialogRequest) -> Vec<PathBuf> {
-    let mut zargs = vec![
-        "--file-selection".to_string(),
-        format!("--title={}", request.title),
-    ];
-    if request.directory {
-        zargs.push("--directory".into());
-    }
-    if request.multiple {
-        zargs.push("--multiple".into());
-        zargs.push("--separator=|".into());
-    }
-    for f in &request.filters {
-        let globs: Vec<String> = f.extensions.iter().map(|e| format!("*.{e}")).collect();
-        if !globs.is_empty() {
-            zargs.push(format!("--file-filter={} | {}", f.name, globs.join(" ")));
-        }
-    }
-    if let Ok(out) = Command::new("zenity").args(&zargs).output()
-        && out.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        return parse_zenity_output(&stdout, if request.multiple { '|' } else { '\n' });
-    }
-
-    let mut kargs = vec![if request.directory {
-        "--getexistingdirectory".to_string()
-    } else {
-        "--getopenfilename".to_string()
-    }];
-    if let Some(dir) = &request.default_directory {
-        kargs.push(dir.to_string_lossy().into_owned());
-    }
-    if request.multiple && !request.directory {
-        kargs.push("--multiple".into());
-    }
-    if let Ok(out) = Command::new("kdialog").args(&kargs).output()
-        && out.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        return parse_zenity_output(&stdout, '\n');
-    }
-    Vec::new()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn linux_save_file(request: &FileDialogRequest) -> Option<PathBuf> {
-    let mut zargs = vec![
-        "--file-selection".to_string(),
-        "--save".to_string(),
-        "--confirm-overwrite".to_string(),
-        format!("--title={}", request.title),
-    ];
-    if let Some(name) = &request.default_name {
-        let initial = request
-            .default_directory
-            .as_ref()
-            .map(|d| d.join(name))
-            .unwrap_or_else(|| PathBuf::from(name));
-        zargs.push(format!("--filename={}", initial.display()));
-    }
-    if let Ok(out) = Command::new("zenity").args(&zargs).output()
-        && out.status.success()
-    {
-        return parse_zenity_output(&String::from_utf8_lossy(&out.stdout), '\n')
-            .into_iter()
-            .next();
-    }
-    if let Ok(out) = Command::new("kdialog").arg("--getsavefilename").output()
-        && out.status.success()
-    {
-        return parse_zenity_output(&String::from_utf8_lossy(&out.stdout), '\n')
-            .into_iter()
-            .next();
-    }
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn macos_pick_files(request: &FileDialogRequest, is_save: bool) -> Vec<PathBuf> {
-    let verb = if is_save {
-        "POSIX path of (choose file name)"
-    } else if request.directory {
-        "POSIX path of (choose folder)"
-    } else {
-        "POSIX path of (choose file)"
-    };
-    if let Ok(out) = Command::new("osascript").args(["-e", verb]).output()
-        && out.status.success()
-    {
-        return parse_zenity_output(&String::from_utf8_lossy(&out.stdout), '\n');
-    }
-    Vec::new()
-}
-
-#[cfg(target_os = "windows")]
-fn windows_pick_files(request: &FileDialogRequest) -> Vec<PathBuf> {
-    let ps = if request.directory {
-        "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; if($d.ShowDialog() -eq 'OK'){ Write-Output $d.SelectedPath }"
-    } else {
-        "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; if($d.ShowDialog() -eq 'OK'){ Write-Output $d.FileName }"
-    };
-    if let Ok(out) = Command::new("powershell")
-        .args(["-NoProfile", "-STA", "-Command", ps])
-        .output()
-        && out.status.success()
-    {
-        return parse_zenity_output(&String::from_utf8_lossy(&out.stdout), '\n');
-    }
-    Vec::new()
-}
-
-#[cfg(target_os = "windows")]
-fn windows_save_file(_request: &FileDialogRequest) -> Option<PathBuf> {
-    let ps = "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; if($d.ShowDialog() -eq 'OK'){ Write-Output $d.FileName }";
-    if let Ok(out) = Command::new("powershell")
-        .args(["-NoProfile", "-STA", "-Command", ps])
-        .output()
-        && out.status.success()
-    {
-        return parse_zenity_output(&String::from_utf8_lossy(&out.stdout), '\n')
-            .into_iter()
-            .next();
-    }
-    None
 }
 
 pub fn default_desktop_services() -> PlatformServices {
@@ -703,6 +688,15 @@ struct DesktopWindowState {
     modifiers: Modifiers,
     mouse_down: bool,
     last_focused_was_input: bool,
+    last_cursor: Option<WinitCursorIcon>,
+}
+
+fn sync_window_cursor(state: &mut DesktopWindowState) {
+    let desired = translate_winit_cursor(state.tree.hovered_cursor());
+    if state.last_cursor != Some(desired) {
+        state.last_cursor = Some(desired);
+        state.window.set_cursor(desired);
+    }
 }
 
 struct DesktopRunner {
@@ -980,6 +974,7 @@ impl DesktopRunner {
                 modifiers: Modifiers::default(),
                 mouse_down: false,
                 last_focused_was_input: false,
+                last_cursor: None,
             },
         );
     }
@@ -1037,6 +1032,7 @@ impl DesktopRunner {
             state.last_focused_was_input = focused_is_input;
             state.window.set_ime_allowed(focused_is_input);
         }
+        sync_window_cursor(state);
 
         let frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         let node_count = state.tree.nodes.len();
@@ -1218,7 +1214,7 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
                 let sf = state.tree.metrics.scale_factor.max(1.0);
                 state.cursor_pos = Point::new(position.x as f32 / sf, position.y as f32 / sf);
                 let ts = self.start_instant.elapsed().as_millis() as u64;
-                if state.tree.handle_event(&UiEvent::Pointer(PointerEvent {
+                let handled = state.tree.handle_event(&UiEvent::Pointer(PointerEvent {
                     id: PointerId(1),
                     phase: PointerPhase::Move,
                     position: state.cursor_pos,
@@ -1230,7 +1226,9 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
                     modifiers: state.modifiers,
                     is_touch: false,
                     timestamp_ms: ts,
-                })) {
+                }));
+                sync_window_cursor(state);
+                if handled {
                     state.window.request_redraw();
                 }
             }
@@ -1250,7 +1248,7 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
                     }
                 };
                 let ts = self.start_instant.elapsed().as_millis() as u64;
-                if state.tree.handle_event(&UiEvent::Pointer(PointerEvent {
+                let handled = state.tree.handle_event(&UiEvent::Pointer(PointerEvent {
                     id: PointerId(1),
                     phase,
                     position: state.cursor_pos,
@@ -1258,7 +1256,9 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
                     modifiers: state.modifiers,
                     is_touch: false,
                     timestamp_ms: ts,
-                })) {
+                }));
+                sync_window_cursor(state);
+                if handled {
                     state.window.request_redraw();
                 }
             }
@@ -1347,6 +1347,20 @@ pub fn translate_modifiers(state: ModifiersState) -> Modifiers {
     }
 }
 
+pub fn translate_winit_cursor(cursor: CursorIcon) -> WinitCursorIcon {
+    match cursor {
+        CursorIcon::Default => WinitCursorIcon::Default,
+        CursorIcon::Pointer => WinitCursorIcon::Pointer,
+        CursorIcon::Text => WinitCursorIcon::Text,
+        CursorIcon::Grab => WinitCursorIcon::Grab,
+        CursorIcon::Grabbing => WinitCursorIcon::Grabbing,
+        CursorIcon::ResizeHorizontal => WinitCursorIcon::EwResize,
+        CursorIcon::ResizeVertical => WinitCursorIcon::NsResize,
+        CursorIcon::NotAllowed => WinitCursorIcon::NotAllowed,
+        CursorIcon::Crosshair => WinitCursorIcon::Crosshair,
+    }
+}
+
 pub fn translate_mouse_button(button: MouseButton) -> PointerButton {
     match button {
         MouseButton::Left => PointerButton::Primary,
@@ -1410,7 +1424,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn translates_mouse_buttons_scroll_deltas_and_dialog_outputs() {
+    fn translates_mouse_buttons_cursors_scroll_deltas_and_clipboard() {
         assert_eq!(
             translate_mouse_button(MouseButton::Left),
             PointerButton::Primary
@@ -1420,6 +1434,43 @@ mod tests {
             PointerButton::Secondary
         );
 
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::Default),
+            WinitCursorIcon::Default
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::Pointer),
+            WinitCursorIcon::Pointer
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::Text),
+            WinitCursorIcon::Text
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::Grab),
+            WinitCursorIcon::Grab
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::Grabbing),
+            WinitCursorIcon::Grabbing
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::ResizeHorizontal),
+            WinitCursorIcon::EwResize
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::ResizeVertical),
+            WinitCursorIcon::NsResize
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::NotAllowed),
+            WinitCursorIcon::NotAllowed
+        );
+        assert_eq!(
+            translate_winit_cursor(CursorIcon::Crosshair),
+            WinitCursorIcon::Crosshair
+        );
+
         let (dx, dy) = translate_scroll_delta(MouseScrollDelta::LineDelta(0.0, -2.0), 1.0);
         assert_eq!(dx, 0.0);
         assert_eq!(dy, -72.0);
@@ -1427,11 +1478,14 @@ mod tests {
         let mods = translate_modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT);
         assert!(mods.ctrl && mods.shift && !mods.alt);
 
-        let paths = parse_zenity_output("/tmp/a.png|/tmp/b.png\n", '|');
-        assert_eq!(
-            paths,
-            vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")]
-        );
+        let req = FileDialogRequest::open("Select Asset")
+            .with_filter(craftui_core::FileFilter::new("Images", ["png", "webp"]))
+            .with_multiple(true);
+        let _dialog = build_rfd_dialog(&req);
+
+        let mut clip = DesktopClipboard::default();
+        assert!(clip.set_text("CraftUI native clipboard"));
+        assert!(clip.get_text().is_some());
 
         let rgba = [0x12u8, 0x34, 0x56, 0xFF, 0xAB, 0xCD, 0xEF, 0x80];
         let mut packed = [0u32; 2];

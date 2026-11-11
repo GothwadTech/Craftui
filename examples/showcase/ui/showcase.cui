@@ -1,4 +1,4 @@
-import { SectionHeader, TagChip, ShowcaseMetric, GalleryTab } from "./tokens.cui"
+import { SectionHeader, TagChip, GlassStatCard, ShowcaseMetric, GalleryTab } from "./tokens.cui"
 
 export component ShowcaseScreen {
     in-out property <int> active_tab: 0;
@@ -9,12 +9,31 @@ export component ShowcaseScreen {
     in-out property <int> selected_region: 1;
     in-out property <int> density_choice: 0;
     in-out property <float> progress_level: 0.68;
+    in-out property <float> split_ratio: 0.48;
     in-out property <bool> show_modal: false;
     in-out property <bool> show_sheet: false;
     in-out property <bool> show_menu: false;
     in-out property <bool> pin_tag: true;
     in-out property <string> last_action: "Ready";
+    in-out property <[ToastItem]> toasts: [];
+    in-out property <int> last_dismissed_toast: -1;
+    in-out property <int> hovered_tag: -1;
+    in-out property <bool> menu_btn_hovered: false;
+    in-out property <bool> theme_btn_hovered: false;
+    in-out property <bool> notify_btn_hovered: false;
+    in-out property <bool> copy_btn_hovered: false;
+    in-out property <bool> file_btn_hovered: false;
+    in-out property <bool> modal_btn_hovered: false;
+    in-out property <bool> sheet_btn_hovered: false;
+    in-out property <bool> overlay_menu_btn_hovered: false;
+    in-out property <bool> close_modal_hovered: false;
+    in-out property <bool> dismiss_sheet_hovered: false;
+
     callback on_theme_cycle();
+    callback on_notify_toast();
+    callback on_copy_summary();
+    callback on_open_file();
+    callback on_toast_dismiss(int);
 
     Stack {
         width: 100%;
@@ -34,13 +53,25 @@ export component ShowcaseScreen {
 
                 Column {
                     gap: 4dp;
-                    Text {
-                        text: "CraftUI Widget & DSL Gallery";
-                        font_size: 24;
-                        font_weight: Bold;
-                        color: Theme.text_primary;
+                    Row {
+                        gap: 10dp;
+                        align: Center;
+                        Text {
+                            text: "CraftUI Widget & DSL Gallery";
+                            font_size: 24;
+                            font_weight: Bold;
+                            color: Theme.text_primary;
+                        }
+                        Badge {
+                            id: "header_badge";
+                            label: "Production";
+                            icon: "check";
+                            background: #10B981;
+                            color: #FFFFFF;
+                        }
                     }
                     Text {
+                        id: "last_action_text";
                         text: last_action;
                         font_size: 13;
                         color: Theme.text_secondary;
@@ -49,23 +80,36 @@ export component ShowcaseScreen {
 
                 Row {
                     gap: 10dp;
+                    align: Center;
                     TagChip {
                         label: "MIT Core";
                         selected <=> pin_tag;
                     }
                     Button {
+                        id: "menu_btn";
                         text: "Menu";
                         background: Theme.surface_variant;
                         foreground: Theme.text_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: menu_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { menu_btn_hovered = value; }
                         on_tap => {
                             show_menu = !show_menu;
                             last_action = "Toggled PopupMenu";
                         }
                     }
                     Button {
+                        id: "cycle_theme_btn";
                         text: "Cycle Theme";
                         background: Theme.primary;
                         foreground: Theme.on_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: theme_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { theme_btn_hovered = value; }
                         on_tap => {
                             last_action = "Requested theme change";
                             on_theme_cycle();
@@ -81,21 +125,27 @@ export component ShowcaseScreen {
             }
 
             Tabs {
-                tabs: ["Controls", "Virtual Data", "Overlays"];
-                active: active_tab;
+                id: "showcase_tabs";
+                tabs: ["Controls", "Virtual Data", "Glass & Split", "Overlays"];
+                active <=> active_tab;
                 on_change => {
                     active_tab = index;
                     last_action = "Switched tab to #" + index;
                 }
             }
 
-            if active_tab == 0 : Row {
+            if active_tab == 0 : SplitPane {
+                id: "controls_split";
+                direction: Horizontal;
+                ratio <=> split_ratio;
+                min_first: 220;
+                min_second: 220;
                 width: 100%;
+                height: Auto;
                 flex_grow: 1.0;
-                gap: 16dp;
 
                 Column {
-                    flex_grow: 1.0;
+                    id: "controls_left";
                     background: Theme.surface;
                     border_radius: 12dp;
                     border_width: 1;
@@ -148,7 +198,7 @@ export component ShowcaseScreen {
                 }
 
                 Column {
-                    flex_grow: 1.0;
+                    id: "controls_right";
                     background: Theme.surface;
                     border_radius: 12dp;
                     border_width: 1;
@@ -188,12 +238,62 @@ export component ShowcaseScreen {
                     }
 
                     if feature_enabled : Row {
+                        width: 100%;
+                        padding: 10dp;
+                        gap: 10dp;
+                        align: Center;
+                        border_radius: 10dp;
+                        background: Theme.surface_variant;
+
+                        Spinner {
+                            id: "controls_spinner";
+                            size: 20dp;
+                            thickness: 3dp;
+                            color: Theme.primary;
+                        }
+                        Column {
+                            gap: 2dp;
+                            flex_grow: 1.0;
+                            Text {
+                                text: "Live Preview Sync";
+                                font_size: 13;
+                                font_weight: SemiBold;
+                                color: Theme.text_primary;
+                            }
+                            Text {
+                                text: "Drag divider to resize SplitPane panels.";
+                                font_size: 12;
+                                color: Theme.text_secondary;
+                            }
+                        }
+                        Badge {
+                            id: "controls_live_badge";
+                            label: "Live";
+                            icon: "check";
+                            background: Theme.primary;
+                            color: Theme.on_primary;
+                        }
+                    }
+
+                    if feature_enabled : Row {
                         gap: 8dp;
                         for tag, idx in ["Rust", "MIT", "GPU", "WASM"] : Button {
                             text: tag;
-                            background: Theme.surface_variant;
-                            foreground: Theme.text_primary;
+                            background: hovered_tag == idx ? Theme.primary : Theme.surface_variant;
+                            foreground: hovered_tag == idx ? Theme.on_primary : Theme.text_primary;
                             border_radius: 14dp;
+                            cursor: Pointer;
+                            scale: hovered_tag == idx ? 1.06 : 1.0;
+                            animate scale { curve: snappy(); }
+                            on_hover => {
+                                if value {
+                                    hovered_tag = idx;
+                                } else {
+                                    if hovered_tag == idx {
+                                        hovered_tag = -1;
+                                    }
+                                }
+                            }
                             on_tap => { last_action = "Tapped badge #" + idx; }
                         }
                     } else : Text {
@@ -202,7 +302,10 @@ export component ShowcaseScreen {
                         color: Theme.text_secondary;
                     }
                 }
-            } else : Column {
+            }
+
+            if active_tab == 1 : Column {
+                id: "virtual_tab_panel";
                 width: 100%;
                 flex_grow: 1.0;
                 background: Theme.surface;
@@ -212,47 +315,271 @@ export component ShowcaseScreen {
                 padding: 16dp;
                 gap: 12dp;
 
-                if active_tab == 1 : VirtualList {
+                SectionHeader {
+                    title: "Virtualized Dataset";
+                    badge: "24 Rows";
+                    icon_name: "info";
+                    on_badge_tap => { last_action = "Inspected virtual data metrics"; }
+                }
+
+                VirtualList {
+                    id: "virtual_data_list";
                     width: 100%;
-                    height: 260dp;
-                    item_extent: 38;
+                    height: 300dp;
+                    flex_grow: 1.0;
+                    item_extent: 42;
                     for item_num in 0..24 : Row {
                         width: 100%;
                         padding_x: 12dp;
                         align: Center;
                         justify: SpaceBetween;
-                        Text {
-                            text: "Virtual Row #" + item_num;
-                            font_size: 14;
-                            color: Theme.text_primary;
+
+                        Row {
+                            gap: 10dp;
+                            align: Center;
+                            Icon {
+                                svg: "check";
+                                size: 16;
+                                color: Theme.primary;
+                            }
+                            Text {
+                                text: "Virtual Row #" + item_num;
+                                font_size: 14;
+                                color: Theme.text_primary;
+                            }
                         }
-                        Icon {
-                            svg: "check";
-                            size: 16;
-                            color: Theme.primary;
+
+                        Badge {
+                            label: (item_num - (item_num / 2) * 2) == 0 ? "Synced" : "Queued";
+                            icon: (item_num - (item_num / 2) * 2) == 0 ? "check" : "info";
+                            background: (item_num - (item_num / 2) * 2) == 0 ? #10B981 : Theme.surface_variant;
+                            color: (item_num - (item_num / 2) * 2) == 0 ? #FFFFFF : Theme.text_primary;
                         }
                     }
-                } else : Column {
+                }
+            }
+
+            if active_tab == 2 : Column {
+                id: "glass_tab_panel";
+                width: 100%;
+                flex_grow: 1.0;
+                background: Theme.surface;
+                border_radius: 12dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding: 16dp;
+                gap: 14dp;
+
+                SectionHeader {
+                    title: "Glassmorphism, Spring Physics & Platform Services";
+                    badge: "Phase 4";
+                    icon_name: "star";
+                    on_badge_tap => { last_action = "Glass & Platform section tapped"; }
+                }
+
+                Row {
+                    width: 100%;
+                    gap: 14dp;
+
+                    GlassStatCard {
+                        id: "glass_card_engine";
+                        title: "Render Engine";
+                        subtitle: "GPU SDF + Vello + Backdrop Blur";
+                        status: "Active";
+                        badge_bg: #10B981;
+                        on_select => { last_action = "Selected Render Engine glass card"; }
+                    }
+
+                    GlassStatCard {
+                        id: "glass_card_reactive";
+                        title: "Reactive Core";
+                        subtitle: "Signals, Springs & SplitPane";
+                        status: "Live";
+                        badge_bg: #3B82F6;
+                        on_select => { last_action = "Selected Reactive Core glass card"; }
+                    }
+
+                    GlassStatCard {
+                        id: "glass_card_platform";
+                        title: "Platform Bridge";
+                        subtitle: "Clipboard, File Picker & Toasts";
+                        status: "Ready";
+                        badge_bg: #8B5CF6;
+                        on_select => { last_action = "Selected Platform Bridge glass card"; }
+                    }
+                }
+
+                Row {
+                    width: 100%;
+                    padding: 14dp;
+                    border_radius: 12dp;
+                    background: Theme.surface_variant;
+                    align: Center;
+                    justify: SpaceBetween;
                     gap: 12dp;
-                    Text {
-                        text: "Modal Dialogs & Bottom Sheets";
-                        font_size: 18;
-                        font_weight: SemiBold;
-                        color: Theme.text_primary;
-                    }
+
                     Row {
                         gap: 12dp;
-                        Button {
-                            text: "Open Modal Dialog";
-                            background: Theme.primary;
-                            foreground: Theme.on_primary;
-                            on_tap => { show_modal = true; }
+                        align: Center;
+                        Spinner {
+                            id: "glass_spinner";
+                            size: 24dp;
+                            thickness: 3dp;
+                            color: Theme.primary;
                         }
-                        Button {
-                            text: "Open Bottom Sheet";
-                            background: Theme.surface_variant;
-                            foreground: Theme.text_primary;
-                            on_tap => { show_sheet = true; }
+                        Column {
+                            gap: 2dp;
+                            Text {
+                                text: "Platform Actions & Toast Notifications";
+                                font_size: 14;
+                                font_weight: SemiBold;
+                                color: Theme.text_primary;
+                            }
+                            Text {
+                                text: "Trigger live toasts, write OS clipboard summary, or pick a file off the UI thread.";
+                                font_size: 12;
+                                color: Theme.text_secondary;
+                            }
+                        }
+                    }
+
+                    Badge {
+                        id: "glass_status_badge";
+                        label: "Live";
+                        icon: "star";
+                        background: Theme.primary;
+                        color: Theme.on_primary;
+                    }
+                }
+
+                Row {
+                    width: 100%;
+                    gap: 12dp;
+                    align: Center;
+
+                    Button {
+                        id: "notify_toast_btn";
+                        text: "Notify Toast";
+                        background: Theme.primary;
+                        foreground: Theme.on_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: notify_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { notify_btn_hovered = value; }
+                        on_tap => {
+                            last_action = "Triggered toast notification";
+                            on_notify_toast();
+                        }
+                    }
+
+                    Button {
+                        id: "copy_summary_btn";
+                        text: "Copy Summary";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: copy_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { copy_btn_hovered = value; }
+                        on_tap => {
+                            last_action = "Copied showcase summary to clipboard";
+                            on_copy_summary();
+                        }
+                    }
+
+                    Button {
+                        id: "open_file_btn";
+                        text: "Open File Dialog";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: file_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { file_btn_hovered = value; }
+                        on_tap => {
+                            last_action = "Opened file dialog";
+                            on_open_file();
+                        }
+                    }
+                }
+            }
+
+            if active_tab == 3 : Column {
+                id: "overlays_tab_panel";
+                width: 100%;
+                flex_grow: 1.0;
+                background: Theme.surface;
+                border_radius: 12dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding: 16dp;
+                gap: 14dp;
+
+                SectionHeader {
+                    title: "Modal Dialogs, Bottom Sheets & Popup Menus";
+                    badge: "Glass";
+                    icon_name: "settings";
+                    on_badge_tap => { last_action = "Overlays section tapped"; }
+                }
+
+                Text {
+                    text: "Overlays render above the root Stack with translucent backdrop blur and Escape dismissal.";
+                    font_size: 13;
+                    color: Theme.text_secondary;
+                }
+
+                Row {
+                    gap: 12dp;
+                    align: Center;
+
+                    Button {
+                        id: "open_modal_btn";
+                        text: "Open Modal Dialog";
+                        background: Theme.primary;
+                        foreground: Theme.on_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: modal_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { modal_btn_hovered = value; }
+                        on_tap => {
+                            show_modal = true;
+                            last_action = "Opened Modal dialog";
+                        }
+                    }
+
+                    Button {
+                        id: "open_sheet_btn";
+                        text: "Open Bottom Sheet";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: sheet_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { sheet_btn_hovered = value; }
+                        on_tap => {
+                            show_sheet = true;
+                            last_action = "Opened BottomSheet";
+                        }
+                    }
+
+                    Button {
+                        id: "overlay_popup_menu_btn";
+                        text: "Toggle Popup Menu";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: overlay_menu_btn_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { overlay_menu_btn_hovered = value; }
+                        on_tap => {
+                            show_menu = !show_menu;
+                            last_action = "Toggled PopupMenu";
                         }
                     }
                 }
@@ -260,17 +587,26 @@ export component ShowcaseScreen {
         }
 
         PopupMenu {
+            id: "showcase_popup_menu";
             open: show_menu;
             items: ["Inspect Tokens", "Open Dialog", "Reset Tab"];
             on_select => {
                 show_menu = false;
                 last_action = "Menu item #" + index;
+                if index == 1 {
+                    show_modal = true;
+                }
+                if index == 2 {
+                    active_tab = 0;
+                }
             }
             on_close => { show_menu = false; }
         }
 
         Modal {
+            id: "showcase_modal";
             open <=> show_modal;
+            backdrop_blur: 12dp;
             Container {
                 width: 340dp;
                 background: Theme.surface;
@@ -296,9 +632,15 @@ export component ShowcaseScreen {
                     width: 100%;
                     justify: End;
                     Button {
+                        id: "close_modal_btn";
                         text: "Close";
                         background: Theme.primary;
                         foreground: Theme.on_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: close_modal_hovered ? 1.04 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { close_modal_hovered = value; }
                         on_tap => { show_modal = false; }
                     }
                 }
@@ -306,7 +648,9 @@ export component ShowcaseScreen {
         }
 
         BottomSheet {
+            id: "showcase_sheet";
             open <=> show_sheet;
+            backdrop_blur: 14dp;
             Container {
                 width: 100%;
                 max_width: 560dp;
@@ -321,11 +665,27 @@ export component ShowcaseScreen {
                     color: Theme.text_primary;
                 }
                 Button {
+                    id: "dismiss_sheet_btn";
                     text: "Dismiss Sheet";
                     background: Theme.primary;
                     foreground: Theme.on_primary;
+                    border_radius: 10dp;
+                    cursor: Pointer;
+                    scale: dismiss_sheet_hovered ? 1.04 : 1.0;
+                    animate scale { curve: snappy(); }
+                    on_hover => { dismiss_sheet_hovered = value; }
                     on_tap => { show_sheet = false; }
                 }
+            }
+        }
+
+        ToastHost {
+            id: "showcase_toasts";
+            items: toasts;
+            on_dismiss => {
+                last_dismissed_toast = id;
+                last_action = "Dismissed toast #" + id;
+                on_toast_dismiss(id);
             }
         }
     }

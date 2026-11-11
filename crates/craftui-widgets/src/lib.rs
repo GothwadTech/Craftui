@@ -4,6 +4,7 @@ pub mod anim;
 pub mod gesture;
 pub mod inspector;
 pub mod router;
+pub mod toast;
 pub mod tree;
 pub mod widgets;
 
@@ -11,11 +12,12 @@ pub use anim::{AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, Tra
 pub use gesture::{GestureArena, RecognizedGesture, ScrollPhysics, VelocityTracker};
 pub use inspector::InspectorState;
 pub use router::{Router, RouterTransition};
+pub use toast::{ToastItem, ToastManager, ToastSeverity};
 pub use tree::{TreeUiSnapshot, VirtualItemFactory, WidgetNode, WidgetTree};
 pub use widgets::{
     BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CustomWidget, FloatCallback,
     HoverCallback, IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, TextCallback,
-    WidgetKind,
+    ToastDismissCallback, WidgetKind,
 };
 
 /// Composable declarative view mountable onto a [`WidgetTree`].
@@ -1271,5 +1273,233 @@ mod tests {
         tree.layout(metrics);
         assert_eq!(build_count.get(), 2);
         assert_eq!(text_of(&tree, n_alpha), "1:Alpha-2");
+    }
+
+    #[test]
+    fn spinner_visibility_gates_animation_and_badge_measures_cleanly() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let spin_visible = cx.signal(false);
+        let modal_open = cx.signal(false);
+
+        let root = tree.column(cx);
+        let sp1 = tree.spinner(cx, 28.0);
+        tree.set_visible_when(sp1, move || spin_visible.get());
+        tree.set_spinner_style(
+            sp1,
+            Some(30.0),
+            Some(3.5),
+            Some(ReactiveValue::Static(craftui_core::Color::rgb(99, 102, 241))),
+        );
+
+        // Hidden via closed Modal ancestor should ALSO pause animation
+        let modal = tree.overlay(cx, modal_open, false, None);
+        let sp_modal = tree.spinner(cx, 24.0);
+        tree.append_child(modal, sp_modal);
+
+        let badge_row = tree.row(cx);
+        let badge_plain = tree.badge(cx, "Status");
+        let badge_icon = tree.badge(cx, "Status");
+        tree.set_badge_icon(badge_icon, Some(ReactiveValue::Static("check".into())));
+        tree.set_badge_colors(
+            badge_icon,
+            Some(ReactiveValue::Static(craftui_core::Color::rgb(16, 185, 129))),
+            Some(ReactiveValue::Static(craftui_core::Color::rgba(16, 185, 129, 40))),
+        );
+        tree.append_child(badge_row, badge_plain);
+        tree.append_child(badge_row, badge_icon);
+
+        for c in [sp1, modal, badge_row] {
+            tree.append_child(root, c);
+        }
+        tree.set_root(root);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(400.0, 300.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Both spinners effectively hidden -> 0 active animations!
+        assert!(!tree.has_active_animations());
+        assert!(!tree.tick_animations(0.016));
+
+        // Badge with icon measures wider than Badge without icon
+        assert!(tree.rect(badge_icon).width > tree.rect(badge_plain).width);
+        assert!(tree.rect(badge_plain).height >= 20.0);
+
+        // Reveal sp1 -> phase advances and scene paints arc + badge pill
+        spin_visible.set(true);
+        tree.layout(metrics);
+        assert!(tree.has_active_animations());
+        assert!(tree.tick_animations(0.25));
+        let phase = match &tree.nodes.get(sp1).unwrap().kind {
+            WidgetKind::Spinner { phase, .. } => *phase,
+            _ => unreachable!(),
+        };
+        assert!(phase > 0.1);
+
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+        assert!(
+            scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, PaintCommand::StrokePath { .. }))
+        );
+        assert!(
+            scene
+                .commands
+                .iter()
+                .any(|c| matches!(c, PaintCommand::DrawText { text, .. } if text == "Status"))
+        );
+    }
+
+    #[test]
+    fn split_pane_drags_with_clamping_and_toast_host_clicks_through_except_cards() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let ratio = cx.signal(0.5f32);
+        let bg_clicks = Rc::new(Cell::new(0usize));
+        let bg_clicks_c = bg_clicks.clone();
+        let dismissed_ids = Rc::new(RefCell::new(Vec::<u64>::new()));
+        let dismissed_c = dismissed_ids.clone();
+
+        let mgr = ToastManager::new(cx);
+        let tid = mgr.push_at(0, "Saved", "Preferences updated", ToastSeverity::Success, 0);
+
+        let root = tree.stack(cx);
+        tree.set_layout(
+            root,
+            LayoutStyle::stack().with_size(Length::Dp(500.0), Length::Dp(300.0)),
+        );
+
+        let split = tree.split_pane(cx, Axis::Horizontal, ratio);
+        tree.set_split_pane_config(split, 100.0, 120.0, 8.0);
+        let ratio_changes = Rc::new(Cell::new(0usize));
+        let rc_c = ratio_changes.clone();
+        tree.set_on_float_change(split, move |_| rc_c.set(rc_c.get() + 1));
+
+        let left_btn = tree.button(cx, "Left", move || bg_clicks_c.set(bg_clicks_c.get() + 1));
+        let right_box = tree.container(cx, LayoutStyle::column(), BoxStyle::new());
+        tree.append_child(split, left_btn);
+        tree.append_child(split, right_box);
+
+        let th = tree.toast_host(cx, mgr);
+        tree.set_on_dismiss(th, move |id| dismissed_c.borrow_mut().push(id));
+
+        tree.append_child(root, split);
+        tree.append_child(root, th);
+        tree.set_root(root);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(500.0, 300.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Pass-2 SplitPane layout: 500 - 8 = 492 usable -> 246 / 246
+        assert!((tree.rect(left_btn).width - 246.0).abs() < 1.0);
+        assert!((tree.rect(right_box).width - 246.0).abs() < 1.0);
+
+        // Clicking left_btn passes right through ToastHost!
+        let btn_center = tree.rect(left_btn).center();
+        assert_eq!(tree.hit_test(btn_center), Some(left_btn));
+        assert_eq!(tree.cursor_at(btn_center), craftui_core::CursorIcon::Pointer);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: btn_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: btn_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 30,
+        }));
+        assert_eq!(bg_clicks.get(), 1);
+
+        // Empty right pane hits `right_box` -> Default cursor (not ResizeHorizontal)
+        let empty_right = tree.rect(right_box).center();
+        assert_eq!(tree.cursor_at(empty_right), craftui_core::CursorIcon::Default);
+
+        // Sash hits `split` -> ResizeHorizontal cursor
+        let sash_pt = craftui_core::Point::new(246.0 + 4.0, 150.0);
+        assert_eq!(tree.hit_test(sash_pt), Some(split));
+        assert_eq!(
+            tree.cursor_at(sash_pt),
+            craftui_core::CursorIcon::ResizeHorizontal
+        );
+
+        // Drag sash far right to x=490 -> clamps at min_second (120dp => first <= 372dp)
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Down,
+            position: sash_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 40,
+        }));
+        assert_eq!(
+            tree.hovered_cursor(),
+            craftui_core::CursorIcon::ResizeHorizontal
+        );
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Move,
+            position: craftui_core::Point::new(490.0, 150.0),
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 60,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Up,
+            position: craftui_core::Point::new(490.0, 150.0),
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 80,
+        }));
+        tree.layout(metrics);
+        assert!((tree.rect(left_btn).width - 372.0).abs() < 1.5);
+        assert!((tree.rect(right_box).width - 120.0).abs() < 1.5);
+        assert!(ratio_changes.get() >= 1);
+
+        // Click close button of bottom-right toast card (card y=220..284, close center=(465, 239))
+        let close_pt = craftui_core::Point::new(465.0, 239.0);
+        assert_eq!(tree.hit_test(close_pt), Some(th));
+        assert_eq!(tree.cursor_at(close_pt), craftui_core::CursorIcon::Pointer);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(3),
+            phase: PointerPhase::Down,
+            position: close_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 100,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(3),
+            phase: PointerPhase::Up,
+            position: close_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 120,
+        }));
+        assert!(mgr.is_empty());
+        assert_eq!(*dismissed_ids.borrow(), vec![tid]);
     }
 }

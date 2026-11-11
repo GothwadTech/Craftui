@@ -8,7 +8,7 @@ use craftui_core::{
 use craftui_reactive::Scope;
 use craftui_render::{PaintScene, TextureHandle, TextureRegistry};
 use craftui_widgets::{WidgetKind, WidgetTree};
-use std::ffi::c_void;
+use std::ffi::{CString, c_char, c_void};
 
 /// iOS native view hosting strategy inside CraftUI `PlatformView`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +122,8 @@ pub struct IosAppHost {
     last_synced_text: Option<String>,
     needs_redraw: bool,
     pub last_ime_commands: Vec<IosImeCommand>,
+    last_error: Option<String>,
+    last_error_cstr: Option<CString>,
     #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
     gpu: Option<craftui_render::GpuSurfacePipeline>,
 }
@@ -146,8 +148,70 @@ impl IosAppHost {
             last_synced_text: None,
             needs_redraw: true,
             last_ime_commands: Vec::new(),
+            last_error: None,
+            last_error_cstr: None,
             #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
             gpu: None,
+        }
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+        self.last_error_cstr = None;
+    }
+
+    pub fn record_error(&mut self, msg: impl Into<String>) {
+        let text = msg.into();
+        let sanitized = text.replace('\0', "?");
+        self.last_error_cstr = CString::new(sanitized).ok();
+        self.last_error = Some(text);
+    }
+
+    /// Attach or replace the UIKit `CAMetalLayer` target, recording errors in [`Self::last_error`].
+    ///
+    /// # Safety
+    /// On iOS, if `layer.ca_metal_layer` is non-null it must point to a valid retained `CAMetalLayer`
+    /// that outlives the attached GPU pipeline.
+    pub unsafe fn attach_metal(
+        &mut self,
+        layer: IosMetalLayerDescriptor,
+    ) -> craftui_core::Result<()> {
+        if layer.ca_metal_layer.is_null() {
+            let err = craftui_core::CraftError::Platform(
+                "iOS CAMetalLayer pointer is null".to_string(),
+            );
+            self.record_error(err.to_string());
+            return Err(err);
+        }
+        #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
+        {
+            // SAFETY: forwarded from caller invariant that `layer.ca_metal_layer` outlives `self.gpu`.
+            match unsafe { ios_metal::attach_metal_pipeline(self, layer) } {
+                Ok(()) => {
+                    self.clear_error();
+                    Ok(())
+                }
+                Err(err) => {
+                    let msg = format!("iOS Metal attach failed: {err}");
+                    tracing::warn!("{msg}");
+                    self.record_error(msg);
+                    Err(err)
+                }
+            }
+        }
+        #[cfg(not(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello"))))]
+        {
+            let _ = layer;
+            let err = craftui_core::CraftError::Platform(
+                "iOS Metal pipeline requires target_os = \"ios\" with gpu-sdf or gpu-vello enabled"
+                    .to_string(),
+            );
+            self.record_error(err.to_string());
+            Err(err)
         }
     }
 
@@ -353,13 +417,17 @@ impl IosAppHost {
         if should_paint && let Some(gpu) = self.gpu.as_mut() {
             let bg = self.tree.theme().background;
             let sf = self.tree.metrics.scale_factor;
-            let _ = gpu.render_frame(
+            if let Err(err) = gpu.render_frame(
                 &self.scene,
                 sf,
                 bg,
                 &self.textures,
                 &mut self.tree.text_engine,
-            );
+            ) {
+                let msg = format!("iOS Metal render_frame failed: {err}");
+                tracing::warn!("{msg}");
+                self.record_error(msg);
+            }
         }
 
         self.last_ime_commands = cmds.clone();
@@ -450,13 +518,58 @@ pub unsafe extern "C" fn craftui_ios_app_launch(
     if let Some(build_fn) = build {
         build_fn(raw, user_data);
     }
-    #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
     if !layer.ca_metal_layer.is_null() {
         // SAFETY: `raw` was just allocated by `craftui_ios_app_create` and `layer.ca_metal_layer` invariant is upheld by caller.
         let host = unsafe { &mut *raw };
-        let _ = unsafe { ios_metal::attach_metal_pipeline(host, layer) };
+        let _ = unsafe { host.attach_metal(layer) };
     }
     raw
+}
+
+/// Attach or reattach a `CAMetalLayer` after creation. Returns `0` on success or `-1` on error
+/// (inspect the message with [`craftui_ios_app_last_error`]).
+///
+/// # Safety
+/// `app` must be a valid non-null [`IosAppHost`] pointer and `layer.ca_metal_layer` (on iOS) must be
+/// a valid retained `CAMetalLayer` pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn craftui_ios_app_attach_metal(
+    app: *mut IosAppHost,
+    layer: IosMetalLayerDescriptor,
+) -> i32 {
+    let Some(host) = (unsafe { app.as_mut() }) else {
+        return -1;
+    };
+    match unsafe { host.attach_metal(layer) } {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Returns a NUL-terminated UTF-8 pointer to the most recent error message, or NULL when clear.
+///
+/// # Safety
+/// `app` must be null or a valid [`IosAppHost`] pointer. The returned pointer remains valid only
+/// until the next call that mutates or destroys `app`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn craftui_ios_app_last_error(app: *const IosAppHost) -> *const c_char {
+    let Some(host) = (unsafe { app.as_ref() }) else {
+        return std::ptr::null();
+    };
+    host.last_error_cstr
+        .as_ref()
+        .map_or(std::ptr::null(), |s| s.as_ptr())
+}
+
+/// Clear the stored error message on `app`.
+///
+/// # Safety
+/// `app` must be null or a valid [`IosAppHost`] pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn craftui_ios_app_clear_error(app: *mut IosAppHost) {
+    if let Some(host) = unsafe { app.as_mut() } {
+        host.clear_error();
+    }
 }
 
 /// Dispose and free an [`IosAppHost`] created by [`craftui_ios_app_create`].
@@ -586,7 +699,34 @@ pub unsafe extern "C" fn craftui_ios_app_delete_backward(app: *mut IosAppHost) -
     host.push_delete_backward()
 }
 
-/// Advance one `CADisplayLink` frame. Returns a bitmask: bit 0 = animating, bit 1 = wants keyboard.
+/// Set marked (IME preedit) UTF-8 text from UIKit `UITextInput::setMarkedText`.
+///
+/// # Safety
+/// `app` must be a valid non-null [`IosAppHost`] pointer and if `utf8_len > 0`, `utf8_ptr` must
+/// point to `utf8_len` valid UTF-8 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn craftui_ios_app_set_marked_text(
+    app: *mut IosAppHost,
+    utf8_ptr: *const u8,
+    utf8_len: usize,
+    cursor_end: usize,
+) -> bool {
+    let Some(host) = (unsafe { app.as_mut() }) else {
+        return false;
+    };
+    if utf8_ptr.is_null() || utf8_len == 0 {
+        return host.push_marked_text("", 0);
+    }
+    // SAFETY: Caller guarantees `utf8_ptr..utf8_ptr+utf8_len` is valid for reading during this call.
+    let slice = unsafe { std::slice::from_raw_parts(utf8_ptr, utf8_len) };
+    let text = String::from_utf8_lossy(slice).into_owned();
+    host.push_marked_text(&text, cursor_end)
+}
+
+/// Advance one `CADisplayLink` frame. Returns a bitmask:
+/// - bit 0 (`0b001`): animating
+/// - bit 1 (`0b010`): wants keyboard
+/// - bit 2 (`0b100`): error recorded (inspect via [`craftui_ios_app_last_error`])
 ///
 /// # Safety
 /// `app` must be a valid non-null [`IosAppHost`] pointer.
@@ -602,7 +742,8 @@ pub unsafe extern "C" fn craftui_ios_app_tick(app: *mut IosAppHost, dt_sec: f32)
             IosImeCommand::BecomeFirstResponder | IosImeCommand::SyncText(_)
         )
     });
-    (u8::from(anim)) | (u8::from(wants_kb) << 1)
+    let has_err = host.last_error().is_some();
+    (u8::from(anim)) | (u8::from(wants_kb) << 1) | (u8::from(has_err) << 2)
 }
 
 #[cfg(test)]
@@ -738,8 +879,27 @@ mod tests {
             let (anim_idle, painted_idle, cmds_idle) =
                 host_ref.display_link_tick_with_redraw(0.016, now_ms + 50);
             assert!(!anim_idle && !painted_idle && cmds_idle.is_empty());
+            assert!(craftui_ios_app_last_error(app).is_null());
+            let marked = b"nihon";
+            assert!(craftui_ios_app_set_marked_text(
+                app,
+                marked.as_ptr(),
+                marked.len(),
+                5
+            ));
             let msg = b"hello";
             assert!(craftui_ios_app_insert_text(app, msg.as_ptr(), msg.len()));
+            // Attaching a null Metal layer fails gracefully and exposes last_error + tick bit 2
+            assert_eq!(craftui_ios_app_attach_metal(app, layer), -1);
+            let err_ptr = craftui_ios_app_last_error(app);
+            assert!(!err_ptr.is_null());
+            let err_str = std::ffi::CStr::from_ptr(err_ptr).to_str().unwrap();
+            assert!(err_str.contains("null"), "unexpected error: {err_str}");
+            let err_flags = craftui_ios_app_tick(app, 0.016);
+            assert_ne!(err_flags & 0b100, 0, "expected error bit in tick flags");
+            craftui_ios_app_clear_error(app);
+            assert!(craftui_ios_app_last_error(app).is_null());
+            assert_eq!(craftui_ios_app_tick(app, 0.016) & 0b100, 0);
             // Tap Button below TextInput (y around 60)
             assert!(craftui_ios_app_touch(app, 2, 0, 40.0, 60.0, 50));
             assert!(craftui_ios_app_touch(app, 2, 2, 40.0, 60.0, 70));

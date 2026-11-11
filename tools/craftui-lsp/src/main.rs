@@ -673,6 +673,22 @@ pub fn lookup_hover(text: &str, pos: Position) -> Option<Hover> {
         "ProgressIndicator" => {
             "Determinate (`0.0..=1.0`) or indeterminate animated progress bar (`progress`)."
         }
+        "Spinner" => {
+            "Indeterminate rotating circular progress ring (`size`, `thickness`, `color`)."
+        }
+        "Badge" => {
+            "Compact status pill / chip with optional icon and custom fill (`label`, `icon`, `background`, `color`)."
+        }
+        "SplitPane" => {
+            "Resizable two-pane container with draggable divider sash (`direction`, `<=> ratio`, `min_first`, `min_second`, `divider_size`, `on_change`)."
+        }
+        "ToastHost" => {
+            "Non-blocking notification overlay stack (`items: [ToastItem]`, `on_dismiss`)."
+        }
+        "ToastItem" => {
+            "Toast notification struct (`id`, `title`, `message`, `severity: ToastSeverity`, `duration_ms`)."
+        }
+        "ToastSeverity" => "Toast visual severity enum (`Info`, `Success`, `Warning`, `Error`).",
         "Modal" | "BottomSheet" => {
             "Focus-trapping overlay / sheet with backdrop click & `Escape` dismissal (`open`, `on_close`)."
         }
@@ -820,7 +836,7 @@ mod tests {
             &types_path,
             r#"export enum FilterKind { All, Open }
 export struct ItemRow { id: int, label: string }
-export component Badge {
+export component StatusTag {
     in property <string> text: "";
     Text { text: text; }
 }
@@ -828,13 +844,13 @@ export component Badge {
         )
         .unwrap();
 
-        let app_src = r#"import { FilterKind, ItemRow, Badge } from "./types.cui";
+        let app_src = r#"import { FilterKind, ItemRow, StatusTag } from "./types.cui";
 export component App {
     in-out property <string> query: "";
     Column {
         Tabs { tabs: ["A", "B"]; active: 0; on_change => { } }
         TextInput { value <=> query; on_submit => { } }
-        Badge { text: "ok"; }
+        StatusTag { text: "ok"; }
     }
 }
 "#;

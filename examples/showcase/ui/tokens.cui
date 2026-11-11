@@ -6,13 +6,15 @@ export struct ShowcaseMetric {
 export enum GalleryTab {
     Controls,
     DataList,
+    GlassMotion,
     Overlays,
 }
 
 export component SectionHeader {
     in property <string> title: "Section";
-    in property <string> badge: "v0.1";
+    in property <string> badge: "v0.2";
     in property <string> icon_name: "check";
+    in-out property <bool> hovered: false;
     callback on_badge_tap();
 
     Row {
@@ -41,6 +43,10 @@ export component SectionHeader {
             background: Theme.surface_variant;
             foreground: Theme.text_primary;
             border_radius: 14dp;
+            cursor: Pointer;
+            scale: hovered ? 1.05 : 1.0;
+            animate scale { curve: snappy(); }
+            on_hover => { hovered = value; }
             on_tap => { on_badge_tap(); }
         }
     }
@@ -49,20 +55,80 @@ export component SectionHeader {
 export component TagChip {
     in property <string> label: "Tag";
     in-out property <bool> selected: false;
+    in-out property <bool> hovered: false;
 
     Container {
+        cursor: Pointer;
+        scale: hovered ? 1.04 : 1.0;
+        animate scale { curve: spring(380.0, 24.0); }
+        on_hover => { hovered = value; }
+
         if selected : Button {
             text: label;
             background: Theme.primary;
             foreground: Theme.on_primary;
             border_radius: 16dp;
+            cursor: Pointer;
             on_tap => { selected = false; }
         } else : Button {
             text: label;
             background: Theme.surface_variant;
             foreground: Theme.text_primary;
             border_radius: 16dp;
+            cursor: Pointer;
             on_tap => { selected = true; }
+        }
+    }
+}
+
+export component GlassStatCard {
+    in property <string> title: "Engine";
+    in property <string> subtitle: "GPU SDF + Vello";
+    in property <string> status: "Active";
+    in property <color> badge_bg: #10B981;
+    in-out property <bool> hovered: false;
+    callback on_select();
+
+    Column {
+        flex_grow: 1.0;
+        padding: 16dp;
+        gap: 10dp;
+        border_radius: 14dp;
+        border_width: 1;
+        border_color: hovered ? Theme.primary : Theme.border;
+        background: Theme.surface;
+        backdrop_blur: 14dp;
+        backdrop_tint: Theme.surface;
+        shadow: [6dp, 18dp];
+        cursor: Pointer;
+        scale: hovered ? 1.02 : 1.0;
+        animate scale { curve: spring(360.0, 24.0); }
+        on_hover => { hovered = value; }
+        on_tap => { on_select(); }
+
+        Row {
+            width: 100%;
+            align: Center;
+            justify: SpaceBetween;
+
+            Text {
+                text: title;
+                font_size: 16;
+                font_weight: SemiBold;
+                color: Theme.text_primary;
+            }
+            Badge {
+                label: status;
+                icon: "check";
+                background: badge_bg;
+                color: #FFFFFF;
+            }
+        }
+
+        Text {
+            text: subtitle;
+            font_size: 13;
+            color: Theme.text_secondary;
         }
     }
 }

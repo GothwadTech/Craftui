@@ -21,7 +21,7 @@ pub fn generate_rust(file: &CuiFile) -> String {
     let _ = writeln!(out, "#[allow(unused_imports)]");
     let _ = writeln!(
         out,
-        "use ::craftui::widgets::{{AnimatableProp, BoxStyle, Easing, ReactiveValue, TransitionCurve, WidgetTree}};"
+        "use ::craftui::widgets::{{AnimatableProp, BoxStyle, Easing, ReactiveValue, ToastItem, ToastSeverity, TransitionCurve, WidgetTree}};"
     );
     let _ = writeln!(out);
 
@@ -261,7 +261,7 @@ fn emit_component(
 
     let _ = writeln!(
         out,
-        "    #[allow(dead_code, unused_variables, unused_parens, unused_mut, clippy::double_parens, clippy::clone_on_copy, clippy::unnecessary_cast, clippy::redundant_locals, clippy::type_complexity, clippy::let_and_return, clippy::needless_parens_on_range_literals, clippy::overly_complex_bool_expr)]"
+        "    #[allow(dead_code, unused_variables, unused_parens, unused_mut, clippy::double_parens, clippy::clone_on_copy, clippy::unnecessary_cast, clippy::redundant_locals, clippy::type_complexity, clippy::let_and_return, clippy::needless_parens_on_range_literals, clippy::overly_complex_bool_expr, clippy::needless_update, clippy::possible_missing_else)]"
     );
     let _ = writeln!(
         out,
@@ -328,6 +328,12 @@ impl<'a> EmitCtx<'a> {
             name.to_string()
         }
     }
+}
+
+fn can_bind_handler_local(name: &str, ctx: &EmitCtx<'_>) -> bool {
+    !ctx.prop_types.contains_key(name)
+        && !ctx.signal_locals.contains_key(name)
+        && !ctx.cb_params.contains_key(name)
 }
 
 fn find_prop<'a>(el: &'a ElementNode, names: &[&str]) -> Option<&'a PropBinding> {
@@ -440,15 +446,25 @@ fn emit_element(
                 let mut h_locals = ctx.locals.clone();
                 for (i, pt) in sub_cb.params.iter().enumerate() {
                     let mty = map_type(pt);
-                    if i == 0 {
+                    let arg_name = format!("arg{i}");
+                    let bind_value = i == 0 && can_bind_handler_local("value", ctx);
+                    let bind_arg = can_bind_handler_local(&arg_name, ctx);
+                    if bind_value {
                         h_locals.insert("value".into(), mty.clone());
-                        let _ = write!(alias_stmts, "let value = __arg_0.clone(); ");
+                        if bind_arg {
+                            let _ = write!(alias_stmts, "let value = __arg_0.clone(); ");
+                        } else {
+                            let _ = write!(alias_stmts, "let value = __arg_0; ");
+                        }
                     }
-                    h_locals.insert(format!("arg{i}"), mty);
-                    let _ = write!(alias_stmts, "let arg{i} = __arg_{i}.clone(); ");
+                    if bind_arg {
+                        h_locals.insert(arg_name.clone(), mty);
+                        let _ = write!(alias_stmts, "let {arg_name} = __arg_{i}; ");
+                    }
                 }
                 let h_ctx = EmitCtx {
                     locals: &h_locals,
+                    use_self: false,
                     ..*ctx
                 };
                 let captures = emit_signal_captures(ctx, &[]);
@@ -528,8 +544,12 @@ fn emit_element(
                         "ReactiveValue::Static(String::new())".into()
                     }
                 });
+            let btn_ctx = EmitCtx {
+                use_self: false,
+                ..*ctx
+            };
             let handler_code = find_handler(el, &["on_tap", "on_click"])
-                .map(|h| emit_handler_body(&h.body, ctx))
+                .map(|h| emit_handler_body(&h.body, &btn_ctx))
                 .unwrap_or_default();
             let captures = emit_signal_captures(ctx, &[]);
             if let Some(fg_prop) = find_prop(el, &["foreground", "color"]) {
@@ -593,58 +613,28 @@ fn emit_element(
                 .map(|p| expr_to_typed_rust(&p.value, "String", ctx))
                 .unwrap_or_else(|| "String::new()".into());
             let val_prop = find_prop(el, &["value"]);
-            let sig_setup = match val_prop {
-                Some(p) if p.two_way => match &p.value {
-                    Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("f32") => {
-                        ctx.prop_access(id)
-                    }
-                    Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("i32") => {
-                        let acc = ctx.prop_access(id);
-                        format!(
-                            "{{ let __s = {cx}.signal({acc}.get_untracked() as f32); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); {cx}.effect(move || {{ let v = __s.get().round() as i32; if __p.get_untracked() != v {{ __p.set(v); }} }}); __s }}"
-                        )
-                    }
-                    Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("usize") => {
-                        let acc = ctx.prop_access(id);
-                        format!(
-                            "{{ let __s = {cx}.signal({acc}.get_untracked() as f32); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); {cx}.effect(move || {{ let v = __s.get().max(0.0).round() as usize; if __p.get_untracked() != v {{ __p.set(v); }} }}); __s }}"
-                        )
-                    }
-                    other => {
-                        let v = expr_to_f32(other, ctx, false);
-                        format!("{cx}.signal({v})")
-                    }
-                },
-                Some(p) => {
-                    let init_f = expr_to_f32(&p.value, ctx, false);
-                    if expr_has_reactive_props(&p.value, ctx) {
-                        let captures = emit_signal_captures(ctx, &[]);
-                        let dyn_f = expr_to_f32(&p.value, ctx, true);
-                        format!(
-                            "{{ {captures} let __s = {cx}.signal({init_f}); {cx}.effect(move || {{ let v = {dyn_f}; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); __s }}"
-                        )
-                    } else {
-                        format!("{cx}.signal({init_f})")
-                    }
-                }
-                None => format!("{cx}.signal(0.0f32)"),
-            };
+            let sig_setup = emit_f32_signal_adapter(val_prop, "0.0f32", cx, ctx);
             let _ = writeln!(
                 out,
                 "{indent}let {var} = {tr}.slider({cx}, {sig_setup}, {min}, {max}, {lbl});"
             );
             if let Some(h) = find_handler(el, &["on_change"]) {
                 let mut h_locals = ctx.locals.clone();
-                h_locals.insert("value".into(), "f32".into());
+                let mut alias_stmts = String::new();
+                if can_bind_handler_local("value", ctx) {
+                    h_locals.insert("value".into(), "f32".into());
+                    alias_stmts.push_str("let value = __val; ");
+                }
                 let h_ctx = EmitCtx {
                     locals: &h_locals,
+                    use_self: false,
                     ..*ctx
                 };
                 let captures = emit_signal_captures(ctx, &[]);
                 let body = emit_handler_body(&h.body, &h_ctx);
                 let _ = writeln!(
                     out,
-                    "{indent}{{ {captures} {tr}.set_on_float_change({var}, move |value| {{ {body} }}); }}"
+                    "{indent}{{ {captures} {tr}.set_on_float_change({var}, move |__val| {{ {alias_stmts}{body} }}); }}"
                 );
             }
         }
@@ -688,17 +678,23 @@ fn emit_element(
             );
             if let Some(h) = find_handler(el, &["on_change", "on_tap", "on_click"]) {
                 let mut h_locals = ctx.locals.clone();
-                h_locals.insert("checked".into(), "bool".into());
-                h_locals.insert("value".into(), "bool".into());
+                let mut alias_stmts = String::new();
+                for alias in ["checked", "value"] {
+                    if can_bind_handler_local(alias, ctx) {
+                        h_locals.insert(alias.into(), "bool".into());
+                        let _ = write!(alias_stmts, "let {alias} = __checked; ");
+                    }
+                }
                 let h_ctx = EmitCtx {
                     locals: &h_locals,
+                    use_self: false,
                     ..*ctx
                 };
                 let captures = emit_signal_captures(ctx, &[]);
                 let body = emit_handler_body(&h.body, &h_ctx);
                 let _ = writeln!(
                     out,
-                    "{indent}{{ {captures} {tr}.set_on_bool_change({var}, move |checked| {{ let value = checked; {body} }}); }}"
+                    "{indent}{{ {captures} {tr}.set_on_bool_change({var}, move |__checked| {{ {alias_stmts}{body} }}); }}"
                 );
             }
         }
@@ -763,11 +759,15 @@ fn emit_element(
                 let reactive_style = sz_prop.is_some_and(|e| expr_has_reactive_props(e, ctx))
                     || wt_prop.is_some_and(|e| expr_has_reactive_props(e, ctx));
                 if reactive_style {
+                    let cap_ctx = EmitCtx {
+                        use_self: false,
+                        ..*ctx
+                    };
                     let dyn_sz = sz_prop
-                        .map(|e| expr_to_f32(e, ctx, true))
+                        .map(|e| expr_to_f32(e, &cap_ctx, true))
                         .unwrap_or_else(|| "14.0".into());
                     let dyn_wt = wt_prop
-                        .map(|e| expr_to_font_weight(e, ctx, true))
+                        .map(|e| expr_to_font_weight(e, &cap_ctx, true))
                         .unwrap_or_else(|| "400.0".into());
                     let cap_t = emit_signal_captures(ctx, &[]);
                     let cap_a = emit_signal_captures(ctx, &[]);
@@ -782,35 +782,39 @@ fn emit_element(
                     );
                 }
             }
-            if let Some(h) = find_handler(el, &["on_change"]) {
-                let mut h_locals = ctx.locals.clone();
-                h_locals.insert("value".into(), "String".into());
-                h_locals.insert("text".into(), "String".into());
-                let h_ctx = EmitCtx {
-                    locals: &h_locals,
-                    ..*ctx
-                };
-                let captures = emit_signal_captures(ctx, &[]);
-                let body = emit_handler_body(&h.body, &h_ctx);
-                let _ = writeln!(
-                    out,
-                    "{indent}{{ {captures} {tr}.set_on_change({var}, move |value| {{ let text = value.clone(); {body} }}); }}"
-                );
-            }
-            if let Some(h) = find_handler(el, &["on_submit"]) {
-                let mut h_locals = ctx.locals.clone();
-                h_locals.insert("value".into(), "String".into());
-                h_locals.insert("text".into(), "String".into());
-                let h_ctx = EmitCtx {
-                    locals: &h_locals,
-                    ..*ctx
-                };
-                let captures = emit_signal_captures(ctx, &[]);
-                let body = emit_handler_body(&h.body, &h_ctx);
-                let _ = writeln!(
-                    out,
-                    "{indent}{{ {captures} {tr}.set_on_submit({var}, move |value| {{ let text = value.clone(); {body} }}); }}"
-                );
+            for (ev_name, setter) in [
+                ("on_change", "set_on_change"),
+                ("on_submit", "set_on_submit"),
+            ] {
+                if let Some(h) = find_handler(el, &[ev_name]) {
+                    let mut h_locals = ctx.locals.clone();
+                    let bind_val = can_bind_handler_local("value", ctx);
+                    let bind_txt = can_bind_handler_local("text", ctx);
+                    let mut alias_stmts = String::new();
+                    if bind_val {
+                        h_locals.insert("value".into(), "String".into());
+                        if bind_txt {
+                            alias_stmts.push_str("let value = __val.clone(); ");
+                        } else {
+                            alias_stmts.push_str("let value = __val; ");
+                        }
+                    }
+                    if bind_txt {
+                        h_locals.insert("text".into(), "String".into());
+                        alias_stmts.push_str("let text = __val; ");
+                    }
+                    let h_ctx = EmitCtx {
+                        locals: &h_locals,
+                        use_self: false,
+                        ..*ctx
+                    };
+                    let captures = emit_signal_captures(ctx, &[]);
+                    let body = emit_handler_body(&h.body, &h_ctx);
+                    let _ = writeln!(
+                        out,
+                        "{indent}{{ {captures} {tr}.{setter}({var}, move |__val| {{ {alias_stmts}{body} }}); }}"
+                    );
+                }
             }
         }
         "Tabs" | "TabBar" => {
@@ -865,19 +869,22 @@ fn emit_element(
                 .unwrap_or_else(|| "ReactiveValue::Static(Vec::<String>::new())".into());
             let on_sel = if let Some(h) = find_handler(el, &["on_select", "on_change"]) {
                 let mut h_locals = ctx.locals.clone();
-                h_locals.insert("index".into(), "i32".into());
-                h_locals.insert("idx".into(), "i32".into());
-                h_locals.insert("selected".into(), "i32".into());
-                h_locals.insert("active".into(), "i32".into());
-                h_locals.insert("value".into(), "i32".into());
+                let mut alias_stmts = String::new();
+                for alias in ["index", "idx", "selected", "active", "value"] {
+                    if can_bind_handler_local(alias, ctx) {
+                        h_locals.insert(alias.into(), "i32".into());
+                        let _ = write!(alias_stmts, "let {alias} = __idx as i32; ");
+                    }
+                }
                 let h_ctx = EmitCtx {
                     locals: &h_locals,
+                    use_self: false,
                     ..*ctx
                 };
                 let captures = emit_signal_captures(ctx, &[]);
                 let body = emit_handler_body(&h.body, &h_ctx);
                 format!(
-                    "Some({{ {captures} std::rc::Rc::new(std::cell::RefCell::new(move |__idx: usize| {{ let index = __idx as i32; let idx = __idx as i32; let selected = __idx as i32; let active = __idx as i32; let value = __idx as i32; {body} }})) as std::rc::Rc<std::cell::RefCell<dyn FnMut(usize)>> }})"
+                    "Some({{ {captures} std::rc::Rc::new(std::cell::RefCell::new(move |__idx: usize| {{ {alias_stmts}{body} }})) as std::rc::Rc<std::cell::RefCell<dyn FnMut(usize)>> }})"
                 )
             } else {
                 "None".into()
@@ -927,6 +934,160 @@ fn emit_element(
                 out,
                 "{indent}let {var} = {tr}.progress_indicator({cx}, {prog_rv});"
             );
+        }
+        "Spinner" => {
+            let sz_prop = find_prop(el, &["size"]);
+            let init_sz = sz_prop
+                .map(|p| expr_to_f32(&p.value, ctx, false))
+                .unwrap_or_else(|| "24.0f32".into());
+            let _ = writeln!(out, "{indent}let {var} = {tr}.spinner({cx}, {init_sz});");
+            let th_prop = find_prop(el, &["thickness"]);
+            let col_prop = find_prop(el, &["color", "foreground"]);
+            if th_prop.is_some() || col_prop.is_some() {
+                let th_opt = match th_prop {
+                    Some(p) => format!("Some({})", expr_to_f32(&p.value, ctx, false)),
+                    None => "None".into(),
+                };
+                let col_opt = match col_prop {
+                    Some(p) => format!("Some({})", expr_to_reactive_color(&p.value, ctx)),
+                    None => "None".into(),
+                };
+                let _ = writeln!(
+                    out,
+                    "{indent}{tr}.set_spinner_style({var}, None, {th_opt}, {col_opt});"
+                );
+            }
+            let sz_dyn = sz_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
+            let th_dyn = th_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
+            if sz_dyn || th_dyn {
+                let cap_ctx = EmitCtx {
+                    use_self: false,
+                    ..*ctx
+                };
+                let mut tracks = String::new();
+                if let Some(p) = sz_prop {
+                    tracks.push_str(&emit_expr_dependency_reads(&p.value, &cap_ctx));
+                }
+                if let Some(p) = th_prop {
+                    tracks.push_str(&emit_expr_dependency_reads(&p.value, &cap_ctx));
+                }
+                let dsz = sz_prop
+                    .map(|p| format!("Some({})", expr_to_f32(&p.value, &cap_ctx, true)))
+                    .unwrap_or_else(|| "None".into());
+                let dth = th_prop
+                    .map(|p| format!("Some({})", expr_to_f32(&p.value, &cap_ctx, true)))
+                    .unwrap_or_else(|| "None".into());
+                let cap_t = emit_signal_captures(ctx, &[]);
+                let cap_a = emit_signal_captures(ctx, &[]);
+                let _ = writeln!(
+                    out,
+                    "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::LAYOUT | DirtyFlags::PAINT, {{ {cap_t} move || {{ {tracks} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_spinner_style(__id, {dsz}, {dth}, None); }} }});"
+                );
+            }
+        }
+        "Badge" => {
+            let lbl_rv = find_prop(el, &["label", "text"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let _ = writeln!(out, "{indent}let {var} = {tr}.badge({cx}, {lbl_rv});");
+            let fg_opt = match find_prop(el, &["color", "foreground"]) {
+                Some(p) => format!("Some({})", expr_to_reactive_color(&p.value, ctx)),
+                None => "None".into(),
+            };
+            let bg_opt = match find_prop(el, &["background"]) {
+                Some(p) => format!("Some({})", expr_to_reactive_color(&p.value, ctx)),
+                None => "None".into(),
+            };
+            if fg_opt != "None" || bg_opt != "None" {
+                let _ = writeln!(
+                    out,
+                    "{indent}{tr}.set_badge_colors({var}, {fg_opt}, {bg_opt});"
+                );
+            }
+            if let Some(ip) = find_prop(el, &["icon"]) {
+                let icon_rv = expr_to_reactive_string(&ip.value, ctx);
+                let _ = writeln!(out, "{indent}{tr}.set_badge_icon({var}, Some({icon_rv}));");
+            }
+        }
+        "SplitPane" => {
+            let axis = find_prop(el, &["direction"])
+                .map(|p| expr_to_axis(&p.value, ctx, false))
+                .unwrap_or_else(|| "Axis::Horizontal".into());
+            let ratio_prop = find_prop(el, &["ratio"]);
+            let ratio_sig = emit_f32_signal_adapter(ratio_prop, "0.5f32", cx, ctx);
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.split_pane({cx}, {axis}, {ratio_sig});"
+            );
+            let mf = find_prop(el, &["min_first"]);
+            let ms = find_prop(el, &["min_second"]);
+            let ds = find_prop(el, &["divider_size"]);
+            if mf.is_some() || ms.is_some() || ds.is_some() {
+                let mf_c = mf
+                    .map(|p| expr_to_f32(&p.value, ctx, false))
+                    .unwrap_or_else(|| "80.0f32".into());
+                let ms_c = ms
+                    .map(|p| expr_to_f32(&p.value, ctx, false))
+                    .unwrap_or_else(|| "80.0f32".into());
+                let ds_c = ds
+                    .map(|p| expr_to_f32(&p.value, ctx, false))
+                    .unwrap_or_else(|| "8.0f32".into());
+                let _ = writeln!(
+                    out,
+                    "{indent}{tr}.set_split_pane_config({var}, {mf_c}, {ms_c}, {ds_c});"
+                );
+            }
+            if let Some(h) = find_handler(el, &["on_change"]) {
+                let mut h_locals = ctx.locals.clone();
+                let mut alias_stmts = String::new();
+                for alias in ["value", "ratio"] {
+                    if can_bind_handler_local(alias, ctx) {
+                        h_locals.insert(alias.into(), "f32".into());
+                        let _ = write!(alias_stmts, "let {alias} = __val; ");
+                    }
+                }
+                let h_ctx = EmitCtx {
+                    locals: &h_locals,
+                    use_self: false,
+                    ..*ctx
+                };
+                let captures = emit_signal_captures(ctx, &[]);
+                let body = emit_handler_body(&h.body, &h_ctx);
+                let _ = writeln!(
+                    out,
+                    "{indent}{{ {captures} {tr}.set_on_float_change({var}, move |__val| {{ {alias_stmts}{body} }}); }}"
+                );
+            }
+        }
+        "ToastHost" => {
+            let items_rv = find_prop(el, &["items"])
+                .map(|p| emit_reactive_toast_list(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(Vec::<ToastItem>::new())".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.toast_host_custom({cx}, {items_rv}, None);"
+            );
+            if let Some(h) = find_handler(el, &["on_dismiss"]) {
+                let mut h_locals = ctx.locals.clone();
+                let mut alias_stmts = String::new();
+                for alias in ["id", "value"] {
+                    if can_bind_handler_local(alias, ctx) {
+                        h_locals.insert(alias.into(), "i32".into());
+                        let _ = write!(alias_stmts, "let {alias} = __id as i32; ");
+                    }
+                }
+                let h_ctx = EmitCtx {
+                    locals: &h_locals,
+                    use_self: false,
+                    ..*ctx
+                };
+                let captures = emit_signal_captures(ctx, &[]);
+                let body = emit_handler_body(&h.body, &h_ctx);
+                let _ = writeln!(
+                    out,
+                    "{indent}{{ {captures} {tr}.set_on_dismiss({var}, move |__id| {{ {alias_stmts}{body} }}); }}"
+                );
+            }
         }
         "Modal" | "BottomSheet" => {
             let is_sheet = el.kind == "BottomSheet";
@@ -1089,35 +1250,43 @@ fn emit_element(
 }
 
 fn layout_stmt_for_prop(p: &PropBinding, ctx: &EmitCtx<'_>, tracked: bool) -> Option<String> {
-    let f = |e: &Expr| expr_to_f32(e, ctx, tracked);
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
+    let eval_ctx = if tracked { &cap_ctx } else { ctx };
+    let f = |e: &Expr| expr_to_f32(e, eval_ctx, tracked);
     let b = |e: &Expr| {
         if tracked {
-            expr_to_typed_rust_captured(e, "bool", ctx)
+            expr_to_typed_rust_captured(e, "bool", eval_ctx)
         } else {
-            expr_to_typed_rust(e, "bool", ctx)
+            expr_to_typed_rust(e, "bool", eval_ctx)
         }
     };
     match p.name.as_str() {
-        "width" => Some(format!("ls.width = {};", expr_to_len(&p.value, ctx, tracked))),
+        "width" => Some(format!(
+            "ls.width = {};",
+            expr_to_len(&p.value, eval_ctx, tracked)
+        )),
         "height" => Some(format!(
             "ls.height = {};",
-            expr_to_len(&p.value, ctx, tracked)
+            expr_to_len(&p.value, eval_ctx, tracked)
         )),
         "min_width" => Some(format!(
             "ls.min_width = {};",
-            expr_to_len(&p.value, ctx, tracked)
+            expr_to_len(&p.value, eval_ctx, tracked)
         )),
         "max_width" => Some(format!(
             "ls.max_width = {};",
-            expr_to_len(&p.value, ctx, tracked)
+            expr_to_len(&p.value, eval_ctx, tracked)
         )),
         "min_height" => Some(format!(
             "ls.min_height = {};",
-            expr_to_len(&p.value, ctx, tracked)
+            expr_to_len(&p.value, eval_ctx, tracked)
         )),
         "max_height" => Some(format!(
             "ls.max_height = {};",
-            expr_to_len(&p.value, ctx, tracked)
+            expr_to_len(&p.value, eval_ctx, tracked)
         )),
         "flex_grow" => Some(format!("ls.flex_grow = {};", f(&p.value))),
         "flex_shrink" => Some(format!("ls.flex_shrink = {};", f(&p.value))),
@@ -1147,11 +1316,11 @@ fn layout_stmt_for_prop(p: &PropBinding, ctx: &EmitCtx<'_>, tracked: bool) -> Op
         "margin" => Some(format!("ls.margin = Insets::all({});", f(&p.value))),
         "justify" => Some(format!(
             "ls.justify_content = {};",
-            expr_to_justify(&p.value, ctx, tracked)
+            expr_to_justify(&p.value, eval_ctx, tracked)
         )),
         "align" => Some(format!(
             "ls.align_items = {};",
-            expr_to_align(&p.value, ctx, tracked)
+            expr_to_align(&p.value, eval_ctx, tracked)
         )),
         "clip" => Some(format!("ls.clip_overflow = {};", b(&p.value))),
         _ => None,
@@ -1167,6 +1336,10 @@ fn emit_common_props_and_events(
     is_subcomponent: bool,
 ) {
     let tr = ctx.tree_var;
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
 
     // Register node `id` if provided
     if let Some(id_prop) = find_prop(el, &["id"]) {
@@ -1183,10 +1356,10 @@ fn emit_common_props_and_events(
         if let Some(init_stmt) = layout_stmt_for_prop(p, ctx, false) {
             layout_init_stmts.push(init_stmt);
             if expr_has_reactive_props(&p.value, ctx)
-                && let Some(dyn_stmt) = layout_stmt_for_prop(p, ctx, true)
+                && let Some(dyn_stmt) = layout_stmt_for_prop(p, &cap_ctx, true)
             {
                 layout_dyn_stmts.push(dyn_stmt);
-                layout_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
+                layout_dyn_tracks.push(emit_expr_dependency_reads(&p.value, &cap_ctx));
             }
         }
     }
@@ -1218,7 +1391,7 @@ fn emit_common_props_and_events(
 
     for p in &el.props {
         match p.name.as_str() {
-            "background" => {
+            "background" if el.kind != "Badge" => {
                 let brush_rv = expr_to_reactive_brush(&p.value, ctx);
                 box_stmts.push(format!("bs.background = Some({brush_rv});"));
             }
@@ -1228,11 +1401,11 @@ fn emit_common_props_and_events(
                     "bs.radius = CornerRadii::all({rad}); if let Some(ref mut br) = bs.border {{ br.radius = bs.radius; }}"
                 ));
                 if expr_has_reactive_props(&p.value, ctx) {
-                    let drad = expr_to_f32(&p.value, ctx, true);
+                    let drad = expr_to_f32(&p.value, &cap_ctx, true);
                     box_dyn_stmts.push(format!(
                         "bs.radius = CornerRadii::all({drad}); if let Some(ref mut br) = bs.border {{ br.radius = bs.radius; }}"
                     ));
-                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, &cap_ctx));
                 }
             }
             "border_width" => {
@@ -1247,11 +1420,11 @@ fn emit_common_props_and_events(
                     );
                 }
                 if expr_has_reactive_props(&p.value, ctx) {
-                    let dbw = expr_to_f32(&p.value, ctx, true);
+                    let dbw = expr_to_f32(&p.value, &cap_ctx, true);
                     box_dyn_stmts.push(format!(
                         "let __br = bs.border.unwrap_or_else(|| Border {{ width: {dbw}, color: __tree.theme().border, radius: bs.radius }}); bs.border = Some(Border {{ width: {dbw}, color: __br.color, radius: bs.radius }});"
                     ));
-                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, &cap_ctx));
                 }
             }
             "border_color" => {
@@ -1273,16 +1446,16 @@ fn emit_common_props_and_events(
                 let b = expr_to_typed_rust(&p.value, "bool", ctx);
                 box_stmts.push(format!("bs.clip = {b};"));
                 if expr_has_reactive_props(&p.value, ctx) {
-                    let db = expr_to_typed_rust_captured(&p.value, "bool", ctx);
+                    let db = expr_to_typed_rust_captured(&p.value, "bool", &cap_ctx);
                     box_dyn_stmts.push(format!("bs.clip = {db};"));
-                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, &cap_ctx));
                 }
             }
             "shadow" => {
                 box_stmts.push(emit_shadow_assignment(&p.value, ctx, false));
                 if expr_has_reactive_props(&p.value, ctx) {
-                    box_dyn_stmts.push(emit_shadow_assignment(&p.value, ctx, true));
-                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
+                    box_dyn_stmts.push(emit_shadow_assignment(&p.value, &cap_ctx, true));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, &cap_ctx));
                 }
             }
             _ => {}
@@ -1308,8 +1481,8 @@ fn emit_common_props_and_events(
     }
 
     if let Some(op_e) = reactive_opacity_expr {
-        let track = emit_expr_dependency_reads(op_e, ctx);
-        let dyn_op = expr_to_f32(op_e, ctx, true);
+        let track = emit_expr_dependency_reads(op_e, &cap_ctx);
+        let dyn_op = expr_to_f32(op_e, &cap_ctx, true);
         let cap_t = emit_signal_captures(ctx, &[]);
         let cap_a = emit_signal_captures(ctx, &[]);
         let _ = writeln!(
@@ -1330,16 +1503,16 @@ fn emit_common_props_and_events(
         if blur_reactive || tint_reactive {
             let mut tracks = String::new();
             if let Some(bp) = blur_prop {
-                tracks.push_str(&emit_expr_dependency_reads(&bp.value, ctx));
+                tracks.push_str(&emit_expr_dependency_reads(&bp.value, &cap_ctx));
             }
             if let Some(tp) = tint_prop {
-                tracks.push_str(&emit_expr_dependency_reads(&tp.value, ctx));
+                tracks.push_str(&emit_expr_dependency_reads(&tp.value, &cap_ctx));
             }
             let dblur = blur_prop
-                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .map(|p| expr_to_f32(&p.value, &cap_ctx, true))
                 .unwrap_or_else(|| "0.0".into());
             let dtint = tint_prop
-                .map(|p| expr_to_typed_rust_captured(&p.value, "Color", ctx))
+                .map(|p| expr_to_typed_rust_captured(&p.value, "Color", &cap_ctx))
                 .unwrap_or_else(|| "Color::TRANSPARENT".into());
             let cap_t = emit_signal_captures(ctx, &[]);
             let cap_a = emit_signal_captures(ctx, &[]);
@@ -1364,8 +1537,8 @@ fn emit_common_props_and_events(
     // 4. Blend mode & Cursor
     if let Some(bm_prop) = find_prop(el, &["blend_mode"]) {
         if expr_has_reactive_props(&bm_prop.value, ctx) {
-            let track = emit_expr_dependency_reads(&bm_prop.value, ctx);
-            let dbm = expr_to_blend_mode(&bm_prop.value, ctx, true);
+            let track = emit_expr_dependency_reads(&bm_prop.value, &cap_ctx);
+            let dbm = expr_to_blend_mode(&bm_prop.value, &cap_ctx, true);
             let cap_t = emit_signal_captures(ctx, &[]);
             let cap_a = emit_signal_captures(ctx, &[]);
             let _ = writeln!(
@@ -1380,8 +1553,8 @@ fn emit_common_props_and_events(
 
     if let Some(cur_prop) = find_prop(el, &["cursor"]) {
         if expr_has_reactive_props(&cur_prop.value, ctx) {
-            let track = emit_expr_dependency_reads(&cur_prop.value, ctx);
-            let dcur = expr_to_cursor_opt(&cur_prop.value, ctx, true);
+            let track = emit_expr_dependency_reads(&cur_prop.value, &cap_ctx);
+            let dcur = expr_to_cursor_opt(&cur_prop.value, &cap_ctx, true);
             let cap_t = emit_signal_captures(ctx, &[]);
             let cap_a = emit_signal_captures(ctx, &[]);
             let _ = writeln!(
@@ -1403,17 +1576,22 @@ fn emit_common_props_and_events(
             || scx_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx))
             || scy_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
         let scale_pair = |tracked: bool| {
-            let base = sc_prop.map(|p| expr_to_f32(&p.value, ctx, tracked));
+            let eval_ctx = if tracked { &cap_ctx } else { ctx };
+            let base = sc_prop.map(|p| expr_to_f32(&p.value, eval_ctx, tracked));
             let sx = match (&base, scx_prop) {
-                (Some(b), Some(x)) => format!("({b} * {})", expr_to_f32(&x.value, ctx, tracked)),
+                (Some(b), Some(x)) => {
+                    format!("({b} * {})", expr_to_f32(&x.value, eval_ctx, tracked))
+                }
                 (Some(b), None) => b.clone(),
-                (None, Some(x)) => expr_to_f32(&x.value, ctx, tracked),
+                (None, Some(x)) => expr_to_f32(&x.value, eval_ctx, tracked),
                 (None, None) => "1.0f32".into(),
             };
             let sy = match (&base, scy_prop) {
-                (Some(b), Some(y)) => format!("({b} * {})", expr_to_f32(&y.value, ctx, tracked)),
+                (Some(b), Some(y)) => {
+                    format!("({b} * {})", expr_to_f32(&y.value, eval_ctx, tracked))
+                }
                 (Some(b), None) => b.clone(),
-                (None, Some(y)) => expr_to_f32(&y.value, ctx, tracked),
+                (None, Some(y)) => expr_to_f32(&y.value, eval_ctx, tracked),
                 (None, None) => "1.0f32".into(),
             };
             (sx, sy)
@@ -1421,7 +1599,7 @@ fn emit_common_props_and_events(
         if reactive {
             let mut tracks = String::new();
             for p in [sc_prop, scx_prop, scy_prop].into_iter().flatten() {
-                tracks.push_str(&emit_expr_dependency_reads(&p.value, ctx));
+                tracks.push_str(&emit_expr_dependency_reads(&p.value, &cap_ctx));
             }
             let (dsx, dsy) = scale_pair(true);
             let cap_t = emit_signal_captures(ctx, &[]);
@@ -1444,13 +1622,13 @@ fn emit_common_props_and_events(
         if reactive {
             let mut tracks = String::new();
             for p in [tx_prop, ty_prop].into_iter().flatten() {
-                tracks.push_str(&emit_expr_dependency_reads(&p.value, ctx));
+                tracks.push_str(&emit_expr_dependency_reads(&p.value, &cap_ctx));
             }
             let dtx = tx_prop
-                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .map(|p| expr_to_f32(&p.value, &cap_ctx, true))
                 .unwrap_or_else(|| "0.0".into());
             let dty = ty_prop
-                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .map(|p| expr_to_f32(&p.value, &cap_ctx, true))
                 .unwrap_or_else(|| "0.0".into());
             let cap_t = emit_signal_captures(ctx, &[]);
             let cap_a = emit_signal_captures(ctx, &[]);
@@ -1471,8 +1649,8 @@ fn emit_common_props_and_events(
 
     if let Some(rot_prop) = find_prop(el, &["rotate", "rotation"]) {
         if expr_has_reactive_props(&rot_prop.value, ctx) {
-            let track = emit_expr_dependency_reads(&rot_prop.value, ctx);
-            let drot = expr_to_f32(&rot_prop.value, ctx, true);
+            let track = emit_expr_dependency_reads(&rot_prop.value, &cap_ctx);
+            let drot = expr_to_f32(&rot_prop.value, &cap_ctx, true);
             let cap_t = emit_signal_captures(ctx, &[]);
             let cap_a = emit_signal_captures(ctx, &[]);
             let _ = writeln!(
@@ -1493,13 +1671,13 @@ fn emit_common_props_and_events(
         if reactive {
             let mut tracks = String::new();
             for p in [kx_prop, ky_prop].into_iter().flatten() {
-                tracks.push_str(&emit_expr_dependency_reads(&p.value, ctx));
+                tracks.push_str(&emit_expr_dependency_reads(&p.value, &cap_ctx));
             }
             let dkx = kx_prop
-                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .map(|p| expr_to_f32(&p.value, &cap_ctx, true))
                 .unwrap_or_else(|| "0.0".into());
             let dky = ky_prop
-                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .map(|p| expr_to_f32(&p.value, &cap_ctx, true))
                 .unwrap_or_else(|| "0.0".into());
             let cap_t = emit_signal_captures(ctx, &[]);
             let cap_a = emit_signal_captures(ctx, &[]);
@@ -1553,7 +1731,7 @@ fn emit_common_props_and_events(
                 .is_some_and(|c| c.callbacks.iter().any(|cb| cb.name == h.event)))
     {
         let captures = emit_signal_captures(ctx, &[]);
-        let body = emit_handler_body(&h.body, ctx);
+        let body = emit_handler_body(&h.body, &cap_ctx);
         let _ = writeln!(
             out,
             "{indent}{{ {captures} {tr}.set_on_tap({var}, move || {{ {body} }}); }}"
@@ -1561,7 +1739,7 @@ fn emit_common_props_and_events(
     }
     if let Some(h) = find_handler(el, &["on_double_tap"]) {
         let captures = emit_signal_captures(ctx, &[]);
-        let body = emit_handler_body(&h.body, ctx);
+        let body = emit_handler_body(&h.body, &cap_ctx);
         let _ = writeln!(
             out,
             "{indent}{{ {captures} {tr}.set_on_double_tap({var}, move || {{ {body} }}); }}"
@@ -1569,7 +1747,7 @@ fn emit_common_props_and_events(
     }
     if let Some(h) = find_handler(el, &["on_long_press"]) {
         let captures = emit_signal_captures(ctx, &[]);
-        let body = emit_handler_body(&h.body, ctx);
+        let body = emit_handler_body(&h.body, &cap_ctx);
         let _ = writeln!(
             out,
             "{indent}{{ {captures} {tr}.set_on_long_press({var}, move || {{ {body} }}); }}"
@@ -1577,17 +1755,23 @@ fn emit_common_props_and_events(
     }
     if let Some(h) = find_handler(el, &["on_hover"]) {
         let mut h_locals = ctx.locals.clone();
-        h_locals.insert("hovered".into(), "bool".into());
-        h_locals.insert("value".into(), "bool".into());
+        let mut alias_stmts = String::new();
+        for alias in ["hovered", "value"] {
+            if can_bind_handler_local(alias, ctx) {
+                h_locals.insert(alias.into(), "bool".into());
+                let _ = write!(alias_stmts, "let {alias} = __hovered; ");
+            }
+        }
         let h_ctx = EmitCtx {
             locals: &h_locals,
+            use_self: false,
             ..*ctx
         };
         let captures = emit_signal_captures(ctx, &[]);
         let body = emit_handler_body(&h.body, &h_ctx);
         let _ = writeln!(
             out,
-            "{indent}{{ {captures} {tr}.set_on_hover({var}, move |hovered| {{ let value = hovered; {body} }}); }}"
+            "{indent}{{ {captures} {tr}.set_on_hover({var}, move |__hovered| {{ {alias_stmts}{body} }}); }}"
         );
     }
 
@@ -1681,12 +1865,17 @@ fn emit_easing_name(expr: &Expr) -> &'static str {
 }
 
 fn emit_shadow_assignment(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
+    let eval_ctx = if tracked { &cap_ctx } else { ctx };
     match expr {
         Expr::Array(items) => {
             let shadows: Vec<String> = items
                 .iter()
                 .map(|it| {
-                    let blur = expr_to_f32(it, ctx, tracked);
+                    let blur = expr_to_f32(it, eval_ctx, tracked);
                     format!("BoxShadow::new(0.0, 4.0, {blur}, Color::rgba(0, 0, 0, 80))")
                 })
                 .collect();
@@ -1699,18 +1888,18 @@ fn emit_shadow_assignment(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> Stri
             "bs.shadow = Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80)));".into()
         }
         Expr::Bool(false) => "bs.shadow = None; bs.shadows.clear();".into(),
-        other if infer_expr_type(other, ctx) == "bool" => {
+        other if infer_expr_type(other, eval_ctx) == "bool" => {
             let cond = if tracked {
-                expr_to_typed_rust_captured(other, "bool", ctx)
+                expr_to_typed_rust_captured(other, "bool", eval_ctx)
             } else {
-                expr_to_typed_rust(other, "bool", ctx)
+                expr_to_typed_rust(other, "bool", eval_ctx)
             };
             format!(
                 "bs.shadow = if {cond} {{ Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80))) }} else {{ None }};"
             )
         }
         other => {
-            let blur = expr_to_f32(other, ctx, tracked);
+            let blur = expr_to_f32(other, eval_ctx, tracked);
             format!(
                 "let __sh_blur = {blur}; bs.shadow = if __sh_blur > 0.0 {{ Some(BoxShadow::new(0.0, 4.0, __sh_blur, Color::rgba(0, 0, 0, 80))) }} else {{ None }};"
             )
@@ -1719,15 +1908,19 @@ fn emit_shadow_assignment(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> Stri
 }
 
 fn emit_expr_dependency_reads(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
     let mut deps = Vec::new();
     let mut needs_theme = false;
-    collect_expr_deps(expr, ctx, &mut deps, &mut needs_theme);
+    collect_expr_deps(expr, &cap_ctx, &mut deps, &mut needs_theme);
     let mut s = String::new();
     if needs_theme {
         let _ = write!(s, "let _ = __theme_sig.get(); let _ = __theme_ov_sig.get(); ");
     }
     for d in deps {
-        let acc = ctx.prop_access(&d);
+        let acc = cap_ctx.prop_access(&d);
         let _ = write!(s, "let _ = {acc}.get(); ");
     }
     s
@@ -2020,6 +2213,68 @@ fn emit_iterable_info(expr: &Expr, ctx: &EmitCtx<'_>) -> (String, String, String
     }
 }
 
+fn emit_f32_signal_adapter(
+    prop: Option<&PropBinding>,
+    default_val: &str,
+    cx: &str,
+    ctx: &EmitCtx<'_>,
+) -> String {
+    match prop {
+        Some(p) if p.two_way => match &p.value {
+            Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("f32") => ctx.prop_access(id),
+            Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("i32") => {
+                let acc = ctx.prop_access(id);
+                format!(
+                    "{{ let __s = {cx}.signal({acc}.get_untracked() as f32); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); {cx}.effect(move || {{ let v = __s.get().round() as i32; if __p.get_untracked() != v {{ __p.set(v); }} }}); __s }}"
+                )
+            }
+            Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("usize") => {
+                let acc = ctx.prop_access(id);
+                format!(
+                    "{{ let __s = {cx}.signal({acc}.get_untracked() as f32); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); {cx}.effect(move || {{ let v = __s.get().max(0.0).round() as usize; if __p.get_untracked() != v {{ __p.set(v); }} }}); __s }}"
+                )
+            }
+            other => {
+                let v = expr_to_f32(other, ctx, false);
+                format!("{cx}.signal({v})")
+            }
+        },
+        Some(p) => {
+            let init_f = expr_to_f32(&p.value, ctx, false);
+            if expr_has_reactive_props(&p.value, ctx) {
+                let cap_ctx = EmitCtx {
+                    use_self: false,
+                    ..*ctx
+                };
+                let captures = emit_signal_captures(ctx, &[]);
+                let dyn_f = expr_to_f32(&p.value, &cap_ctx, true);
+                format!(
+                    "{{ {captures} let __s = {cx}.signal({init_f}); {cx}.effect(move || {{ let v = {dyn_f}; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); __s }}"
+                )
+            } else {
+                format!("{cx}.signal({init_f})")
+            }
+        }
+        None => format!("{cx}.signal({default_val})"),
+    }
+}
+
+fn emit_reactive_toast_list(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+    if let Expr::Ident(id) = expr
+        && ctx.signal_type(id.as_str()) == Some("Vec<ToastItem>")
+    {
+        return format!("ReactiveValue::from({})", ctx.prop_access(id));
+    }
+    if expr_has_reactive_props(expr, ctx) {
+        let captures = emit_signal_captures(ctx, &[]);
+        let body = expr_to_typed_rust_captured(expr, "Vec<ToastItem>", ctx);
+        format!("{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {body})) }}")
+    } else {
+        let init = expr_to_typed_rust(expr, "Vec<ToastItem>", ctx);
+        format!("ReactiveValue::Static({init})")
+    }
+}
+
 fn emit_usize_signal_adapter(prop: Option<&PropBinding>, cx: &str, ctx: &EmitCtx<'_>) -> String {
     match prop {
         Some(p) if p.two_way => match &p.value {
@@ -2067,20 +2322,23 @@ fn emit_index_change_handler(
     let tr = ctx.tree_var;
     if let Some(h) = find_handler(el, &["on_change", "on_select"]) {
         let mut h_locals = ctx.locals.clone();
-        h_locals.insert("index".into(), "i32".into());
-        h_locals.insert("idx".into(), "i32".into());
-        h_locals.insert("selected".into(), "i32".into());
-        h_locals.insert("active".into(), "i32".into());
-        h_locals.insert("value".into(), "i32".into());
+        let mut alias_stmts = String::new();
+        for alias in ["index", "idx", "selected", "active", "value"] {
+            if can_bind_handler_local(alias, ctx) {
+                h_locals.insert(alias.into(), "i32".into());
+                let _ = write!(alias_stmts, "let {alias} = __idx as i32; ");
+            }
+        }
         let h_ctx = EmitCtx {
             locals: &h_locals,
+            use_self: false,
             ..*ctx
         };
         let captures = emit_signal_captures(ctx, &[]);
         let body = emit_handler_body(&h.body, &h_ctx);
         let _ = writeln!(
             out,
-            "{indent}{{ {captures} {tr}.set_on_index_change({var}, move |__idx| {{ let index = __idx as i32; let idx = __idx as i32; let selected = __idx as i32; let active = __idx as i32; let value = __idx as i32; {body} }}); }}"
+            "{indent}{{ {captures} {tr}.set_on_index_change({var}, move |__idx| {{ {alias_stmts}{body} }}); }}"
         );
     }
 }
@@ -2091,8 +2349,12 @@ fn emit_overlay_close_handler(
     ctx: &EmitCtx<'_>,
 ) -> String {
     if let Some(h) = find_handler(el, &["on_close"]) {
+        let cap_ctx = EmitCtx {
+            use_self: false,
+            ..*ctx
+        };
         let captures = emit_signal_captures(ctx, &[]);
-        let body = emit_handler_body(&h.body, ctx);
+        let body = emit_handler_body(&h.body, &cap_ctx);
         return format!(
             "Some({{ {captures} std::rc::Rc::new(std::cell::RefCell::new(move || {{ {body} }})) as std::rc::Rc<std::cell::RefCell<dyn FnMut()>> }})"
         );
@@ -2361,11 +2623,21 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                 if root == "ThemeMode" {
                     return "ThemeMode".into();
                 }
+                if root == "ToastSeverity" {
+                    return "ToastSeverity".into();
+                }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return root.clone();
                 }
             }
             let base_ty = infer_expr_type(base, ctx);
+            if base_ty == "ToastItem" {
+                return match field.as_str() {
+                    "id" | "duration_ms" => "u64".into(),
+                    "severity" => "ToastSeverity".into(),
+                    _ => "String".into(),
+                };
+            }
             if let Some(st) = ctx.struct_map.get(base_ty.as_str())
                 && let Some(f) = st.fields.iter().find(|f| f.name == *field)
             {
@@ -2397,6 +2669,8 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                     "f32".into()
                 } else if lt == "usize" || rt == "usize" {
                     "usize".into()
+                } else if lt == "u64" || rt == "u64" {
+                    "u64".into()
                 } else {
                     "i32".into()
                 }
@@ -2408,6 +2682,8 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                     "f32".into()
                 } else if lt == "usize" && rt == "usize" {
                     "usize".into()
+                } else if lt == "u64" || rt == "u64" {
+                    "u64".into()
                 } else {
                     "i32".into()
                 }
@@ -2499,12 +2775,14 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
         Expr::Int(v) => match ty {
             "f32" => format!("{v}.0f32"),
             "usize" => format!("{}usize", (*v).max(0)),
+            "u64" => format!("{}u64", (*v).max(0)),
             "String" => format!("{v:?}.to_string()"),
             _ => format!("{v}i32"),
         },
         Expr::Float(v) => match ty {
             "i32" => format!("{}i32", *v as i32),
             "usize" => format!("{}usize", (*v).max(0.0) as usize),
+            "u64" => format!("{}u64", (*v).max(0.0) as u64),
             "String" => format!("{v:?}.to_string()"),
             _ => format!("{v}f32"),
         },
@@ -2512,6 +2790,7 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
             "String" => format!("{v:?}.to_string()"),
             "i32" => format!("{}i32", *v as i32),
             "usize" => format!("{}usize", (*v).max(0.0) as usize),
+            "u64" => format!("{}u64", (*v).max(0.0) as u64),
             _ => format!("{v}f32"),
         },
         Expr::Bool(b) => match ty {
@@ -2548,6 +2827,9 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                 if root == "ThemeMode" {
                     return format!("ThemeMode::{field}");
                 }
+                if root == "ToastSeverity" {
+                    return format!("ToastSeverity::{field}");
+                }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return format!("{root}::{field}");
                 }
@@ -2574,6 +2856,13 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                     let fty = st_decl
                         .and_then(|s| s.fields.iter().find(|sf| sf.name == *fname))
                         .map(|sf| map_type(&sf.ty))
+                        .or_else(|| {
+                            (name == "ToastItem").then(|| match fname.as_str() {
+                                "id" | "duration_ms" => "u64".into(),
+                                "severity" => "ToastSeverity".into(),
+                                _ => "String".into(),
+                            })
+                        })
                         .unwrap_or_else(|| infer_expr_type(fval, ctx));
                     format!(
                         "{fname}: {}",
@@ -2581,7 +2870,11 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                     )
                 })
                 .collect();
-            format!("{name} {{ {}, ..Default::default() }}", parts.join(", "))
+            if parts.is_empty() {
+                format!("{name}::default()")
+            } else {
+                format!("{name} {{ {}, ..Default::default() }}", parts.join(", "))
+            }
         }
         Expr::Array(items) => {
             let elem_ty = if ty.starts_with("Vec<") {
@@ -2742,6 +3035,8 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                         "String".into()
                     } else if lt == "bool" || rt == "bool" {
                         "bool".into()
+                    } else if lt == "u64" || rt == "u64" {
+                        "u64".into()
                     } else {
                         lt
                     }
@@ -2755,6 +3050,11 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                         "f32".into()
                     } else if ty == "usize" {
                         "usize".into()
+                    } else if ty == "u64"
+                        || infer_expr_type(l, ctx) == "u64"
+                        || infer_expr_type(r, ctx) == "u64"
+                    {
+                        "u64".into()
                     } else {
                         "i32".into()
                     }
@@ -2807,7 +3107,7 @@ fn cast_expr_var(expr_code: &str, actual_ty: &str, expected_ty: &str) -> String 
     if actual_ty == expected_ty {
         if matches!(
             actual_ty,
-            "i32" | "usize" | "f32" | "bool" | "Color" | "ThemeMode"
+            "i32" | "usize" | "u64" | "f32" | "bool" | "Color" | "ThemeMode" | "ToastSeverity"
         ) {
             return expr_code.to_string();
         }
@@ -2816,9 +3116,14 @@ fn cast_expr_var(expr_code: &str, actual_ty: &str, expected_ty: &str) -> String 
     match (actual_ty, expected_ty) {
         ("i32", "usize") => format!("(({expr_code}).max(0) as usize)"),
         ("usize", "i32") => format!("({expr_code} as i32)"),
-        ("i32", "f32") | ("usize", "f32") => format!("({expr_code} as f32)"),
+        ("i32", "u64") => format!("(({expr_code}).max(0) as u64)"),
+        ("u64", "i32") => format!("({expr_code} as i32)"),
+        ("usize", "u64") => format!("({expr_code} as u64)"),
+        ("u64", "usize") => format!("({expr_code} as usize)"),
+        ("i32", "f32") | ("usize", "f32") | ("u64", "f32") => format!("({expr_code} as f32)"),
         ("f32", "i32") => format!("({expr_code} as i32)"),
         ("f32", "usize") => format!("(({expr_code}).max(0.0) as usize)"),
+        ("f32", "u64") => format!("(({expr_code}).max(0.0) as u64)"),
         (_, "String") => format!("format!(\"{{}}\", {expr_code})"),
         _ => format!("{expr_code}.clone()"),
     }
@@ -2961,14 +3266,18 @@ fn emit_reactive_text_style(
         || weight_expr.is_some_and(|e| expr_has_reactive_props(e, ctx));
 
     if reactive {
+        let cap_ctx = EmitCtx {
+            use_self: false,
+            ..*ctx
+        };
         let size_c = size_expr
-            .map(|e| expr_to_f32(e, ctx, true))
+            .map(|e| expr_to_f32(e, &cap_ctx, true))
             .unwrap_or_else(|| "16.0".into());
         let weight_c = weight_expr
-            .map(|e| expr_to_font_weight(e, ctx, true))
+            .map(|e| expr_to_font_weight(e, &cap_ctx, true))
             .unwrap_or_else(|| "400.0".into());
         let captures = emit_signal_captures(ctx, &[]);
-        let cbody = expr_to_typed_rust_captured(color_expr, "Color", ctx);
+        let cbody = expr_to_typed_rust_captured(color_expr, "Color", &cap_ctx);
         format!(
             "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || TextStyle::default().with_size({size_c}).with_weight({weight_c}).with_color({cbody}))) }}"
         )
@@ -2993,6 +3302,11 @@ fn expr_to_keyword_enum(
     map_ident: &dyn Fn(&str) -> Option<&'static str>,
     fallback: &str,
 ) -> String {
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
+    let eval_ctx = if tracked { &cap_ctx } else { ctx };
     match expr {
         Expr::Ident(s) => map_ident(s.as_str()).unwrap_or(fallback).to_string(),
         Expr::Ternary {
@@ -3000,9 +3314,9 @@ fn expr_to_keyword_enum(
             then_expr,
             else_expr,
         } => {
-            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
-            let t = expr_to_keyword_enum(then_expr, ctx, tracked, map_ident, fallback);
-            let e = expr_to_keyword_enum(else_expr, ctx, tracked, map_ident, fallback);
+            let c = expr_to_typed_rust_inner(cond, "bool", eval_ctx, tracked);
+            let t = expr_to_keyword_enum(then_expr, eval_ctx, tracked, map_ident, fallback);
+            let e = expr_to_keyword_enum(else_expr, eval_ctx, tracked, map_ident, fallback);
             format!("(if {c} {{ {t} }} else {{ {e} }})")
         }
         _ => fallback.to_string(),
@@ -3115,6 +3429,11 @@ fn expr_to_cursor_opt(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
 }
 
 fn expr_to_font_weight(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
+    let eval_ctx = if tracked { &cap_ctx } else { ctx };
     match expr {
         Expr::Ident(s) => match s.as_str() {
             "Thin" => "100.0".into(),
@@ -3126,23 +3445,28 @@ fn expr_to_font_weight(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String 
             "Bold" => "700.0".into(),
             "ExtraBold" => "800.0".into(),
             "Black" => "900.0".into(),
-            _ => expr_to_f32(expr, ctx, tracked),
+            _ => expr_to_f32(expr, eval_ctx, tracked),
         },
         Expr::Ternary {
             cond,
             then_expr,
             else_expr,
         } => {
-            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
-            let t = expr_to_font_weight(then_expr, ctx, tracked);
-            let e = expr_to_font_weight(else_expr, ctx, tracked);
+            let c = expr_to_typed_rust_inner(cond, "bool", eval_ctx, tracked);
+            let t = expr_to_font_weight(then_expr, eval_ctx, tracked);
+            let e = expr_to_font_weight(else_expr, eval_ctx, tracked);
             format!("(if {c} {{ {t} }} else {{ {e} }})")
         }
-        other => expr_to_f32(other, ctx, tracked),
+        other => expr_to_f32(other, eval_ctx, tracked),
     }
 }
 
 fn expr_to_f32(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
+    let eval_ctx = if tracked { &cap_ctx } else { ctx };
     match expr {
         Expr::Length(v, _) | Expr::DurationSec(v) => format!("{v}f32"),
         Expr::Float(v) => format!("{v}f32"),
@@ -3152,22 +3476,27 @@ fn expr_to_f32(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
             then_expr,
             else_expr,
         } => {
-            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
-            let t = expr_to_f32(then_expr, ctx, tracked);
-            let e = expr_to_f32(else_expr, ctx, tracked);
+            let c = expr_to_typed_rust_inner(cond, "bool", eval_ctx, tracked);
+            let t = expr_to_f32(then_expr, eval_ctx, tracked);
+            let e = expr_to_f32(else_expr, eval_ctx, tracked);
             format!("(if {c} {{ {t} }} else {{ {e} }})")
         }
         other => {
             if tracked {
-                expr_to_typed_rust_captured(other, "f32", ctx)
+                expr_to_typed_rust_captured(other, "f32", eval_ctx)
             } else {
-                expr_to_typed_rust(other, "f32", ctx)
+                expr_to_typed_rust(other, "f32", eval_ctx)
             }
         }
     }
 }
 
 fn expr_to_len(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
+    let eval_ctx = if tracked { &cap_ctx } else { ctx };
     match expr {
         Expr::Length(v, Unit::Dp) => format!("Length::Dp({v:.2})"),
         Expr::Length(v, Unit::Px) => format!("Length::Px({v:.2})"),
@@ -3180,12 +3509,12 @@ fn expr_to_len(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
             then_expr,
             else_expr,
         } => {
-            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
-            let t = expr_to_len(then_expr, ctx, tracked);
-            let e = expr_to_len(else_expr, ctx, tracked);
+            let c = expr_to_typed_rust_inner(cond, "bool", eval_ctx, tracked);
+            let t = expr_to_len(then_expr, eval_ctx, tracked);
+            let e = expr_to_len(else_expr, eval_ctx, tracked);
             format!("(if {c} {{ {t} }} else {{ {e} }})")
         }
-        other => format!("Length::Dp({})", expr_to_f32(other, ctx, tracked)),
+        other => format!("Length::Dp({})", expr_to_f32(other, eval_ctx, tracked)),
     }
 }
 
@@ -3222,4 +3551,260 @@ pub fn compile_cui_dir(dir: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> std:
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse;
+    use crate::validator::validate;
+
+    #[test]
+    fn hover_prop_not_shadowed_and_reactive_closures_avoid_self_capture() {
+        let src = r#"export component HoverGlassCard {
+    in-out property <bool> hovered: false;
+    in-out property <bool> expanded: false;
+
+    Column {
+        width: expanded ? 320dp : 220dp;
+        border_radius: hovered ? 16dp : 12dp;
+        border_width: hovered ? 2 : 1;
+        opacity: hovered ? 1.0 : 0.9;
+        backdrop_blur: hovered ? 18dp : 14dp;
+        backdrop_tint: hovered ? Theme.primary : Theme.surface;
+        blend_mode: hovered ? Overlay : Normal;
+        cursor: hovered ? Pointer : Default;
+        scale: hovered ? 1.04 : 1.0;
+        translate_x: hovered ? 4dp : 0dp;
+        rotate: hovered ? 3.0 : 0.0;
+        skew_x: hovered ? 0.05 : 0.0;
+        shadow: hovered ? [8dp, 20dp] : [4dp, 10dp];
+        animate scale { curve: spring(360.0, 24.0); }
+        on_hover => { hovered = value; }
+
+        Spinner {
+            size: expanded ? 28dp : 20dp;
+            thickness: expanded ? 3.5dp : 2.0dp;
+        }
+
+        Text {
+            text: "Card";
+            font_size: expanded ? 18 : 14;
+            font_weight: expanded ? Bold : Normal;
+            color: Theme.text_primary;
+        }
+
+        TextInput {
+            placeholder: "Type";
+            font_size: expanded ? 16 : 13;
+            font_weight: expanded ? SemiBold : Regular;
+        }
+
+        Slider {
+            min: 0.0;
+            max: 1.0;
+            value: expanded ? 0.8 : 0.2;
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        let diags = validate(&parsed.file);
+        assert!(diags.is_empty(), "semantic diags: {diags:?}");
+
+        let rust = generate_rust(&parsed.file);
+        // `on_hover` must use `__hovered` and avoid shadowing the component's `hovered` Signal.
+        assert!(rust.contains("move |__hovered|"), "missing __hovered param:\n{rust}");
+        assert!(
+            !rust.contains("let hovered = __hovered;"),
+            "on_hover shadowed `hovered` property:\n{rust}"
+        );
+        assert!(
+            rust.contains("let value = __hovered;"),
+            "missing `value` alias inside on_hover:\n{rust}"
+        );
+        assert!(
+            rust.contains("hovered.set(__rhs);"),
+            "expected hovered.set(__rhs) in on_hover:\n{rust}"
+        );
+        assert!(
+            rust.contains("set_backdrop_blur(__id,"),
+            "expected reactive backdrop_blur binding:\n{rust}"
+        );
+        assert!(
+            rust.contains("set_scale(__id,"),
+            "expected reactive scale binding:\n{rust}"
+        );
+        assert!(
+            rust.contains("AnimatableProp::ScaleX"),
+            "expected scale animation:\n{rust}"
+        );
+
+        // No `'static` closure may reference `self.<prop>.get()` (would trigger E0521).
+        assert!(
+            !rust.contains("self.hovered.get("),
+            "self.hovered.get() leaked into closure:\n{rust}"
+        );
+        assert!(
+            !rust.contains("self.expanded.get("),
+            "self.expanded.get() leaked into closure:\n{rust}"
+        );
+    }
+
+    #[test]
+    fn sibling_handler_params_do_not_shadow_component_props() {
+        let src = r#"export component ChildEmitter {
+    callback changed(string);
+    Button {
+        text: "Emit";
+        on_tap => { changed("ok"); }
+    }
+}
+
+export component SiblingPropsA {
+    in-out property <float> ratio: 0.5;
+    in-out property <int> id: 0;
+    in-out property <int> index: 0;
+    in-out property <bool> checked: false;
+    in-out property <string> text: "";
+
+    Column {
+        SplitPane {
+            ratio <=> ratio;
+            on_change => { ratio = value; }
+            Column { Text { text: "A"; } }
+            Column { Text { text: "B"; } }
+        }
+        ToastHost {
+            on_dismiss => { id = value; }
+        }
+        Tabs {
+            tabs: ["One", "Two"];
+            active <=> index;
+            on_change => { index = value; }
+        }
+        Checkbox {
+            checked <=> checked;
+            on_change => { checked = value; }
+        }
+        TextInput {
+            value <=> text;
+            on_change => { text = value; }
+            on_submit => { text = value; }
+        }
+    }
+}
+
+export component SiblingPropsMenu {
+    in-out property <int> selected: 0;
+    in-out property <int> active: 0;
+    in-out property <int> idx: 0;
+    Column {
+        PopupMenu {
+            open: false;
+            items: ["X", "Y"];
+            on_select => {
+                selected = index;
+                active = index;
+                idx = index;
+            }
+        }
+    }
+}
+
+export component SiblingPropsB {
+    in-out property <float> value: 0.5;
+    Column {
+        Slider {
+            min: 0.0;
+            max: 1.0;
+            value <=> value;
+            on_change => { value = 1.0; }
+        }
+    }
+}
+
+export component SiblingPropsC {
+    in-out property <string> value: "";
+    Column {
+        TextInput {
+            value <=> value;
+            on_change => { value = text; }
+        }
+        ChildEmitter {
+            changed => { value = arg0; }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        let diags = validate(&parsed.file);
+        assert!(diags.is_empty(), "semantic diags: {diags:?}");
+
+        let rust = generate_rust(&parsed.file);
+        let slice_between = |start_pat: &str, end_pat: Option<&str>| -> &str {
+            let start = rust.find(start_pat).expect(start_pat);
+            let rest = &rust[start..];
+            match end_pat {
+                Some(ep) => &rest[..rest.find(ep).expect(ep)],
+                None => rest,
+            }
+        };
+
+        let comp_a = slice_between("impl SiblingPropsA", Some("pub struct SiblingPropsMenu"));
+        assert!(comp_a.contains("let ratio = self.ratio;"));
+        assert!(comp_a.contains("let id = self.id;"));
+        assert!(comp_a.contains("let index = self.index;"));
+        assert!(comp_a.contains("let checked = self.checked;"));
+        assert!(comp_a.contains("let text = self.text;"));
+        assert!(!comp_a.contains("let ratio = __"), "shadowed `ratio`:\n{comp_a}");
+        assert!(!comp_a.contains("let id = __"), "shadowed `id`:\n{comp_a}");
+        assert!(!comp_a.contains("let index = __"), "shadowed `index`:\n{comp_a}");
+        assert!(!comp_a.contains("let checked = __"), "shadowed `checked`:\n{comp_a}");
+        assert!(!comp_a.contains("let text = __"), "shadowed `text`:\n{comp_a}");
+        assert!(comp_a.contains("ratio.set(__rhs);"));
+        assert!(comp_a.contains("id.set(__rhs);"));
+        assert!(comp_a.contains("index.set(__rhs);"));
+        assert!(comp_a.contains("checked.set(__rhs);"));
+        assert!(comp_a.contains("text.set(__rhs);"));
+
+        let comp_menu = slice_between("impl SiblingPropsMenu", Some("pub struct SiblingPropsB"));
+        assert!(comp_menu.contains("let selected = self.selected;"));
+        assert!(comp_menu.contains("let active = self.active;"));
+        assert!(comp_menu.contains("let idx = self.idx;"));
+        assert!(!comp_menu.contains("let selected = __"), "shadowed `selected`:\n{comp_menu}");
+        assert!(!comp_menu.contains("let active = __"), "shadowed `active`:\n{comp_menu}");
+        assert!(!comp_menu.contains("let idx = __"), "shadowed `idx`:\n{comp_menu}");
+        assert!(comp_menu.contains("let index = __idx as i32;"));
+        assert!(comp_menu.contains("let value = __idx as i32;"));
+        assert!(comp_menu.contains("selected.set(__rhs);"));
+        assert!(comp_menu.contains("active.set(__rhs);"));
+        assert!(comp_menu.contains("idx.set(__rhs);"));
+
+        let comp_b = slice_between("impl SiblingPropsB", Some("pub struct SiblingPropsC"));
+        assert!(comp_b.contains("let value = self.value;"));
+        assert!(!comp_b.contains("let value = __"), "shadowed `value`:\n{comp_b}");
+        assert!(comp_b.contains("value.set(__rhs);"));
+
+        let comp_c = slice_between("impl SiblingPropsC", None);
+        assert!(comp_c.contains("let value = self.value;"));
+        assert!(!comp_c.contains("let value = __"), "shadowed `value`:\n{comp_c}");
+        assert!(comp_c.contains("let text = __val;"));
+        assert!(comp_c.contains("let arg0 = __arg_0;"));
+        assert!(comp_c.contains("value.set(__rhs);"));
+
+        assert!(!rust.contains("move |value|"), "raw |value| param leaked:\n{rust}");
+        assert!(!rust.contains("move |checked|"), "raw |checked| param leaked:\n{rust}");
+        assert!(!rust.contains("move |hovered|"), "raw |hovered| param leaked:\n{rust}");
+    }
 }

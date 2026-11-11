@@ -34,6 +34,10 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "PopupMenu",
     "Tooltip",
     "ProgressIndicator",
+    "Spinner",
+    "Badge",
+    "SplitPane",
+    "ToastHost",
     "Modal",
     "BottomSheet",
     "PlatformView",
@@ -164,6 +168,10 @@ pub const BUILTIN_PROPS: &[&str] = &[
     "label",
     "open",
     "progress",
+    "ratio",
+    "min_first",
+    "min_second",
+    "divider_size",
     "safe_area",
     "visible",
     "disabled",
@@ -178,6 +186,7 @@ pub const BUILTIN_EVENTS: &[&str] = &[
     "on_change",
     "on_submit",
     "on_close",
+    "on_dismiss",
     "on_select",
     "on_hover",
     "on_double_tap",
@@ -207,6 +216,7 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "VirtualGrid"
             | "Modal"
             | "BottomSheet"
+            | "SplitPane"
             | "Button"
     )
 }
@@ -322,6 +332,19 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "ProgressIndicator" => {
             out.extend_from_slice(&["progress", "value"]);
         }
+        "Spinner" => {
+            out.extend_from_slice(&["size", "thickness", "color", "foreground"]);
+        }
+        "Badge" => {
+            out.extend_from_slice(&["label", "text", "icon", "color", "foreground"]);
+        }
+        "SplitPane" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["direction", "ratio", "min_first", "min_second", "divider_size"]);
+        }
+        "ToastHost" => {
+            out.push("items");
+        }
         "PlatformView" => {
             out.push("view_id");
         }
@@ -333,12 +356,13 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
 pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
     let mut out = COMMON_EVENTS.to_vec();
     match kind {
-        "Slider" | "Checkbox" | "Switch" => out.push("on_change"),
+        "Slider" | "Checkbox" | "Switch" | "SplitPane" => out.push("on_change"),
         "TextInput" | "TextArea" => out.extend_from_slice(&["on_change", "on_submit"]),
         "Tabs" | "TabBar" | "Select" | "Dropdown" | "RadioGroup" => {
             out.extend_from_slice(&["on_change", "on_select"]);
         }
         "PopupMenu" => out.extend_from_slice(&["on_select", "on_change", "on_close"]),
+        "ToastHost" => out.push("on_dismiss"),
         "Modal" | "BottomSheet" => out.push("on_close"),
         _ => {}
     }
@@ -349,6 +373,7 @@ fn widget_supports_two_way(kind: &str, prop: &str) -> bool {
     match kind {
         "TextInput" | "TextArea" => matches!(prop, "value" | "text"),
         "Slider" => prop == "value",
+        "SplitPane" => prop == "ratio",
         "Checkbox" | "Switch" => matches!(prop, "checked" | "value"),
         "Tabs" | "TabBar" => matches!(prop, "active" | "selected" | "value"),
         "Select" | "Dropdown" | "RadioGroup" => matches!(prop, "selected" | "value"),
@@ -745,6 +770,14 @@ fn populate_handler_locals(
         ("Slider", "on_change") => {
             locals.insert("value".into(), TypeExpr::Named("float".into()));
         }
+        ("SplitPane", "on_change") => {
+            locals.insert("value".into(), TypeExpr::Named("float".into()));
+            locals.insert("ratio".into(), TypeExpr::Named("float".into()));
+        }
+        ("ToastHost", "on_dismiss") => {
+            locals.insert("id".into(), TypeExpr::Named("int".into()));
+            locals.insert("value".into(), TypeExpr::Named("int".into()));
+        }
         ("Checkbox" | "Switch", "on_change" | "on_tap" | "on_click") => {
             locals.insert("checked".into(), TypeExpr::Named("bool".into()));
             locals.insert("value".into(), TypeExpr::Named("bool".into()));
@@ -978,15 +1011,27 @@ fn validate_lvalue<'a>(
         }
         Expr::Member(base, field) => {
             let root = validate_lvalue(base, span, ctx, diags);
-            if let Some(TypeExpr::Named(sname)) = infer_expr_type(base, ctx)
-                && let Some(st) = ctx.struct_map.get(sname.as_str())
-                && !st.fields.iter().any(|f| f.name == *field)
-            {
-                diags.push(Diagnostic {
-                    span,
-                    severity: Severity::Error,
-                    message: format!("unknown field '{field}' on struct '{sname}'"),
-                });
+            if let Some(TypeExpr::Named(sname)) = infer_expr_type(base, ctx) {
+                if sname == "ToastItem" {
+                    if !matches!(
+                        field.as_str(),
+                        "id" | "title" | "message" | "severity" | "duration_ms"
+                    ) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown field '{field}' on struct 'ToastItem'"),
+                        });
+                    }
+                } else if let Some(st) = ctx.struct_map.get(sname.as_str())
+                    && !st.fields.iter().any(|f| f.name == *field)
+                {
+                    diags.push(Diagnostic {
+                        span,
+                        severity: Severity::Error,
+                        message: format!("unknown field '{field}' on struct '{sname}'"),
+                    });
+                }
             }
             root
         }
@@ -1152,6 +1197,9 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
                 if root == "ThemeMode" {
                     return Some(TypeExpr::Named("ThemeMode".into()));
                 }
+                if root == "ToastSeverity" {
+                    return Some(TypeExpr::Named("ToastSeverity".into()));
+                }
                 if root == "SafeArea" {
                     return Some(TypeExpr::Named("Insets".into()));
                 }
@@ -1160,6 +1208,12 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
                 }
             }
             match infer_expr_type(base, ctx) {
+                Some(TypeExpr::Named(sname)) if sname == "ToastItem" => match field.as_str() {
+                    "id" | "duration_ms" => Some(TypeExpr::Named("int".into())),
+                    "title" | "message" => Some(TypeExpr::Named("string".into())),
+                    "severity" => Some(TypeExpr::Named("ToastSeverity".into())),
+                    _ => None,
+                },
                 Some(TypeExpr::Named(sname)) => ctx
                     .struct_map
                     .get(sname.as_str())
@@ -1251,7 +1305,7 @@ fn validate_expr(
             }
         }
         Expr::Ident(id) => {
-            if id == "Theme" || id == "ThemeMode" || id == "SafeArea" {
+            if id == "Theme" || id == "ThemeMode" || id == "ToastSeverity" || id == "SafeArea" {
                 diags.push(Diagnostic {
                     span,
                     severity: Severity::Error,
@@ -1286,6 +1340,16 @@ fn validate_expr(
                     }
                     return;
                 }
+                if root == "ToastSeverity" {
+                    if !matches!(field.as_str(), "Info" | "Success" | "Warning" | "Error") {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown ToastSeverity variant '{field}'"),
+                        });
+                    }
+                    return;
+                }
                 if root == "SafeArea" {
                     if field != "insets" {
                         diags.push(Diagnostic {
@@ -1309,15 +1373,27 @@ fn validate_expr(
             }
 
             validate_expr(base, None, span, ctx, diags);
-            if let Some(TypeExpr::Named(sname)) = infer_expr_type(base, ctx)
-                && let Some(st) = ctx.struct_map.get(sname.as_str())
-                && !st.fields.iter().any(|f| f.name == *field)
-            {
-                diags.push(Diagnostic {
-                    span,
-                    severity: Severity::Error,
-                    message: format!("unknown field '{field}' on struct '{sname}'"),
-                });
+            if let Some(TypeExpr::Named(sname)) = infer_expr_type(base, ctx) {
+                if sname == "ToastItem" {
+                    if !matches!(
+                        field.as_str(),
+                        "id" | "title" | "message" | "severity" | "duration_ms"
+                    ) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown field '{field}' on struct 'ToastItem'"),
+                        });
+                    }
+                } else if let Some(st) = ctx.struct_map.get(sname.as_str())
+                    && !st.fields.iter().any(|f| f.name == *field)
+                {
+                    diags.push(Diagnostic {
+                        span,
+                        severity: Severity::Error,
+                        message: format!("unknown field '{field}' on struct '{sname}'"),
+                    });
+                }
             }
         }
         Expr::Array(items) => {
@@ -1343,7 +1419,20 @@ fn validate_expr(
             validate_expr(end, None, span, ctx, diags);
         }
         Expr::StructLit { name, fields } => {
-            if let Some(st) = ctx.struct_map.get(name.as_str()) {
+            if name == "ToastItem" {
+                for (fname, _) in fields {
+                    if !matches!(
+                        fname.as_str(),
+                        "id" | "title" | "message" | "severity" | "duration_ms"
+                    ) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown field '{fname}' in struct literal 'ToastItem'"),
+                        });
+                    }
+                }
+            } else if let Some(st) = ctx.struct_map.get(name.as_str()) {
                 for (fname, _) in fields {
                     if !st.fields.iter().any(|sf| sf.name == *fname) {
                         diags.push(Diagnostic {

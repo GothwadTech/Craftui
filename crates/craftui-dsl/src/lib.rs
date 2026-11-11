@@ -150,7 +150,7 @@ export component TaskBoard {
 export struct BadgeStyle {
     title: string = "Tag",
 }
-export component Badge {
+export component TagChip {
     in property <string> label: "New";
     in-out property <bool> selected: false;
     callback on_badge_tap();
@@ -165,11 +165,11 @@ export component Badge {
 "#,
         );
         let main_src = r#"
-import { BadgeStyle, Badge } from "./models.cui"
+import { BadgeStyle, TagChip } from "./models.cui"
 export component App {
     in-out property <bool> pinned: false;
     Column {
-        Badge { label: "v1"; selected <=> pinned; }
+        TagChip { label: "v1"; selected <=> pinned; }
         for n in 0..=3 : Text { text: n; }
     }
 }
@@ -184,7 +184,7 @@ export component App {
         assert_eq!(resolved.merged.components.len(), 2);
         let code = generate_rust(&resolved.merged);
         assert!(code.contains("pub struct BadgeStyle"));
-        assert!(code.contains("pub struct Badge"));
+        assert!(code.contains("pub struct TagChip"));
         assert!(code.contains("__sub.selected = self.pinned;"));
         assert!(code.contains("(0i32)..=(3i32)"));
 
@@ -330,5 +330,83 @@ export component Phase3Demo {
         assert!(err_msgs.iter().any(|m| m.contains("cannot be animated")), "{err_msgs:?}");
         assert!(err_msgs.iter().any(|m| m.contains("does not support two-way binding")), "{err_msgs:?}");
         assert!(err_msgs.iter().any(|m| m.contains("read-only 'in property' 'ro'")), "{err_msgs:?}");
+    }
+
+    #[test]
+    fn phase4_widgets_validate_and_codegen_cleanly() {
+        let src = r#"export component Phase4Suite {
+    in-out property <float> split_ratio: 0.4;
+    in-out property <int> dismissed_id: 0;
+    in-out property <[ToastItem]> alerts: [
+        ToastItem {
+            id: 1,
+            title: "Saved",
+            message: "Workspace built",
+            severity: ToastSeverity.Success,
+            duration_ms: 2500,
+        }
+    ];
+
+    Stack {
+        width: 100%;
+        height: 100%;
+
+        SplitPane {
+            direction: Horizontal;
+            ratio <=> split_ratio;
+            min_first: 120dp;
+            min_second: 140dp;
+            divider_size: 10dp;
+            on_change => {
+                split_ratio = value;
+            }
+
+            Column {
+                padding: 12dp;
+                gap: 8dp;
+                Spinner {
+                    size: 28dp;
+                    thickness: 3.5dp;
+                    color: Theme.primary;
+                }
+                Badge {
+                    label: "Production";
+                    icon: "check";
+                    background: #10B981;
+                    color: #FFFFFF;
+                }
+            }
+
+            Column {
+                Text { text: "Right pane"; }
+            }
+        }
+
+        ToastHost {
+            items: alerts;
+            on_dismiss => {
+                dismissed_id = id;
+            }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
+        let diags = validate(&parsed.file);
+        assert!(diags.is_empty(), "semantic diags: {diags:?}");
+
+        let code = generate_rust(&parsed.file);
+        assert!(code.contains("tree.split_pane("));
+        assert!(code.contains("set_split_pane_config("));
+        assert!(code.contains("tree.spinner("));
+        assert!(code.contains("set_spinner_style("));
+        assert!(code.contains("tree.badge("));
+        assert!(code.contains("set_badge_colors("));
+        assert!(code.contains("set_badge_icon("));
+        assert!(code.contains("tree.toast_host_custom("));
+        assert!(code.contains("set_on_dismiss("));
+        assert!(code.contains("ToastSeverity::Success"));
+        assert!(code.contains("ToastItem {"));
     }
 }

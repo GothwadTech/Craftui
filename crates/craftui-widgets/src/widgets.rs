@@ -1,3 +1,4 @@
+use crate::toast::{ToastItem, ToastManager};
 use craftui_a11y::A11yMetadata;
 use craftui_core::{
     Axis, BlendMode, Border, BoxShadow, Brush, Color, CornerRadii, CursorIcon, Fit, PlatformViewId,
@@ -155,6 +156,7 @@ pub type TextCallback = Rc<RefCell<dyn FnMut(String)>>;
 pub type PinchRotateCallback = Rc<RefCell<dyn FnMut(Point, f32, f32)>>;
 pub type CanvasPaintFn = Rc<dyn Fn(Rect, &mut PaintScene)>;
 pub type CanvasPointerFn = Rc<RefCell<dyn FnMut(Rect, &craftui_core::PointerEvent)>>;
+pub type ToastDismissCallback = Rc<RefCell<dyn FnMut(u64)>>;
 
 /// Public extension trait enabling downstream applications to implement custom
 /// layout, painting, input handling, and accessibility widgets without editing `craftui-widgets`.
@@ -310,6 +312,32 @@ pub enum WidgetKind {
     ProgressIndicator {
         progress: ReactiveValue<Option<f32>>,
         phase: f32,
+    },
+    Spinner {
+        size: f32,
+        thickness: f32,
+        color: Option<ReactiveValue<Color>>,
+        phase: f32,
+    },
+    Badge {
+        label: ReactiveValue<String>,
+        foreground: Option<ReactiveValue<Color>>,
+        background: Option<ReactiveValue<Color>>,
+        icon: Option<ReactiveValue<String>>,
+    },
+    SplitPane {
+        axis: Axis,
+        ratio: Signal<f32>,
+        min_first: f32,
+        min_second: f32,
+        divider_size: f32,
+        dragging: bool,
+        on_change: Option<FloatCallback>,
+    },
+    ToastHost {
+        items: ReactiveValue<Vec<ToastItem>>,
+        on_dismiss: Option<ToastDismissCallback>,
+        manager: Option<ToastManager>,
     },
     Overlay {
         open: ReactiveValue<bool>,

@@ -32,6 +32,7 @@ pub enum A11yRole {
     ScrollView,
     Canvas,
     Dialog,
+    Alert,
     List,
     ListItem,
 }
@@ -61,6 +62,7 @@ impl A11yRole {
             Self::ScrollView => accesskit::Role::ScrollView,
             Self::Canvas => accesskit::Role::Canvas,
             Self::Dialog => accesskit::Role::Dialog,
+            Self::Alert => accesskit::Role::Alert,
             Self::List => accesskit::Role::List,
             Self::ListItem => accesskit::Role::ListItem,
         }

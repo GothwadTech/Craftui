@@ -1,15 +1,19 @@
 //! WebAssembly platform adapter (`wasm-bindgen` + `web-sys` Canvas/DPR observer +
 //! async WebGPU/WebGL2 + 2D Canvas fallback + hidden `<input>` DOM `input`/IME bridge +
-//! `window.location.hash` router sync + OS/browser clipboard + monotonic timers).
+//! `#craftui-a11y-root` DOM ARIA mirror + CSS cursor sync + browser clipboard/paste +
+//! `window.location.hash` router sync + RAII listener lifecycle + monotonic timers).
 
+use craftui_a11y::A11yRole;
 use craftui_core::{
-    ClipboardBackend, ImeEvent, KeyCode, KeyEvent, Modifiers, PlatformServices, Point,
-    PointerButton, PointerEvent, PointerId, PointerPhase, ScrollDelta, Size, UiDispatcher, UiEvent,
-    WindowMetrics,
+    ClipboardBackend, CursorIcon, ImeEvent, KeyCode, KeyEvent, Modifiers, NodeId,
+    PlatformServices, Point, PointerButton, PointerEvent, PointerId, PointerPhase, Rect,
+    ScrollDelta, Size, UiDispatcher, UiEvent, WindowMetrics,
 };
 use craftui_reactive::Scope;
 use craftui_render::{BackendKind, PaintScene, TextureRegistry, render_scene_to_rgba};
 use craftui_widgets::{Router, WidgetKind, WidgetTree};
+use slotmap::Key;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -117,7 +121,71 @@ impl BrowserRouteSync {
     }
 }
 
-/// Browser clipboard bridge backed by `navigator.clipboard` (on `wasm32`) and a synchronous cache.
+/// Map a CraftUI [`CursorIcon`] hint to the standard CSS `cursor` keyword.
+pub fn craft_cursor_to_css(cursor: CursorIcon) -> &'static str {
+    match cursor {
+        CursorIcon::Default => "default",
+        CursorIcon::Pointer => "pointer",
+        CursorIcon::Text => "text",
+        CursorIcon::Grab => "grab",
+        CursorIcon::Grabbing => "grabbing",
+        CursorIcon::ResizeHorizontal => "ew-resize",
+        CursorIcon::ResizeVertical => "ns-resize",
+        CursorIcon::NotAllowed => "not-allowed",
+        CursorIcon::Crosshair => "crosshair",
+    }
+}
+
+/// Map a CraftUI semantic [`A11yRole`] to a WAI-ARIA `role` attribute string.
+pub fn craft_role_to_aria(role: A11yRole) -> &'static str {
+    match role {
+        A11yRole::Window => "application",
+        A11yRole::Container => "group",
+        A11yRole::Label => "note",
+        A11yRole::Button => "button",
+        A11yRole::TextInput | A11yRole::MultilineTextInput => "textbox",
+        A11yRole::CheckBox => "checkbox",
+        A11yRole::RadioButton => "radio",
+        A11yRole::Switch => "switch",
+        A11yRole::Slider => "slider",
+        A11yRole::ComboBox => "combobox",
+        A11yRole::TabList => "tablist",
+        A11yRole::Tab => "tab",
+        A11yRole::Menu => "menu",
+        A11yRole::MenuItem => "menuitem",
+        A11yRole::Tooltip => "tooltip",
+        A11yRole::Divider => "separator",
+        A11yRole::ProgressIndicator => "progressbar",
+        A11yRole::Image => "img",
+        A11yRole::ScrollView => "region",
+        A11yRole::Canvas => "img",
+        A11yRole::Dialog => "dialog",
+        A11yRole::Alert => "alert",
+        A11yRole::List => "list",
+        A11yRole::ListItem => "listitem",
+    }
+}
+
+/// Snapshot node used to synchronize an invisible DOM ARIA mirror under `#craftui-a11y-root`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebAriaNode {
+    pub id: u64,
+    pub role: &'static str,
+    pub raw_role: A11yRole,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub numeric_value: Option<f64>,
+    pub min_value: Option<f64>,
+    pub max_value: Option<f64>,
+    pub checked: Option<bool>,
+    pub disabled: bool,
+    pub focusable: bool,
+    pub focused: bool,
+    pub rect: Rect,
+}
+
+/// Browser clipboard bridge backed by `navigator.clipboard` + trusted DOM `paste` events (on `wasm32`)
+/// and a synchronous shared cache.
 #[derive(Clone, Default)]
 pub struct WebClipboard {
     cache: Arc<Mutex<String>>,
@@ -126,6 +194,36 @@ pub struct WebClipboard {
 impl WebClipboard {
     pub fn new(cache: Arc<Mutex<String>>) -> Self {
         Self { cache }
+    }
+
+    /// Update the synchronous clipboard cache (e.g. from a DOM `ClipboardEvent` or async `readText()`).
+    pub fn hydrate(&self, text: &str) {
+        if let Ok(mut guard) = self.cache.lock() {
+            guard.clear();
+            guard.push_str(text);
+        }
+    }
+
+    /// Populate clipboard cache asynchronously via `navigator.clipboard.readText()` on `wasm32`.
+    #[cfg(target_arch = "wasm32")]
+    pub fn read_browser_clipboard_async<F>(cache: Arc<Mutex<String>>, on_ready: F)
+    where
+        F: FnOnce(String) + 'static,
+    {
+        if let Some(window) = web_sys::window() {
+            let promise = window.navigator().clipboard().read_text();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(val) = wasm_bindgen_futures::JsFuture::from(promise).await
+                    && let Some(text) = val.as_string()
+                {
+                    if let Ok(mut guard) = cache.lock() {
+                        guard.clear();
+                        guard.push_str(&text);
+                    }
+                    on_ready(text);
+                }
+            });
+        }
     }
 }
 
@@ -248,6 +346,69 @@ impl WebAppHost {
             Some(target_hash)
         } else {
             None
+        }
+    }
+
+    pub fn hydrate_clipboard(&self, text: &str) {
+        if let Ok(mut guard) = self.clipboard_cache.lock() {
+            guard.clear();
+            guard.push_str(text);
+        }
+    }
+
+    pub fn hovered_cursor_css(&self) -> &'static str {
+        craft_cursor_to_css(self.tree.hovered_cursor())
+    }
+
+    /// Extract visible semantic accessibility nodes from [`WidgetTree`] for DOM ARIA mirroring.
+    pub fn extract_aria_tree(&self) -> Vec<WebAriaNode> {
+        let mut out = Vec::new();
+        let Some(root) = self.tree.root else {
+            return out;
+        };
+        let mut seen = HashSet::new();
+        self.collect_aria_recursive(root, &mut seen, &mut out);
+        out
+    }
+
+    fn collect_aria_recursive(
+        &self,
+        id: NodeId,
+        seen: &mut HashSet<NodeId>,
+        out: &mut Vec<WebAriaNode>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        let Some(node) = self.tree.nodes.get(id) else {
+            return;
+        };
+        if node.layout.hidden {
+            return;
+        }
+        let keep = node.a11y.role != A11yRole::Container
+            || node.a11y.label.is_some()
+            || node.a11y.focusable
+            || self.tree.focused == Some(id);
+        if keep {
+            out.push(WebAriaNode {
+                id: id.data().as_ffi(),
+                role: craft_role_to_aria(node.a11y.role),
+                raw_role: node.a11y.role,
+                label: node.a11y.label.clone(),
+                value: node.a11y.value.clone(),
+                numeric_value: node.a11y.numeric_value,
+                min_value: node.a11y.min_value,
+                max_value: node.a11y.max_value,
+                checked: node.a11y.checked,
+                disabled: node.a11y.disabled,
+                focusable: node.a11y.focusable,
+                focused: self.tree.focused == Some(id),
+                rect: self.tree.rect(id),
+            });
+        }
+        for &child in &node.children {
+            self.collect_aria_recursive(child, seen, out);
         }
     }
 
@@ -521,15 +682,16 @@ pub mod wasm_runner {
     use craftui_core::{NodeId, set_monotonic_ms_provider};
     #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     use craftui_render::GpuSurfacePipeline;
+    use std::any::Any;
     use std::cell::{Cell, RefCell};
     use std::rc::{Rc, Weak};
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
     use web_sys::{
-        CanvasRenderingContext2d, CompositionEvent, HashChangeEvent, HtmlCanvasElement,
-        HtmlInputElement, ImageData, InputEvent as DomInputEvent,
-        KeyboardEvent as DomKeyboardEvent, PointerEvent as DomPointerEvent,
-        WheelEvent as DomWheelEvent,
+        CanvasRenderingContext2d, ClipboardEvent as DomClipboardEvent, CompositionEvent, Element,
+        EventTarget, HashChangeEvent, HtmlCanvasElement, HtmlElement, HtmlInputElement, ImageData,
+        InputEvent as DomInputEvent, KeyboardEvent as DomKeyboardEvent,
+        PointerEvent as DomPointerEvent, WheelEvent as DomWheelEvent,
     };
 
     thread_local! {
@@ -546,15 +708,52 @@ pub mod wasm_runner {
     enum WebRenderBackend {
         Pending,
         #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
-        Gpu(GpuSurfacePipeline),
+        Gpu(Box<GpuSurfacePipeline>),
         Canvas2d(CanvasRenderingContext2d),
     }
+
+    struct DomListener {
+        target: EventTarget,
+        event: &'static str,
+        js_fn: js_sys::Function,
+        _keepalive: Box<dyn Any>,
+    }
+
+    impl DomListener {
+        fn attach<T: wasm_bindgen::convert::FromWasmAbi + 'static>(
+            target: &EventTarget,
+            event: &'static str,
+            closure: Closure<dyn FnMut(T)>,
+        ) -> Result<Self, wasm_bindgen::JsValue> {
+            let js_fn: js_sys::Function =
+                closure.as_ref().unchecked_ref::<js_sys::Function>().clone();
+            target.add_event_listener_with_callback(event, &js_fn)?;
+            Ok(Self {
+                target: target.clone(),
+                event,
+                js_fn,
+                _keepalive: Box::new(closure),
+            })
+        }
+    }
+
+    impl Drop for DomListener {
+        fn drop(&mut self) {
+            let _ = self
+                .target
+                .remove_event_listener_with_callback(self.event, &self.js_fn);
+        }
+    }
+
+    type RafClosure = Closure<dyn FnMut(f64)>;
 
     struct WebScheduler {
         window: web_sys::Window,
         raf_scheduled: Cell<bool>,
+        disposed: Cell<bool>,
+        raf_id: Cell<Option<i32>>,
         timeout_id: Cell<Option<i32>>,
-        raf_cb: RefCell<Option<Closure<dyn FnMut(f64)>>>,
+        raf_cb: RefCell<Option<RafClosure>>,
         timer_cb: RefCell<Option<Closure<dyn FnMut()>>>,
     }
 
@@ -563,6 +762,8 @@ pub mod wasm_runner {
             Rc::new(Self {
                 window,
                 raf_scheduled: Cell::new(false),
+                disposed: Cell::new(false),
+                raf_id: Cell::new(None),
                 timeout_id: Cell::new(None),
                 raf_cb: RefCell::new(None),
                 timer_cb: RefCell::new(None),
@@ -570,6 +771,9 @@ pub mod wasm_runner {
         }
 
         fn request_frame(&self) {
+            if self.disposed.get() {
+                return;
+            }
             if let Some(tid) = self.timeout_id.take() {
                 self.window.clear_timeout_with_handle(tid);
             }
@@ -578,14 +782,17 @@ pub mod wasm_runner {
             }
             if let Some(ref closure) = *self.raf_cb.borrow() {
                 self.raf_scheduled.set(true);
-                let _ = self
+                if let Ok(id) = self
                     .window
-                    .request_animation_frame(closure.as_ref().unchecked_ref());
+                    .request_animation_frame(closure.as_ref().unchecked_ref())
+                {
+                    self.raf_id.set(Some(id));
+                }
             }
         }
 
         fn schedule_wake_after(&self, delay_ms: u64) {
-            if self.raf_scheduled.get() {
+            if self.disposed.get() || self.raf_scheduled.get() {
                 return;
             }
             if let Some(tid) = self.timeout_id.take() {
@@ -604,12 +811,135 @@ pub mod wasm_runner {
                 }
             }
         }
+
+        fn dispose(&self) {
+            self.disposed.set(true);
+            self.raf_scheduled.set(false);
+            if let Some(rid) = self.raf_id.take() {
+                let _ = self.window.cancel_animation_frame(rid);
+            }
+            if let Some(tid) = self.timeout_id.take() {
+                self.window.clear_timeout_with_handle(tid);
+            }
+            *self.raf_cb.borrow_mut() = None;
+            *self.timer_cb.borrow_mut() = None;
+        }
+    }
+
+    /// RAII lifecycle handle returned by [`mount_web_app`]; unmounts all DOM listeners, hidden IME
+    /// input, ARIA mirror container, animation frames, and timers automatically on [`Drop`].
+    pub struct WebRunnerHandle {
+        scheduler: Rc<WebScheduler>,
+        listeners: Vec<DomListener>,
+        pointer_listeners: Rc<RefCell<Vec<DomListener>>>,
+        hidden_input: HtmlInputElement,
+        a11y_root: Element,
+    }
+
+    impl WebRunnerHandle {
+        /// Explicitly retain the CraftUI web instance for the entire browser page lifetime.
+        pub fn leak(self) {
+            std::mem::forget(self);
+        }
+    }
+
+    impl Drop for WebRunnerHandle {
+        fn drop(&mut self) {
+            self.scheduler.dispose();
+            self.pointer_listeners.borrow_mut().clear();
+            self.listeners.clear();
+            self.hidden_input.remove();
+            self.a11y_root.remove();
+            ACTIVE_SCHEDULERS.with(|list| {
+                list.borrow_mut().retain(|w| w.strong_count() > 0);
+            });
+        }
+    }
+
+    fn sync_canvas_cursor(
+        canvas: &HtmlCanvasElement,
+        host: &WebAppHost,
+        last_cursor: &Cell<&'static str>,
+    ) {
+        let next = host.hovered_cursor_css();
+        if last_cursor.get() != next {
+            last_cursor.set(next);
+            let _ = canvas.style().set_property("cursor", next);
+        }
+    }
+
+    fn sync_dom_a11y_tree(
+        document: &web_sys::Document,
+        a11y_root: &Element,
+        nodes: &[WebAriaNode],
+        last_snapshot: &RefCell<Vec<WebAriaNode>>,
+        canvas_rect_left: f32,
+        canvas_rect_top: f32,
+    ) {
+        if *last_snapshot.borrow() == nodes {
+            return;
+        }
+        *last_snapshot.borrow_mut() = nodes.to_vec();
+        let root_node: &web_sys::Node = a11y_root.as_ref();
+        root_node.set_text_content(None);
+
+        for item in nodes {
+            let tag = match item.raw_role {
+                A11yRole::Button | A11yRole::Tab => "button",
+                A11yRole::TextInput | A11yRole::MultilineTextInput => "input",
+                _ => "div",
+            };
+            let Ok(el) = document.create_element(tag) else {
+                continue;
+            };
+            let _ = el.set_attribute("data-craftui-node", &item.id.to_string());
+            let _ = el.set_attribute("role", item.role);
+            if let Some(ref label) = item.label {
+                let _ = el.set_attribute("aria-label", label);
+            }
+            if let Some(ref val) = item.value {
+                let _ = el.set_attribute("aria-valuetext", val);
+            }
+            if let Some(num) = item.numeric_value {
+                let _ = el.set_attribute("aria-valuenow", &format!("{num:.2}"));
+            }
+            if let Some(min) = item.min_value {
+                let _ = el.set_attribute("aria-valuemin", &format!("{min:.2}"));
+            }
+            if let Some(max) = item.max_value {
+                let _ = el.set_attribute("aria-valuemax", &format!("{max:.2}"));
+            }
+            if let Some(checked) = item.checked {
+                let _ = el.set_attribute("aria-checked", if checked { "true" } else { "false" });
+            }
+            if item.disabled {
+                let _ = el.set_attribute("aria-disabled", "true");
+            }
+            if item.raw_role == A11yRole::Alert {
+                let _ = el.set_attribute("aria-live", "polite");
+            }
+            if item.focusable || item.focused {
+                let _ = el.set_attribute("tabindex", "0");
+            }
+            if let Some(hel) = el.dyn_ref::<HtmlElement>() {
+                let st = hel.style();
+                let _ = st.set_property("position", "fixed");
+                let _ = st.set_property("left", &format!("{}px", canvas_rect_left + item.rect.x));
+                let _ = st.set_property("top", &format!("{}px", canvas_rect_top + item.rect.y));
+                let _ = st.set_property("width", &format!("{}px", item.rect.width.max(1.0)));
+                let _ = st.set_property("height", &format!("{}px", item.rect.height.max(1.0)));
+                let _ = st.set_property("pointer-events", "none");
+            }
+            let _ = root_node.append_child(el.as_ref());
+        }
     }
 
     fn obtain_2d_context(
         canvas_slot: &Rc<RefCell<HtmlCanvasElement>>,
         host: &Rc<RefCell<WebAppHost>>,
         scheduler: &Rc<WebScheduler>,
+        pointer_listeners: &Rc<RefCell<Vec<DomListener>>>,
+        last_cursor: &Rc<Cell<&'static str>>,
     ) -> Option<CanvasRenderingContext2d> {
         let existing = canvas_slot.borrow().clone();
         if let Ok(Some(ctx)) = existing.get_context("2d")
@@ -617,14 +947,22 @@ pub mod wasm_runner {
         {
             return Some(c2d);
         }
-        // If failed WebGPU/WebGL2 attempt locked the `<canvas>` context type, replace with a fresh clone.
+        // If failed WebGPU/WebGL2 attempt locked the `<canvas>` context type, drop old listeners and replace cleanly.
         if let Ok(cloned_node) = existing.clone_node_with_deep(false)
             && let Ok(fresh_canvas) = cloned_node.dyn_into::<HtmlCanvasElement>()
         {
             fresh_canvas.set_width(existing.width());
             fresh_canvas.set_height(existing.height());
+            pointer_listeners.borrow_mut().clear();
             let _ = existing.replace_with_with_node_1(&fresh_canvas);
-            let _ = attach_pointer_listeners(&fresh_canvas, host.clone(), scheduler.clone());
+            if let Ok(new_listeners) = attach_pointer_listeners(
+                &fresh_canvas,
+                host.clone(),
+                scheduler.clone(),
+                last_cursor.clone(),
+            ) {
+                *pointer_listeners.borrow_mut() = new_listeners;
+            }
             *canvas_slot.borrow_mut() = fresh_canvas.clone();
             if let Ok(Some(ctx)) = fresh_canvas.get_context("2d") {
                 return ctx.dyn_into::<CanvasRenderingContext2d>().ok();
@@ -633,11 +971,12 @@ pub mod wasm_runner {
         None
     }
 
-    /// Mount and start a reactive CraftUI application inside an HTML5 `<canvas>` element.
-    pub fn start_web_app<F>(
+    /// Mount and start a reactive CraftUI application inside an HTML5 `<canvas>` element, returning an
+    /// RAII [`WebRunnerHandle`] that tears down DOM listeners, ARIA mirror, and RAF loops when dropped.
+    pub fn mount_web_app<F>(
         config: WebBridgeConfig,
         build_ui: F,
-    ) -> Result<(), wasm_bindgen::JsValue>
+    ) -> Result<WebRunnerHandle, wasm_bindgen::JsValue>
     where
         F: FnOnce(Scope, &mut WidgetTree, &mut TextureRegistry, &UiDispatcher) -> NodeId + 'static,
     {
@@ -679,14 +1018,13 @@ pub mod wasm_runner {
         let root = build_ui(host.scope, &mut host.tree, &mut host.textures, &dispatcher);
         host.tree.set_root(root);
 
-        // Apply initial browser URL hash route before first frame if hash routing is enabled.
         if config.sync_url_hash
             && let Ok(hash) = window.location().hash()
         {
             host.apply_url_hash(&hash);
         }
 
-        // Hidden <input> element overlay for native mobile browser keyboards & CJK IME composition
+        // Hidden <input> element overlay for mobile browser keyboards, CJK IME & paste interception
         let hidden_input: HtmlInputElement = document.create_element("input")?.dyn_into()?;
         hidden_input.set_type("text");
         let st = hidden_input.style();
@@ -695,7 +1033,25 @@ pub mod wasm_runner {
         let _ = st.set_property("pointer-events", "none");
         let _ = st.set_property("width", "1px");
         let _ = st.set_property("height", "1px");
+
+        // DOM ARIA accessibility mirror container (#craftui-a11y-root)
+        let a11y_root = document.create_element("div")?;
+        a11y_root.set_id("craftui-a11y-root");
+        let _ = a11y_root.set_attribute("aria-label", "CraftUI Accessibility Tree");
+        if let Some(hel) = a11y_root.dyn_ref::<HtmlElement>() {
+            let ast = hel.style();
+            let _ = ast.set_property("position", "fixed");
+            let _ = ast.set_property("left", "0px");
+            let _ = ast.set_property("top", "0px");
+            let _ = ast.set_property("width", "1px");
+            let _ = ast.set_property("height", "1px");
+            let _ = ast.set_property("overflow", "hidden");
+            let _ = ast.set_property("opacity", "0.001");
+            let _ = ast.set_property("pointer-events", "none");
+        }
+
         if let Some(body) = document.body() {
+            let _ = body.append_child(&a11y_root);
             let _ = body.append_child(&hidden_input);
         }
 
@@ -703,17 +1059,27 @@ pub mod wasm_runner {
         let canvas_slot = Rc::new(RefCell::new(canvas.clone()));
         let last_hidden_val = Rc::new(RefCell::new(String::new()));
         let is_composing = Rc::new(Cell::new(false));
+        let last_cursor = Rc::new(Cell::new("default"));
+        let last_aria_snapshot = Rc::new(RefCell::new(Vec::<WebAriaNode>::new()));
 
-        attach_pointer_listeners(&canvas, host_rc.clone(), scheduler.clone())?;
-        attach_keyboard_ime_listeners(
+        let pointer_listeners = Rc::new(RefCell::new(attach_pointer_listeners(
+            &canvas,
+            host_rc.clone(),
+            scheduler.clone(),
+            last_cursor.clone(),
+        )?));
+
+        let mut listeners = Vec::new();
+        listeners.extend(attach_keyboard_ime_and_paste_listeners(
             &window,
             &hidden_input,
             host_rc.clone(),
             last_hidden_val.clone(),
             is_composing.clone(),
             scheduler.clone(),
-        )?;
+        )?);
 
+        let win_target: &EventTarget = window.as_ref();
         if config.sync_url_hash {
             let h_hash = host_rc.clone();
             let sched_hash = scheduler.clone();
@@ -725,9 +1091,7 @@ pub mod wasm_runner {
                     sched_hash.request_frame();
                 }
             }) as Box<dyn FnMut(HashChangeEvent)>);
-            window
-                .add_event_listener_with_callback("hashchange", hash_cb.as_ref().unchecked_ref())?;
-            hash_cb.forget();
+            listeners.push(DomListener::attach(win_target, "hashchange", hash_cb)?);
         }
 
         {
@@ -737,16 +1101,21 @@ pub mod wasm_runner {
                 h_res.borrow_mut().request_redraw();
                 sched_res.request_frame();
             }) as Box<dyn FnMut(web_sys::Event)>);
-            window
-                .add_event_listener_with_callback("resize", resize_cb.as_ref().unchecked_ref())?;
-            resize_cb.forget();
+            listeners.push(DomListener::attach(win_target, "resize", resize_cb)?);
         }
 
         let backend_slot: Rc<RefCell<WebRenderBackend>> =
             Rc::new(RefCell::new(WebRenderBackend::Pending));
-        let force_2d = config.force_2d_fallback || !cfg!(any(feature = "gpu-sdf", feature = "gpu-vello"));
+        let force_2d =
+            config.force_2d_fallback || !cfg!(any(feature = "gpu-sdf", feature = "gpu-vello"));
         if force_2d {
-            if let Some(c2d) = obtain_2d_context(&canvas_slot, &host_rc, &scheduler) {
+            if let Some(c2d) = obtain_2d_context(
+                &canvas_slot,
+                &host_rc,
+                &scheduler,
+                &pointer_listeners,
+                &last_cursor,
+            ) {
                 *backend_slot.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
             }
         } else {
@@ -756,6 +1125,8 @@ pub mod wasm_runner {
                 let canvas_async = canvas_slot.clone();
                 let host_async = host_rc.clone();
                 let sched_async = scheduler.clone();
+                let ptr_listeners_async = pointer_listeners.clone();
+                let cursor_async = last_cursor.clone();
                 let canvas_for_wgpu = canvas.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     match GpuSurfacePipeline::new_async(
@@ -771,15 +1142,19 @@ pub mod wasm_runner {
                                 "CraftUI Web renderer initialized ({})",
                                 gpu.active_backend_name()
                             );
-                            *backend_async.borrow_mut() = WebRenderBackend::Gpu(gpu);
+                            *backend_async.borrow_mut() = WebRenderBackend::Gpu(Box::new(gpu));
                         }
                         Err(err) => {
                             tracing::warn!(
                                 "WebGPU/WebGL2 async init failed ({err}); falling back to 2D canvas"
                             );
-                            if let Some(c2d) =
-                                obtain_2d_context(&canvas_async, &host_async, &sched_async)
-                            {
+                            if let Some(c2d) = obtain_2d_context(
+                                &canvas_async,
+                                &host_async,
+                                &sched_async,
+                                &ptr_listeners_async,
+                                &cursor_async,
+                            ) {
                                 *backend_async.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
                             }
                         }
@@ -802,14 +1177,21 @@ pub mod wasm_runner {
 
         let sched_raf = scheduler.clone();
         let canvas_raf = canvas_slot;
-        let window_raf = window.clone();
+        let window_raf = window;
         let doc_raf = document;
-        let hidden_raf = hidden_input;
+        let hidden_raf = hidden_input.clone();
+        let a11y_raf = a11y_root.clone();
+        let last_aria_raf = last_aria_snapshot;
+        let last_cursor_raf = last_cursor;
         let sync_hash = config.sync_url_hash;
-        let mut last_ts_ms = window.performance().map(|p| p.now()).unwrap_or(0.0);
+        let mut last_ts_ms = window_raf.performance().map(|p| p.now()).unwrap_or(0.0);
 
         *scheduler.raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move |ts: f64| {
+            sched_raf.raf_id.set(None);
             sched_raf.raf_scheduled.set(false);
+            if sched_raf.disposed.get() {
+                return;
+            }
             let dt_ms = (ts - last_ts_ms).max(1.0);
             last_ts_ms = ts;
             let dt_sec = ((dt_ms as f32) / 1000.0).clamp(0.001, 0.05);
@@ -830,6 +1212,7 @@ pub mod wasm_runner {
             }
 
             let (anim, did_paint) = h.step_frame_with_redraw(dt_sec, now_ms);
+            sync_canvas_cursor(&cur_canvas, &h, &last_cursor_raf);
 
             if sync_hash && let Some(new_hash) = h.take_pending_hash_update() {
                 let _ = window_raf.location().set_hash(&new_hash);
@@ -844,7 +1227,7 @@ pub mod wasm_runner {
                     hidden_raf.set_value(&ime.value);
                     *last_hidden_val.borrow_mut() = ime.value.clone();
                 }
-                let hidden_node: &web_sys::Element = hidden_raf.as_ref();
+                let hidden_node: &Element = hidden_raf.as_ref();
                 let already_focused = doc_raf
                     .active_element()
                     .is_some_and(|ae| &ae == hidden_node);
@@ -854,6 +1237,16 @@ pub mod wasm_runner {
             }
 
             if did_paint {
+                let aria_nodes = h.extract_aria_tree();
+                sync_dom_a11y_tree(
+                    &doc_raf,
+                    &a11y_raf,
+                    &aria_nodes,
+                    &last_aria_raf,
+                    bcr.left() as f32,
+                    bcr.top() as f32,
+                );
+
                 match &mut *backend_slot.borrow_mut() {
                     WebRenderBackend::Pending => {}
                     #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
@@ -896,7 +1289,24 @@ pub mod wasm_runner {
         }) as Box<dyn FnMut(f64)>));
 
         scheduler.request_frame();
-        std::mem::forget(scheduler);
+        Ok(WebRunnerHandle {
+            scheduler,
+            listeners,
+            pointer_listeners,
+            hidden_input,
+            a11y_root,
+        })
+    }
+
+    /// Mount and leak a reactive CraftUI web application for the full browser page lifetime.
+    pub fn start_web_app<F>(
+        config: WebBridgeConfig,
+        build_ui: F,
+    ) -> Result<(), wasm_bindgen::JsValue>
+    where
+        F: FnOnce(Scope, &mut WidgetTree, &mut TextureRegistry, &UiDispatcher) -> NodeId + 'static,
+    {
+        mount_web_app(config, build_ui)?.leak();
         Ok(())
     }
 
@@ -904,7 +1314,10 @@ pub mod wasm_runner {
         canvas: &HtmlCanvasElement,
         host: Rc<RefCell<WebAppHost>>,
         scheduler: Rc<WebScheduler>,
-    ) -> Result<(), wasm_bindgen::JsValue> {
+        last_cursor: Rc<Cell<&'static str>>,
+    ) -> Result<Vec<DomListener>, wasm_bindgen::JsValue> {
+        let mut out = Vec::with_capacity(5);
+        let canvas_target: &EventTarget = canvas.as_ref();
         for (ev_name, phase) in [
             ("pointerdown", PointerPhase::Down),
             ("pointermove", PointerPhase::Move),
@@ -914,6 +1327,7 @@ pub mod wasm_runner {
             let h_c = host.clone();
             let c_el = canvas.clone();
             let sched_c = scheduler.clone();
+            let cursor_c = last_cursor.clone();
             let cb = Closure::wrap(Box::new(move |e: DomPointerEvent| {
                 let bcr = c_el.get_bounding_client_rect();
                 let mods = Modifiers {
@@ -934,12 +1348,14 @@ pub mod wasm_runner {
                     mods,
                     e.time_stamp() as u64,
                 );
-                if h_c.borrow_mut().handle_ui_event(&ev) {
+                let mut guard = h_c.borrow_mut();
+                let changed = guard.handle_ui_event(&ev);
+                sync_canvas_cursor(&c_el, &guard, &cursor_c);
+                if changed {
                     sched_c.request_frame();
                 }
             }) as Box<dyn FnMut(DomPointerEvent)>);
-            canvas.add_event_listener_with_callback(ev_name, cb.as_ref().unchecked_ref())?;
-            cb.forget();
+            out.push(DomListener::attach(canvas_target, ev_name, cb)?);
         }
 
         let h_w = host;
@@ -959,22 +1375,26 @@ pub mod wasm_runner {
                 sched_w.request_frame();
             }
         }) as Box<dyn FnMut(DomWheelEvent)>);
-        canvas.add_event_listener_with_callback("wheel", wheel_cb.as_ref().unchecked_ref())?;
-        wheel_cb.forget();
-        Ok(())
+        out.push(DomListener::attach(canvas_target, "wheel", wheel_cb)?);
+        Ok(out)
     }
 
-    fn attach_keyboard_ime_listeners(
+    fn attach_keyboard_ime_and_paste_listeners(
         window: &web_sys::Window,
         hidden_input: &HtmlInputElement,
         host: Rc<RefCell<WebAppHost>>,
         last_hidden_val: Rc<RefCell<String>>,
         is_composing: Rc<Cell<bool>>,
         scheduler: Rc<WebScheduler>,
-    ) -> Result<(), wasm_bindgen::JsValue> {
+    ) -> Result<Vec<DomListener>, wasm_bindgen::JsValue> {
+        let mut out = Vec::with_capacity(7);
+        let win_target: &EventTarget = window.as_ref();
+        let hidden_target: &EventTarget = hidden_input.as_ref();
+
         for (ev_name, pressed) in [("keydown", true), ("keyup", false)] {
             let h_c = host.clone();
             let sched_k = scheduler.clone();
+            let comp_k = is_composing.clone();
             let cb = Closure::wrap(Box::new(move |e: DomKeyboardEvent| {
                 let mods = Modifiers {
                     shift: e.shift_key(),
@@ -982,24 +1402,62 @@ pub mod wasm_runner {
                     alt: e.alt_key(),
                     super_key: e.meta_key(),
                 };
+                // Defer Cmd/Ctrl+V keydown to the trusted DOM `paste` event so live OS clipboard
+                // contents from other tabs/apps arrive synchronously without double-pasting.
+                if pressed
+                    && !comp_k.get()
+                    && mods.command()
+                    && !mods.alt
+                    && matches!(e.key().as_str(), "v" | "V")
+                {
+                    return;
+                }
                 let ke = dom_key_to_craft(&e.key(), pressed, e.repeat(), mods);
                 if h_c.borrow_mut().handle_ui_event(&UiEvent::Key(ke)) {
                     sched_k.request_frame();
                 }
             }) as Box<dyn FnMut(DomKeyboardEvent)>);
-            window.add_event_listener_with_callback(ev_name, cb.as_ref().unchecked_ref())?;
-            cb.forget();
+            out.push(DomListener::attach(win_target, ev_name, cb)?);
+        }
+
+        // Trusted DOM `paste` event hydrates clipboard_cache synchronously and dispatches Ctrl+V
+        {
+            let h_paste = host.clone();
+            let sched_paste = scheduler.clone();
+            let paste_cb = Closure::wrap(Box::new(move |e: DomClipboardEvent| {
+                if let Some(dt) = e.clipboard_data()
+                    && let Ok(text) = dt.get_data("text/plain")
+                {
+                    e.prevent_default();
+                    let mut guard = h_paste.borrow_mut();
+                    guard.hydrate_clipboard(&text);
+                    let ke = KeyEvent {
+                        code: KeyCode::KeyV,
+                        text: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Modifiers {
+                            ctrl: true,
+                            ..Default::default()
+                        },
+                    };
+                    if guard.handle_ui_event(&UiEvent::Key(ke)) {
+                        sched_paste.request_frame();
+                    }
+                }
+            }) as Box<dyn FnMut(DomClipboardEvent)>);
+            out.push(DomListener::attach(win_target, "paste", paste_cb)?);
         }
 
         let comp_flag_start = is_composing.clone();
         let comp_start = Closure::wrap(Box::new(move |_e: CompositionEvent| {
             comp_flag_start.set(true);
         }) as Box<dyn FnMut(CompositionEvent)>);
-        hidden_input.add_event_listener_with_callback(
+        out.push(DomListener::attach(
+            hidden_target,
             "compositionstart",
-            comp_start.as_ref().unchecked_ref(),
-        )?;
-        comp_start.forget();
+            comp_start,
+        )?);
 
         let h_comp_upd = host.clone();
         let sched_comp_upd = scheduler.clone();
@@ -1009,11 +1467,11 @@ pub mod wasm_runner {
                 sched_comp_upd.request_frame();
             }
         }) as Box<dyn FnMut(CompositionEvent)>);
-        hidden_input.add_event_listener_with_callback(
+        out.push(DomListener::attach(
+            hidden_target,
             "compositionupdate",
-            comp_upd.as_ref().unchecked_ref(),
-        )?;
-        comp_upd.forget();
+            comp_upd,
+        )?);
 
         let h_comp_end = host.clone();
         let comp_flag_end = is_composing.clone();
@@ -1032,11 +1490,11 @@ pub mod wasm_runner {
                 sched_comp_end.request_frame();
             }
         }) as Box<dyn FnMut(CompositionEvent)>);
-        hidden_input.add_event_listener_with_callback(
+        out.push(DomListener::attach(
+            hidden_target,
             "compositionend",
-            comp_end.as_ref().unchecked_ref(),
-        )?;
-        comp_end.forget();
+            comp_end,
+        )?);
 
         // Mobile virtual keyboard DOM `input` event bridge on `<input>`
         let h_input = host;
@@ -1069,11 +1527,9 @@ pub mod wasm_runner {
                 sched_inp.request_frame();
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
-        hidden_input
-            .add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref())?;
-        on_input.forget();
+        out.push(DomListener::attach(hidden_target, "input", on_input)?);
 
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -1146,7 +1602,52 @@ mod tests {
         assert!(ime.visible);
         assert_eq!(ime.value, "hello");
 
+        // CSS cursor tracking reflects hovered TextInput -> "text"
+        let move_ev = dom_pointer_event(
+            1,
+            PointerPhase::Move,
+            c.x,
+            c.y,
+            0.0,
+            0.0,
+            -1,
+            false,
+            Modifiers::default(),
+            25,
+        );
+        host.handle_ui_event(&move_ev);
+        assert_eq!(host.hovered_cursor_css(), "text");
+
+        // Hydrated clipboard supports synchronous Ctrl+V paste into focused TextInput
+        host.hydrate_clipboard(" world");
+        host.tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::KeyV,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }));
+        assert_eq!(sig.get(), "hello world");
+
+        // DOM ARIA extraction exposes textbox role, focus state, and value
+        let aria = host.extract_aria_tree();
+        assert!(aria.iter().any(|n| n.role == "textbox" && n.focused));
+
         // Mobile virtual keyboard DOM `input` insert & backspace events
+        host.tree.handle_event(&UiEvent::Key(KeyEvent {
+            code: KeyCode::KeyA,
+            text: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }));
+        host.tree.handle_event(&UiEvent::Ime(ImeEvent::Commit("hello".into())));
         for ev in dom_input_to_events("hello", "hello!", "insertText", Some("!")) {
             host.tree.handle_event(&ev);
         }
@@ -1180,5 +1681,28 @@ mod tests {
             },
         );
         assert_eq!(ky.code, KeyCode::KeyY);
+    }
+
+    #[test]
+    fn web_css_cursors_and_aria_roles_map_cleanly() {
+        assert_eq!(craft_cursor_to_css(CursorIcon::Default), "default");
+        assert_eq!(craft_cursor_to_css(CursorIcon::Pointer), "pointer");
+        assert_eq!(craft_cursor_to_css(CursorIcon::Text), "text");
+        assert_eq!(craft_cursor_to_css(CursorIcon::Grab), "grab");
+        assert_eq!(craft_cursor_to_css(CursorIcon::Grabbing), "grabbing");
+        assert_eq!(
+            craft_cursor_to_css(CursorIcon::ResizeHorizontal),
+            "ew-resize"
+        );
+        assert_eq!(craft_cursor_to_css(CursorIcon::ResizeVertical), "ns-resize");
+        assert_eq!(craft_cursor_to_css(CursorIcon::NotAllowed), "not-allowed");
+        assert_eq!(craft_cursor_to_css(CursorIcon::Crosshair), "crosshair");
+
+        assert_eq!(craft_role_to_aria(A11yRole::Button), "button");
+        assert_eq!(craft_role_to_aria(A11yRole::TextInput), "textbox");
+        assert_eq!(craft_role_to_aria(A11yRole::CheckBox), "checkbox");
+        assert_eq!(craft_role_to_aria(A11yRole::Switch), "switch");
+        assert_eq!(craft_role_to_aria(A11yRole::Slider), "slider");
+        assert_eq!(craft_role_to_aria(A11yRole::Alert), "alert");
     }
 }

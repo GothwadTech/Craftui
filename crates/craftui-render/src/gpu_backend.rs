@@ -31,24 +31,29 @@ struct CachedGpuImage {
     brush: peniko::ImageBrush,
 }
 
+#[cfg(feature = "gpu-vello")]
+struct VelloGpuPipeline {
+    renderer: Box<Renderer>,
+    target_texture: wgpu::Texture,
+    target_view: wgpu::TextureView,
+    scene: Box<Scene>,
+    image_cache: HashMap<TextureId, CachedGpuImage>,
+    blitter: TextureBlitter,
+}
+
+struct CpuUploadPipeline {
+    cpu: Box<SoftwareRenderer>,
+    upload_texture: wgpu::Texture,
+    upload_view: wgpu::TextureView,
+    blitter: TextureBlitter,
+}
+
 enum ActivePipelineKind {
     #[cfg(feature = "gpu-sdf")]
     GpuSdf(Box<GpuSdfBackend>),
     #[cfg(feature = "gpu-vello")]
-    VelloGpu {
-        renderer: Box<Renderer>,
-        target_texture: wgpu::Texture,
-        target_view: wgpu::TextureView,
-        scene: Box<Scene>,
-        image_cache: HashMap<TextureId, CachedGpuImage>,
-        blitter: TextureBlitter,
-    },
-    CpuUpload {
-        cpu: Box<SoftwareRenderer>,
-        upload_texture: wgpu::Texture,
-        upload_view: wgpu::TextureView,
-        blitter: TextureBlitter,
-    },
+    VelloGpu(Box<VelloGpuPipeline>),
+    CpuUpload(Box<CpuUploadPipeline>),
 }
 
 /// Active GPU/CPU rendering pipeline backed by `GpuSdfBackend`, `vello`, or software upload.
@@ -431,14 +436,14 @@ impl GpuSurfacePipeline {
                 Ok(renderer) => {
                     let (target_texture, target_view) = create_vello_target(device, w, h, format.is_srgb());
                     let blitter = TextureBlitter::new(device, format);
-                    return ActivePipelineKind::VelloGpu {
+                    return ActivePipelineKind::VelloGpu(Box::new(VelloGpuPipeline {
                         renderer: Box::new(renderer),
                         target_texture,
                         target_view,
                         scene: Box::new(Scene::new()),
                         image_cache: HashMap::new(),
                         blitter,
-                    };
+                    }));
                 }
                 Err(err) => {
                     tracing::warn!("Vello GPU init failed ({err}); falling back");
@@ -458,16 +463,16 @@ impl GpuSurfacePipeline {
 
         let (upload_texture, upload_view) = create_cpu_upload_target(device, w, h, format.is_srgb());
         let blitter = TextureBlitter::new(device, format);
-        ActivePipelineKind::CpuUpload {
+        ActivePipelineKind::CpuUpload(Box::new(CpuUploadPipeline {
             cpu: Box::new(SoftwareRenderer::new(w, h)),
             upload_texture,
             upload_view,
             blitter,
-        }
+        }))
     }
 
     pub fn is_using_gpu(&self) -> bool {
-        !matches!(self.active, ActivePipelineKind::CpuUpload { .. })
+        !matches!(self.active, ActivePipelineKind::CpuUpload(_))
     }
 
     pub fn active_backend_name(&self) -> &'static str {
@@ -475,8 +480,8 @@ impl GpuSurfacePipeline {
             #[cfg(feature = "gpu-sdf")]
             ActivePipelineKind::GpuSdf(_) => "wgpu GpuSdf",
             #[cfg(feature = "gpu-vello")]
-            ActivePipelineKind::VelloGpu { .. } => "wgpu Vello GPU",
-            ActivePipelineKind::CpuUpload { .. } => "wgpu + CPU fallback",
+            ActivePipelineKind::VelloGpu(_) => "wgpu Vello GPU",
+            ActivePipelineKind::CpuUpload(_) => "wgpu + CPU fallback",
         }
     }
 
@@ -494,23 +499,15 @@ impl GpuSurfacePipeline {
             #[cfg(feature = "gpu-sdf")]
             ActivePipelineKind::GpuSdf(sdf) => sdf.resize(&self.device, w, h),
             #[cfg(feature = "gpu-vello")]
-            ActivePipelineKind::VelloGpu {
-                target_texture,
-                target_view,
-                ..
-            } => {
+            ActivePipelineKind::VelloGpu(vello) => {
                 let (tex, view) = create_vello_target(&self.device, w, h, srgb);
-                *target_texture = tex;
-                *target_view = view;
+                vello.target_texture = tex;
+                vello.target_view = view;
             }
-            ActivePipelineKind::CpuUpload {
-                upload_texture,
-                upload_view,
-                ..
-            } => {
+            ActivePipelineKind::CpuUpload(upload) => {
                 let (tex, view) = create_cpu_upload_target(&self.device, w, h, srgb);
-                *upload_texture = tex;
-                *upload_view = view;
+                upload.upload_texture = tex;
+                upload.upload_view = view;
             }
         }
     }
@@ -583,28 +580,22 @@ impl GpuSurfacePipeline {
                 );
             }
             #[cfg(feature = "gpu-vello")]
-            ActivePipelineKind::VelloGpu {
-                renderer,
-                target_texture: _,
-                target_view,
-                scene,
-                image_cache,
-                blitter,
-            } => {
+            ActivePipelineKind::VelloGpu(vello) => {
                 encode_vello_scene(
-                    scene,
+                    &mut vello.scene,
                     paint_scene,
                     scale_factor,
                     textures,
                     text_engine,
-                    image_cache,
+                    &mut vello.image_cache,
                 );
-                renderer
+                vello
+                    .renderer
                     .render_to_texture(
                         &self.device,
                         &self.queue,
-                        scene,
-                        target_view,
+                        &vello.scene,
+                        &vello.target_view,
                         &RenderParams {
                             base_color: background.to_peniko(),
                             width: w,
@@ -613,15 +604,12 @@ impl GpuSurfacePipeline {
                         },
                     )
                     .map_err(|e| CraftError::Render(format!("vello render failed: {e}")))?;
-                blitter.copy(&self.device, &mut encoder, target_view, &surface_view);
+                vello
+                    .blitter
+                    .copy(&self.device, &mut encoder, &vello.target_view, &surface_view);
             }
-            ActivePipelineKind::CpuUpload {
-                cpu,
-                upload_texture,
-                upload_view,
-                blitter,
-            } => {
-                let straight = cpu.render_straight_rgba(
+            ActivePipelineKind::CpuUpload(upload) => {
+                let straight = upload.cpu.render_straight_rgba(
                     paint_scene,
                     w,
                     h,
@@ -632,7 +620,7 @@ impl GpuSurfacePipeline {
                 );
                 self.queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
-                        texture: upload_texture,
+                        texture: &upload.upload_texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -649,7 +637,9 @@ impl GpuSurfacePipeline {
                         depth_or_array_layers: 1,
                     },
                 );
-                blitter.copy(&self.device, &mut encoder, upload_view, &surface_view);
+                upload
+                    .blitter
+                    .copy(&self.device, &mut encoder, &upload.upload_view, &surface_view);
             }
         }
 

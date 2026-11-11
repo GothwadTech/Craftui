@@ -986,6 +986,186 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 .unwrap_or_else(|| quote!(None::<f32>));
             quote! { let #var = __tree.progress_indicator(__cx, #prog); }
         }
+        "Spinner" => {
+            let sz_arg = find_arg(&["size"]);
+            let th_arg = find_arg(&["thickness"]);
+            let col_arg = find_arg(&["color", "fg", "foreground"]);
+            let init_sz = match sz_arg {
+                Some(e) if !matches!(e, Expr::Closure(_)) => quote!(#e as f32),
+                _ => quote!(24.0f32),
+            };
+            let has_static_th = th_arg.is_some_and(|e| !matches!(e, Expr::Closure(_)));
+            let th_opt = match th_arg {
+                Some(e) if !matches!(e, Expr::Closure(_)) => quote!(Some(#e as f32)),
+                _ => quote!(None),
+            };
+            let col_opt = match col_arg {
+                Some(c) => {
+                    let rv = reactive_color_tokens(c);
+                    quote!(Some(#rv))
+                }
+                None => quote!(None),
+            };
+            let static_style = if has_static_th || col_arg.is_some() {
+                Some(quote! { __tree.set_spinner_style(#var, None, #th_opt, #col_opt); })
+            } else {
+                None
+            };
+            let sz_closure = sz_arg.filter(|e| matches!(e, Expr::Closure(_)));
+            let th_closure = th_arg.filter(|e| matches!(e, Expr::Closure(_)));
+            let dyn_style = if sz_closure.is_some() || th_closure.is_some() {
+                let mut rc_decls = TokenStream2::new();
+                let mut tr_reads = TokenStream2::new();
+                let sz_val = if let Some(se) = sz_closure {
+                    rc_decls.extend(quote! {
+                        let __sp_sz = ::std::rc::Rc::new(#se);
+                        let __sp_sz_tr = __sp_sz.clone();
+                    });
+                    tr_reads.extend(quote! { let _ = __sp_sz_tr(); });
+                    quote!(Some(__sp_sz() as f32))
+                } else {
+                    quote!(None)
+                };
+                let th_val = if let Some(te) = th_closure {
+                    rc_decls.extend(quote! {
+                        let __sp_th = ::std::rc::Rc::new(#te);
+                        let __sp_th_tr = __sp_th.clone();
+                    });
+                    tr_reads.extend(quote! { let _ = __sp_th_tr(); });
+                    quote!(Some(__sp_th() as f32))
+                } else {
+                    quote!(None)
+                };
+                Some(quote! {
+                    {
+                        #rc_decls
+                        __tree.bind_dynamic_prop(
+                            #var,
+                            ::craftui::core::DirtyFlags::LAYOUT | ::craftui::core::DirtyFlags::PAINT,
+                            move || { #tr_reads },
+                            move |__id, __t| { __t.set_spinner_style(__id, #sz_val, #th_val, None); },
+                        );
+                    }
+                })
+            } else {
+                None
+            };
+            quote! {
+                let #var = __tree.spinner(__cx, #init_sz);
+                #static_style
+                #dyn_style
+            }
+        }
+        "Badge" => {
+            let lbl = find_arg(&["label", "text"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(""));
+            let fg_opt = find_arg(&["color", "fg", "foreground"]).map(|c| {
+                let rv = reactive_color_tokens(c);
+                quote!(Some(#rv))
+            });
+            let bg_opt = find_arg(&["bg", "background"]).map(|c| {
+                let rv = reactive_color_tokens(c);
+                quote!(Some(#rv))
+            });
+            let color_stmt = if fg_opt.is_some() || bg_opt.is_some() {
+                let f = fg_opt.unwrap_or_else(|| quote!(None));
+                let b = bg_opt.unwrap_or_else(|| quote!(None));
+                quote! { __tree.set_badge_colors(#var, #f, #b); }
+            } else {
+                TokenStream2::new()
+            };
+            let icon_stmt = find_arg(&["icon"]).map(|ic| {
+                if matches!(ic, Expr::Closure(_)) {
+                    quote! {
+                        __tree.set_badge_icon(
+                            #var,
+                            Some(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(
+                                move || ::core::convert::Into::<String>::into((#ic)())
+                            ))),
+                        );
+                    }
+                } else {
+                    quote! {
+                        __tree.set_badge_icon(#var, Some(::craftui::widgets::ReactiveValue::from(#ic)));
+                    }
+                }
+            });
+            quote! {
+                let #var = __tree.badge(__cx, #lbl);
+                #color_stmt
+                #icon_stmt
+            }
+        }
+        "SplitPane" => {
+            let axis = find_arg(&["axis", "direction"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(::craftui::core::Axis::Horizontal));
+            let ratio_sig = match find_prop(&["ratio"]) {
+                Some(p) => {
+                    let v = &p.value;
+                    if is_two_way_signal_expr(p) {
+                        quote!(#v)
+                    } else {
+                        quote! {{
+                            let __s = __cx.signal((#v)() as f32);
+                            __cx.effect(move || {
+                                let __nv = (#v)() as f32;
+                                if (__s.get_untracked() - __nv).abs() > 1e-4 { __s.set(__nv); }
+                            });
+                            __s
+                        }}
+                    }
+                }
+                None => quote!(__cx.signal(0.5f32)),
+            };
+            let mf = find_arg(&["min_first"]);
+            let ms = find_arg(&["min_second"]);
+            let ds = find_arg(&["divider_size"]);
+            let cfg_stmt = if mf.is_some() || ms.is_some() || ds.is_some() {
+                let mf_c = mf.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(80.0f32));
+                let ms_c = ms.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(80.0f32));
+                let ds_c = ds.map(|e| quote!(#e as f32)).unwrap_or_else(|| quote!(8.0f32));
+                quote! { __tree.set_split_pane_config(#var, #mf_c, #ms_c, #ds_c); }
+            } else {
+                TokenStream2::new()
+            };
+            let chg = find_arg(&["on_change"])
+                .map(|cb| quote! { __tree.set_on_float_change(#var, #cb); });
+            quote! {
+                let #var = __tree.split_pane(__cx, #axis, #ratio_sig);
+                #cfg_stmt
+                #chg
+            }
+        }
+        "ToastHost" => {
+            if let Some(mgr) = find_arg(&["manager"]) {
+                let dis = find_arg(&["on_dismiss"])
+                    .map(|cb| quote! { __tree.set_on_dismiss(#var, #cb); });
+                quote! {
+                    let #var = __tree.toast_host(__cx, #mgr);
+                    #dis
+                }
+            } else {
+                let items = find_arg(&["items"])
+                    .map(|e| {
+                        if matches!(e, Expr::Closure(_)) {
+                            quote!(::craftui::widgets::ReactiveValue::Dynamic(::std::rc::Rc::new(#e)))
+                        } else {
+                            quote!(#e)
+                        }
+                    })
+                    .unwrap_or_else(|| quote!(Vec::<::craftui::widgets::ToastItem>::new()));
+                let on_dis = find_arg(&["on_dismiss"])
+                    .map(|cb| {
+                        quote!(Some(::std::rc::Rc::new(::std::cell::RefCell::new(#cb)) as ::craftui::widgets::ToastDismissCallback))
+                    })
+                    .unwrap_or_else(|| quote!(None));
+                quote! {
+                    let #var = __tree.toast_host_custom(__cx, #items, #on_dis);
+                }
+            }
+        }
         "Modal" | "BottomSheet" => {
             let is_sheet = kind_str == "BottomSheet";
             let open = find_arg(&["open", "visible"])
@@ -1187,7 +1367,7 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                     |id: &Ident| quote! { __ls.safe_area = #id(); }
                 );
             }
-            "bg" | "background" => {
+            "bg" | "background" if kind_str != "Badge" => {
                 let rv = reactive_brush_tokens(val);
                 box_static.extend(quote! { __bs.background = Some(#rv); });
             }
