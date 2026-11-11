@@ -1,0 +1,19 @@
+[package]
+name = "craftui-example-scancraft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "craftui-scancraft"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+craftui.workspace = true
+
+[build-dependencies]
+craftui-dsl.workspace = true

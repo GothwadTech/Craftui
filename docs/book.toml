@@ -1,0 +1,19 @@
+[book]
+authors = ["CraftUI Contributors"]
+language = "en"
+multilingual = false
+src = "src"
+title = "The CraftUI Book — Cross-Platform Native GUI Framework"
+
+[output.html]
+git-repository-url = "https://github.com/craftui/craftui"
+edit-url-template = "https://github.com/craftui/craftui/edit/main/docs/{path}"
+cname = "docs.craftui.dev"
+default-theme = "rust"
+preferred-dark-theme = "navy"
+mathjax-support = false
+copy-fonts = true
+
+[output.html.fold]
+enable = true
+level = 1

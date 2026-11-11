@@ -1,0 +1,593 @@
+export component ScanCraftApp {
+    in-out property <int> active_tab: 0;
+    in-out property <string> doc_title: "Receipt_2026_Nov.pdf";
+    in-out property <int> scan_preset: 0;
+    in-out property <int> filter_mode: 2;
+    in-out property <float> brightness: 0.0;
+    in-out property <float> contrast: 1.2;
+    in-out property <int> rotation_deg: 0;
+    in-out property <string> search_query: "";
+    in-out property <int> selected_doc_index: 0;
+    in-out property <string> status_message: "ScanCraft Ready — Camera Viewfinder Active";
+    in-out property <string> battery_status: "94% Battery";
+    in-out property <string> storage_status: "52.4 GB Free";
+    in-out property <string> camera_perm_badge: "Camera: Granted";
+    in-out property <int> export_format: 0;
+    in-out property <bool> is_processing: false;
+    in-out property <bool> capture_btn_hovered: false;
+    in-out property <bool> gallery_btn_hovered: false;
+    in-out property <bool> share_btn_hovered: false;
+    in-out property <bool> save_btn_hovered: false;
+    in-out property <bool> accordion_open: true;
+
+    in property <[[string]]> doc_table_rows: [
+        ["DOC-001", "Contract_Agreement_v2.pdf", "Legal", "2026-11-09", "1.4 MB", "Indexed"],
+        ["DOC-002", "Tax_Invoice_Nov.pdf", "Finance", "2026-11-10", "480 KB", "Ready"],
+        ["DOC-003", "Medical_Prescription.png", "Health", "2026-11-10", "890 KB", "Ready"],
+        ["DOC-004", "Equipment_Warranty.pdf", "Personal", "2026-11-11", "2.1 MB", "Synced"],
+        ["DOC-005", "Whiteboard_Brainstorm.jpeg", "Work", "2026-11-11", "3.6 MB", "Draft"]
+    ];
+
+    callback on_capture_photo();
+    callback on_import_gallery();
+    callback on_apply_filter(int);
+    callback on_rotate();
+    callback on_save_doc();
+    callback on_delete_doc();
+    callback on_share_doc();
+    callback on_theme_toggle();
+    callback on_request_permissions();
+
+    SafeArea {
+        Column {
+            width: 100%;
+            height: 100%;
+            background: Theme.background;
+            padding: 14dp;
+            gap: 12dp;
+
+            // --- Top App Bar & Device Telemetry Header ---
+            Row {
+                width: 100%;
+                justify: SpaceBetween;
+                align: Center;
+
+                Row {
+                    gap: 10dp;
+                    align: Center;
+
+                    Text {
+                        text: "ScanCraft Pro";
+                        font_size: 20;
+                        font_weight: 700;
+                        color: Theme.text_primary;
+                    }
+
+                    Badge {
+                        label: "Mobile Dogfood";
+                        background: #10B981;
+                        color: #FFFFFF;
+                    }
+
+                    Badge {
+                        label: camera_perm_badge;
+                        background: Theme.surface_variant;
+                        color: Theme.text_primary;
+                    }
+                }
+
+                Row {
+                    gap: 8dp;
+                    align: Center;
+
+                    Badge {
+                        label: battery_status;
+                        background: Theme.surface_variant;
+                        color: Theme.text_secondary;
+                    }
+
+                    Badge {
+                        label: storage_status;
+                        background: Theme.surface_variant;
+                        color: Theme.text_secondary;
+                    }
+
+                    Button {
+                        id: "theme_toggle_btn";
+                        text: "Theme";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 8dp;
+                        cursor: Pointer;
+                        on_tap => {
+                            on_theme_toggle();
+                        }
+                    }
+                }
+            }
+
+            // --- Main Section Navigation Tabs ---
+            SegmentedControl {
+                items: ["1. Camera Viewfinder", "2. Filter & Enhance", "3. Document Library", "4. Export & Info"];
+                selected <=> active_tab;
+                on_change => {
+                    status_message = "Active tab changed to #" + index;
+                }
+            }
+
+            // --- Status Strip ---
+            Row {
+                width: 100%;
+                background: Theme.surface_variant;
+                padding: 8dp;
+                border_radius: 8dp;
+                justify: SpaceBetween;
+                align: Center;
+
+                Text {
+                    text: status_message;
+                    font_size: 13;
+                    color: Theme.text_secondary;
+                }
+
+                if is_processing : Spinner {
+                    size: 18;
+                    color: Theme.primary;
+                }
+            }
+
+            // --- TAB 0: Camera Viewfinder & Ingestion ---
+            if active_tab == 0 : Column {
+                flex_grow: 1.0;
+                width: 100%;
+                gap: 12dp;
+
+                // Viewfinder HUD Container
+                Column {
+                    width: 100%;
+                    flex_grow: 1.0;
+                    min_height: 240dp;
+                    background: #0B0F19;
+                    border_radius: 12dp;
+                    border_width: 1.5;
+                    border_color: #38BDF8;
+                    padding: 16dp;
+                    justify: SpaceBetween;
+
+                    Row {
+                        width: 100%;
+                        justify: SpaceBetween;
+                        align: Center;
+
+                        Badge {
+                            label: "LIVE VIEW 60FPS";
+                            background: #EF4444;
+                            color: #FFFFFF;
+                        }
+
+                        Text {
+                            text: "Automatic Document Edge Detection: ACTIVE";
+                            font_size: 12;
+                            color: #38BDF8;
+                        }
+                    }
+
+                    // Viewfinder Center Overlay Simulation
+                    Column {
+                        width: 100%;
+                        align: Center;
+                        gap: 8dp;
+
+                        Text {
+                            text: "[  Document Bounds Locked  ]";
+                            font_size: 18;
+                            font_weight: 600;
+                            color: #F8FAFC;
+                        }
+
+                        Text {
+                            text: "Hold steady. Optical contrast scan optimizing...";
+                            font_size: 13;
+                            color: #94A3B8;
+                        }
+                    }
+
+                    Row {
+                        width: 100%;
+                        justify: SpaceBetween;
+                        align: Center;
+
+                        Text {
+                            text: "Mode: Auto-Crop & Perspective Flattening";
+                            font_size: 12;
+                            color: #E2E8F0;
+                        }
+
+                        SegmentedControl {
+                            items: ["Document", "Receipt", "Whiteboard", "ID Card"];
+                            selected <=> scan_preset;
+                            on_change => {
+                                status_message = "Preset mode switched to: " + index;
+                            }
+                        }
+                    }
+                }
+
+                // Action Bar
+                Row {
+                    width: 100%;
+                    gap: 12dp;
+                    justify: Center;
+                    align: Center;
+
+                    Button {
+                        id: "capture_action_btn";
+                        text: "Snap Document (Haptic)";
+                        background: Theme.primary;
+                        foreground: Theme.on_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: capture_btn_hovered ? 1.03 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { capture_btn_hovered = value; }
+                        on_tap => {
+                            on_capture_photo();
+                        }
+                    }
+
+                    Button {
+                        id: "gallery_action_btn";
+                        text: "Import from Photos";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        scale: gallery_btn_hovered ? 1.03 : 1.0;
+                        animate scale { curve: snappy(); }
+                        on_hover => { gallery_btn_hovered = value; }
+                        on_tap => {
+                            on_import_gallery();
+                        }
+                    }
+
+                    Button {
+                        id: "perm_req_btn";
+                        text: "Request Permissions";
+                        background: Theme.surface;
+                        foreground: Theme.primary;
+                        border_color: Theme.primary;
+                        border_width: 1;
+                        border_radius: 10dp;
+                        cursor: Pointer;
+                        on_tap => {
+                            on_request_permissions();
+                        }
+                    }
+                }
+            }
+
+            // --- TAB 1: Filter & Image Enhancement Studio ---
+            if active_tab == 1 : Column {
+                flex_grow: 1.0;
+                width: 100%;
+                gap: 12dp;
+
+                Row {
+                    width: 100%;
+                    flex_grow: 1.0;
+                    gap: 16dp;
+
+                    // Image Canvas Panel
+                    Column {
+                        flex_grow: 1.0;
+                        background: Theme.surface;
+                        border_radius: 12dp;
+                        padding: 16dp;
+                        gap: 8dp;
+                        align: Center;
+                        justify: Center;
+
+                        Text {
+                            text: doc_title + " (" + rotation_deg + " deg)";
+                            font_size: 15;
+                            font_weight: 600;
+                            color: Theme.text_primary;
+                        }
+
+                        // Document preview canvas placeholder card
+                        Column {
+                            width: 90%;
+                            flex_grow: 1.0;
+                            min_height: 200dp;
+                            background: #F1F5F9;
+                            border_radius: 8dp;
+                            border_width: 1;
+                            border_color: #CBD5E1;
+                            padding: 20dp;
+                            justify: Center;
+                            align: Center;
+                            gap: 10dp;
+
+                            Text {
+                                text: "DOCUMENT ENHANCEMENT CANVAS";
+                                font_size: 14;
+                                font_weight: 700;
+                                color: #1E293B;
+                            }
+
+                            Text {
+                                text: "Filter: " + (filter_mode == 0 ? "Original" : (filter_mode == 1 ? "Grayscale" : (filter_mode == 2 ? "High-Contrast B&W" : "Color Boost")));
+                                font_size: 13;
+                                color: #0284C7;
+                            }
+
+                            Text {
+                                text: "Brightness: " + brightness + " | Contrast: " + contrast + "x";
+                                font_size: 12;
+                                color: #64748B;
+                            }
+                        }
+                    }
+
+                    // Filter Parameter Controls Sidebar
+                    Column {
+                        width: 280dp;
+                        background: Theme.surface;
+                        border_radius: 12dp;
+                        padding: 16dp;
+                        gap: 12dp;
+
+                        Text {
+                            text: "Enhancement Presets";
+                            font_size: 15;
+                            font_weight: 600;
+                            color: Theme.text_primary;
+                        }
+
+                        SegmentedControl {
+                            items: ["Original", "Gray", "B&W Doc", "Boost"];
+                            selected <=> filter_mode;
+                            on_change => {
+                                on_apply_filter(index);
+                            }
+                        }
+
+                        Text {
+                            text: "Brightness Tuning";
+                            font_size: 13;
+                            color: Theme.text_secondary;
+                        }
+
+                        Slider {
+                            value <=> brightness;
+                            min: -50.0;
+                            max: 50.0;
+                            on_change => {
+                                status_message = "Brightness adjusted: " + value;
+                            }
+                        }
+
+                        Text {
+                            text: "Contrast Multiplier";
+                            font_size: 13;
+                            color: Theme.text_secondary;
+                        }
+
+                        Slider {
+                            value <=> contrast;
+                            min: 0.5;
+                            max: 2.0;
+                            on_change => {
+                                status_message = "Contrast adjusted: " + value;
+                            }
+                        }
+
+                        Row {
+                            width: 100%;
+                            gap: 8dp;
+
+                            Button {
+                                id: "rotate_doc_btn";
+                                text: "Rotate 90";
+                                background: Theme.surface_variant;
+                                foreground: Theme.text_primary;
+                                cursor: Pointer;
+                                on_tap => {
+                                    on_rotate();
+                                }
+                            }
+
+                            Button {
+                                id: "save_enhanced_btn";
+                                text: "Save to Library";
+                                background: Theme.primary;
+                                foreground: Theme.on_primary;
+                                cursor: Pointer;
+                                scale: save_btn_hovered ? 1.03 : 1.0;
+                                animate scale { curve: snappy(); }
+                                on_hover => { save_btn_hovered = value; }
+                                on_tap => {
+                                    on_save_doc();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- TAB 2: Document Library & Management ---
+            if active_tab == 2 : Column {
+                flex_grow: 1.0;
+                width: 100%;
+                gap: 12dp;
+
+                Row {
+                    width: 100%;
+                    gap: 12dp;
+                    align: Center;
+
+                    TextInput {
+                        id: "search_input";
+                        width: 320dp;
+                        placeholder: "Search scanned documents...";
+                        text <=> search_query;
+                        on_change => {
+                            status_message = "Filtering documents by: " + text;
+                        }
+                    }
+
+                    Badge {
+                        label: "5 Stored Items";
+                        background: Theme.surface_variant;
+                        color: Theme.text_secondary;
+                    }
+
+                    Badge {
+                        label: "8.4 MB Total";
+                        background: Theme.surface_variant;
+                        color: Theme.text_secondary;
+                    }
+                }
+
+                // Document Registry Table
+                DataTable {
+                    columns: ["Document ID", "Filename", "Category", "Captured", "Size", "Sync Status"];
+                    rows: doc_table_rows;
+                    selected <=> selected_doc_index;
+                    striped: true;
+                    row_height: 38;
+                    on_sort => {
+                        status_message = "Library sorted by column #" + column;
+                    }
+                }
+
+                Row {
+                    gap: 12dp;
+
+                    Button {
+                        id: "open_in_editor_btn";
+                        text: "Open Selected in Editor";
+                        background: Theme.primary;
+                        foreground: Theme.on_primary;
+                        cursor: Pointer;
+                        on_tap => {
+                            active_tab = 1;
+                            status_message = "Opened document in editor studio";
+                        }
+                    }
+
+                    Button {
+                        id: "delete_doc_btn";
+                        text: "Delete Document";
+                        background: Theme.surface_variant;
+                        foreground: #EF4444;
+                        cursor: Pointer;
+                        on_tap => {
+                            on_delete_doc();
+                        }
+                    }
+                }
+            }
+
+            // --- TAB 3: Export, Permissions & Architecture Info ---
+            if active_tab == 3 : Column {
+                flex_grow: 1.0;
+                width: 100%;
+                gap: 12dp;
+
+                Row {
+                    width: 100%;
+                    gap: 16dp;
+
+                    // Export Card
+                    Column {
+                        flex_grow: 1.0;
+                        background: Theme.surface;
+                        border_radius: 12dp;
+                        padding: 16dp;
+                        gap: 12dp;
+
+                        Text {
+                            text: "Export & Share Document";
+                            font_size: 16;
+                            font_weight: 600;
+                            color: Theme.text_primary;
+                        }
+
+                        Text {
+                            text: "Document: " + doc_title;
+                            font_size: 14;
+                            color: Theme.text_secondary;
+                        }
+
+                        SegmentedControl {
+                            items: ["PDF (Standard)", "PDF (Compressed)", "PNG Image", "JPEG"];
+                            selected <=> export_format;
+                            on_change => {
+                                status_message = "Export format chosen: " + index;
+                            }
+                        }
+
+                        Row {
+                            gap: 12dp;
+
+                            Button {
+                                id: "share_sheet_btn";
+                                text: "Share via OS Sheet";
+                                background: Theme.primary;
+                                foreground: Theme.on_primary;
+                                cursor: Pointer;
+                                scale: share_btn_hovered ? 1.03 : 1.0;
+                                animate scale { curve: snappy(); }
+                                on_hover => { share_btn_hovered = value; }
+                                on_tap => {
+                                    on_share_doc();
+                                }
+                            }
+                        }
+                    }
+
+                    // System Capabilities Card
+                    Column {
+                        width: 380dp;
+                        background: Theme.surface;
+                        border_radius: 12dp;
+                        padding: 16dp;
+                        gap: 10dp;
+
+                        Accordion {
+                            title: "Mobile Permissions Architecture";
+                            expanded <=> accordion_open;
+                            on_toggle => {
+                                status_message = "Accordion toggled: " + expanded;
+                            }
+
+                            Column {
+                                gap: 6dp;
+                                padding: 8dp;
+
+                                Text {
+                                    text: "Camera & Photos: Direct hardware access with runtime prompt.";
+                                    font_size: 12;
+                                    color: Theme.text_secondary;
+                                }
+
+                                Text {
+                                    text: "Vibrate: Native haptic feedback on successful scan.";
+                                    font_size: 12;
+                                    color: Theme.text_secondary;
+                                }
+
+                                Text {
+                                    text: "Storage: Scoped Android SAF & desktop file portal.";
+                                    font_size: 12;
+                                    color: Theme.text_secondary;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

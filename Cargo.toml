@@ -23,6 +23,7 @@ members = [
     "examples/todo_crud",
     "examples/settings_form",
     "examples/canvas_paint",
+    "examples/scancraft",
 ]
 
 [workspace.package]

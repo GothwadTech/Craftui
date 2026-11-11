@@ -67,32 +67,28 @@
 - Upgraded `craftui-cli` (`doctor [--json]`, NDK auto-discovery, `build --platform desktop|web|android|ios [--out] [--release] [--package] [--skip-cargo]`) emitting Web `dist/`, Android Gradle/Kotlin `GameActivity` + `jniLibs`, and iOS Swift/UIKit + C-ABI templates, and modernized `examples/showcase` with glassmorphism, spring motion, transforms, Phase 4 widgets, and `.cui` strict validation.
 
 ### Phase 5 — Release-Grade Hardening, Native Mobile Permissions/Capabilities & DX Excellence *(Completed — 2026-11-11)*
-- **35 Standard Mobile & Web Permissions**: Complete `craftui_core::Permission` catalog covering all native Android `<uses-permission>` declarations (with exact API bounds including `maxSdkVersion="32"`/`"30"`/`"29"`), iOS `Info.plist` `NS*UsageDescription` privacy strings, and W3C Web Permissions API descriptors (`Camera`, `Microphone`, `LocationWhenInUse`, `LocationAlways`, `Photos`, `PhotosAddOnly`, `Videos`, `AudioLibrary`, `Notifications`, `Bluetooth`, `BluetoothScan`, `BluetoothConnect`, `BluetoothAdvertise`, `Biometrics`, `Contacts`, `CalendarRead`, `CalendarWrite`, `Sensors`, `MotionActivity`, `StorageRead`, `StorageWrite`, `ManageExternalStorage`, `Nfc`, `PhoneState`, `CallPhone`, `SmsRead`, `SmsSend`, `SystemAlertWindow`, `ScheduleExactAlarm`, `InstallPackages`, `Vibrate`, `BackgroundRefresh`, `MediaProjection`, `ClipboardRead`, and `Custom(String)`).
-- **Zero-Boilerplate Manifest Engine (`craftui.toml`)**:
-  - Implemented zero-dependency `AppManifest` in `tools/craftui-cli/src/manifest.rs` parsing `[app]`, `[android]`, `[ios]`, and `[permissions]`.
-  - Automatically emits valid Android `AndroidManifest.xml` `<uses-permission>` tags, `<uses-feature android:required="false" />` declarations, and iOS `Info.plist` usage entries + `UIBackgroundModes`.
-  - Added strict validation diagnostics (`craftui permissions check`) reporting missing usage descriptions, App Store guidelines warnings, and Android SDK version constraints.
-- **Phase 5 Native Mobile & Desktop Widgets**:
-  - `SafeArea`: dynamic notch, Dynamic Island, and software keyboard insets integrated directly into Taffy layout.
-  - `SegmentedControl`: spring active indicator, keyboard arrow navigation, and custom item arrays.
-  - `Accordion`: collapsible container with smooth spring animation, a11y disclosure state, and preserved header insets.
-  - `DataTable`: responsive table with sortable columns, alternating zebra rows, keyboard navigation, and reactive `Signal<Vec<Vec<String>>>` data tables.
-  - Full end-to-end parity across `.cui` DSL grammar, `validator.rs`, `codegen.rs`, `craftui-runtime`, `cui!` macro, and `craftui-lsp`.
-- **Production Native Platform Bridges**:
-  - Android: `MainActivity.kt` with edge-to-edge `WindowInsetsCompat`, runtime `ActivityResultContracts.RequestMultiplePermissions`, SAF document pickers, `VibrationEffect` haptics, `Intent.ACTION_SEND` share sheet, `ConnectivityManager` network, and `BatteryManager` telemetry.
-  - iOS: Complete C-ABI exports in `CraftUI.h` (`craftui_ios_app_{permission_status_from_key, set_permission_status, deliver_permission_result, poll_command_json, push_lifecycle, set_network_status, set_battery}`), `CraftUIPermissions.swift` (AVFoundation, CoreLocation, UNUserNotificationCenter, PHPhotoLibrary, CoreBluetooth, LAContext biometrics, Keychain), and `CraftUIViewController.swift` (JSON command polling, NWPathMonitor, UIDevice battery, UIImpactFeedbackGenerator, UIActivityViewController).
-  - Web: W3C Permissions API integration, `parse_web_permission_state`, and built-in HTTP server with `application/wasm` MIME support.
-- **Flutter-Surpassing Tooling & Developer Experience (DX)**:
-  - `craftui-cli`:
-    - `new <name> --template counter|dashboard|mobile`
-    - `init` (safely adds `craftui.toml` to existing projects)
-    - `setup` (installs missing Rust targets and audits NDK/ADB/tools)
-    - `run --platform desktop|web|android` (with built-in WASM static server and direct ADB APK installation)
-    - `permissions list|check` (inspects 35 permission keys and audits project readiness)
-    - `doctor [--json]` (inspects rustc, cargo, targets, NDK, clang, Xcode, `.cui` files, and `craftui.toml`)
-  - **Official VS Code Extension (`editors/vscode/`)**: TextMate grammar for `.cui`, LSP diagnostics, hover docs, completions, hex color pickers, and live hot-reload preview commands.
-  - **Showcase Modernization**: `examples/showcase` updated with 5th "Mobile & Native" tab demonstrating permissions, `SafeArea`, `SegmentedControl`, `Accordion`, `DataTable`, haptics, share, and device telemetry.
-  - **CI & Benchmarks**: Added comprehensive GitHub Actions workflow (`.github/workflows/ci.yml`), automated benchmark suite (`perf_suite.rs`), and binary size report script (`scripts/size_report.sh`).
+- **35 Standard Mobile & Web Permissions**: Complete `craftui_core::Permission` catalog covering all native Android `<uses-permission>` declarations (with exact API bounds including `maxSdkVersion="32"`/`"30"`/`"29"`), iOS `Info.plist` `NS*UsageDescription` privacy strings, and W3C Web Permissions API descriptors.
+- **Zero-Boilerplate Manifest Engine (`craftui.toml`)**: Implemented zero-dependency `AppManifest` in `tools/craftui-cli/src/manifest.rs` parsing `[app]`, `[android]`, `[ios]`, and `[permissions]`. Automatically emits valid Android `AndroidManifest.xml` and iOS `Info.plist`.
+- **Phase 5 Widgets**: `SafeArea`, `SegmentedControl`, `Accordion`, and `DataTable`.
+- **Production CLI & Tooling**: `craftui-cli` (`new --template counter|dashboard|mobile`, `init`, `setup`, `run`, `permissions list|check`, `doctor [--json]`), and pure Node LSP VS Code extension (`editors/vscode/`).
+- **Showcase Modernization**: `examples/showcase` updated with 5th "Mobile & Native" tab.
+
+### Phase 6 — Flagship Real-World Dogfood App: "ScanCraft" *(In Progress)*
+- **Real-World Application Scope**: Build a full-fledged mobile & desktop document scanner and photo filter suite in `examples/scancraft`.
+- **Core Features**:
+  - Live viewfinder & capture simulation / gallery picker (`Permission::Camera`, `Permission::Photos`).
+  - Interactive 2D image processing canvas: crop boundaries, 90° rotation, real-time brightness/contrast adjustment, grayscale, and document thresholding.
+  - Document library with sortable, filterable, selectable `DataTable` and `VirtualList`.
+  - Edge-to-edge `SafeArea` integration, native haptic feedback (`Vibrate`), native share sheet export, and real-time battery/storage telemetry.
+- **Developer Host Focus**: Primary tier on **Linux Desktop** and **Android** (physical device + emulator via ADB/NDK). No macOS or iOS setup required.
+
+### Phase 7 — Official Comprehensive Documentation Book *(In Progress)*
+- Complete mdBook documentation tree in `docs/`:
+  - Quickstart for Linux & Android (`craftui new`, `craftui doctor`, `craftui run`).
+  - `.cui` DSL Language Guide & Reactivity architecture.
+  - Complete 25+ Widget Catalog with interactive properties, events, and a11y roles.
+  - Android & Linux Platform deployment guides.
+  - Mobile Permissions & Manifest security reference.
 
 ### Verification Matrix
 

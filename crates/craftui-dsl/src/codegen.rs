@@ -261,7 +261,7 @@ fn emit_component(
 
     let _ = writeln!(
         out,
-        "    #[allow(dead_code, unused_variables, unused_parens, unused_mut, clippy::double_parens, clippy::clone_on_copy, clippy::unnecessary_cast, clippy::redundant_locals, clippy::type_complexity, clippy::let_and_return, clippy::needless_parens_on_range_literals, clippy::overly_complex_bool_expr, clippy::needless_update, clippy::possible_missing_else)]"
+        "    #[allow(dead_code, unused_variables, unused_parens, unused_mut, clippy::double_parens, clippy::clone_on_copy, clippy::unnecessary_cast, clippy::redundant_locals, clippy::type_complexity, clippy::let_and_return, clippy::needless_parens_on_range_literals, clippy::overly_complex_bool_expr, clippy::needless_update, clippy::possible_missing_else, clippy::format_in_format_args)]"
     );
     let _ = writeln!(
         out,
