@@ -17,6 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "android")]
+pub use android_activity;
+
 /// Android manifest permission entry (`0 = PERMISSION_GRANTED`, `-1 = PERMISSION_DENIED`).
 pub const ANDROID_PERMISSION_GRANTED: i32 = 0;
 
@@ -909,7 +912,7 @@ impl AndroidHost {
         tree.metrics = WindowMetrics {
             logical_size: Size::new(width_px as f32 / sf, height_px as f32 / sf),
             scale_factor: sf,
-            safe_area: Insets::ZERO,
+            safe_area: Insets::new(44.0, 0.0, 40.0, 0.0),
             keyboard_inset: 0.0,
         };
         Self {
@@ -1029,12 +1032,17 @@ impl AndroidHost {
         content_bottom_px: i32,
     ) {
         let sf = self.tree.metrics.scale_factor.max(1.0);
-        let top = (content_top_px.max(0) as f32) / sf;
+        let top = if content_top_px > 0 {
+            (content_top_px as f32) / sf
+        } else {
+            44.0
+        };
         let left = (content_left_px.max(0) as f32) / sf;
         let right = ((window_width_px - content_right_px).max(0) as f32) / sf;
         let bottom_px = (window_height_px - content_bottom_px).max(0) as f32;
         let bottom = bottom_px / sf;
-        self.tree.metrics.safe_area = Insets::new(top, right, 0.0, left);
+        let eff_bottom = if bottom > 0.0 { bottom } else { 40.0 };
+        self.tree.metrics.safe_area = Insets::new(top, right, eff_bottom, left);
         self.tree.metrics.keyboard_inset = bottom;
         self.needs_redraw = true;
     }
@@ -1757,6 +1765,56 @@ pub mod android_runtime {
             }
         }
     }
+}
+
+#[cfg(all(target_os = "android", feature = "builtin-main"))]
+#[unsafe(no_mangle)]
+pub fn android_main(app: android_activity::AndroidApp) {
+    android_runtime::run_android_app(app, |cx, tree, _textures, _disp| {
+        use craftui_core::{Insets, pct};
+        use craftui_layout::LayoutStyle;
+        use craftui_text::TextStyle;
+        use craftui_widgets::BoxStyle;
+
+        let root = tree.container(
+            cx,
+            LayoutStyle::column()
+                .with_size(pct(100.0), pct(100.0))
+                .with_padding(Insets::all(16.0))
+                .with_gap(12.0),
+            BoxStyle::new(),
+        );
+
+        let safe = tree.safe_area(cx);
+
+        let header = tree.text(
+            cx,
+            "CraftUI Native Android",
+            TextStyle::default()
+                .with_size(22.0)
+                .with_weight(700.0)
+                .with_color(tree.theme().text_primary),
+        );
+
+        let desc = tree.text(
+            cx,
+            "Running high-performance GPU SDF / Vulkan on Android!",
+            TextStyle::default()
+                .with_size(14.0)
+                .with_color(tree.theme().text_secondary),
+        );
+
+        let btn = tree.button(cx, "Interactive Native Button", move || {
+            tracing::info!("Android native button tapped!");
+        });
+
+        tree.append_child(safe, header);
+        tree.append_child(safe, desc);
+        tree.append_child(safe, btn);
+        tree.append_child(root, safe);
+
+        root
+    });
 }
 
 #[cfg(test)]

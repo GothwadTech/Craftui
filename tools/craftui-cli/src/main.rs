@@ -1642,6 +1642,9 @@ fn configure_android_ndk_env(cmd: &mut Command, ndk_root: &Path) -> Option<(Path
     if ar.is_file() && std::env::var_os("AR_aarch64_linux_android").is_none() {
         cmd.env("AR_aarch64_linux_android", &ar);
     }
+    if std::env::var_os("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER").is_none() {
+        cmd.env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", &cc);
+    }
     Some((cc, cxx))
 }
 
@@ -2057,7 +2060,23 @@ pub fn emit_android_template_with_manifest(
         .map_err(|e| CraftError::Platform(format!("failed creating android dirs: {e}")))?;
 
     let settings_gradle = format!(
-        "rootProject.name = \"{}\"\ninclude(\":app\")\n",
+        r#"pluginManagement {{
+    repositories {{
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }}
+}}
+dependencyResolutionManagement {{
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {{
+        google()
+        mavenCentral()
+    }}
+}}
+rootProject.name = "{}"
+include(":app")
+"#,
         effective_manifest.app.name.replace('"', "\\\"")
     );
     let root_gradle = r#"plugins {
@@ -2101,6 +2120,7 @@ android {{
 
 dependencies {{
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.games:games-activity:3.0.5")
@@ -2137,7 +2157,7 @@ dependencies {{
 
     let styles_xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.CraftUI" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+    <style name="Theme.CraftUI" parent="Theme.AppCompat.DayNight.NoActionBar" />
 </resources>
 "#;
 
@@ -2323,6 +2343,13 @@ class MainActivity : GameActivity() {{
     if let Some(so_path) = built_so
         && so_path.is_file()
     {
+        if let Ok(entries) = std::fs::read_dir(&jni_dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().is_some_and(|e| e == "so") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         let target_so = jni_dir.join(format!("lib{rust_lib_name}.so"));
         std::fs::copy(so_path, &target_so).map_err(|e| {
             CraftError::Platform(format!("failed copying .so {}: {e}", so_path.display()))
@@ -2341,6 +2368,25 @@ class MainActivity : GameActivity() {{
         .and_then(|_| std::fs::write(res_values_dir.join("styles.xml"), styles_xml))
         .and_then(|_| std::fs::write(java_dir.join("MainActivity.kt"), main_activity))
         .map_err(|e| CraftError::Platform(format!("failed writing android template: {e}")))?;
+
+    let sdk_dir = std::env::var("ANDROID_HOME")
+        .or_else(|_| std::env::var("ANDROID_SDK_ROOT"))
+        .unwrap_or_else(|_| {
+            if let Ok(home) = std::env::var("HOME") {
+                format!("{home}/Android/Sdk")
+            } else {
+                "/home/krishna/Android/Sdk".to_string()
+            }
+        });
+    let _ = std::fs::write(
+        out_dir.join("local.properties"),
+        format!("sdk.dir={}\n", sdk_dir.replace('\\', "/")),
+    );
+    let _ = std::fs::write(
+        out_dir.join("gradle.properties"),
+        "android.useAndroidX=true\n",
+    );
+
     Ok(())
 }
 
@@ -3006,6 +3052,11 @@ fn run_build(
                 cmd.args(["build", "--target", "aarch64-linux-android", "-p", pkg]);
                 if release {
                     cmd.arg("--release");
+                }
+                if pkg != "craftui-platform-android" {
+                    cmd.arg("--no-default-features");
+                } else {
+                    cmd.args(["--features", "builtin-main"]);
                 }
                 if let Some(ndk) = discover_android_ndk() {
                     let _ = configure_android_ndk_env(&mut cmd, &ndk);

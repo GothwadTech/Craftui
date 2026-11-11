@@ -5,8 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [features]
 default = ["gpu-sdf", "gpu-vello", "cpu-vello", "cpu-tiny-skia"]
+builtin-main = []
 gpu-sdf = ["craftui-render/gpu-sdf", "dep:wgpu", "dep:pollster"]
 gpu-vello = ["craftui-render/gpu-vello", "dep:wgpu", "dep:pollster"]
 cpu-vello = ["craftui-render/cpu-vello"]
@@ -20,6 +24,7 @@ craftui-core.workspace = true
 craftui-layout.workspace = true
 craftui-reactive.workspace = true
 craftui-render.workspace = true
+craftui-text.workspace = true
 craftui-widgets.workspace = true
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }

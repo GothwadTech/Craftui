@@ -5,15 +5,35 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "craftui_example_scancraft"
+crate-type = ["lib", "cdylib"]
+path = "src/lib.rs"
+
 [[bin]]
 name = "craftui-scancraft"
 path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["craftui/desktop"]
 
 [lints]
 workspace = true
 
 [dependencies]
-craftui.workspace = true
+craftui = { workspace = true, default-features = false, features = [
+    "dsl",
+    "embedded-fallback-font",
+    "gpu-sdf",
+    "gpu-vello",
+    "cpu-vello",
+    "cpu-tiny-skia",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+craftui = { workspace = true, default-features = false, features = ["android"] }
 
 [build-dependencies]
 craftui-dsl.workspace = true

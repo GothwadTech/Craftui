@@ -35,7 +35,8 @@ examples/scancraft/
 ├── ui/
 │   └── scancraft.cui          # Declarative multi-tab UI
 └── src/
-    └── main.rs                # State, Canvas filter pipeline & tests
+    ├── lib.rs                 # ScanCraft logic, AOT UI, and Android entrypoint
+    └── main.rs                # Desktop launcher
 ```
 
 ---

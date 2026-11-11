@@ -58,3 +58,18 @@ flowchart TD
   - `cargo package --dry-run` zero-warning verification.
   - Official VS Code extension `.vsix` publishing script.
   - One-click GitHub Releases with precompiled `craftui-cli` binaries for Linux x86_64 and aarch64.
+
+---
+
+## 3. Live Physical Device Validation (Realme Android 16)
+
+* **Physical Device:** Realme `RMX5003` (Model `RMX5003IN`, Serial `Z9FA8TLVW8E6ZTCU`), Android 16 (`arm64-v8a`), 1080x2400.
+* **Status:** Verified working live with full GPU rendering, dynamic `SafeArea` top cutout and bottom navigation insets, and responsive multi-touch.
+* **Apps Deployed & Verified:**
+  1. `dev.craftui.craftui_app` (`libcraftui_platform_android.so`): Native title, subtitle, and interactive button.
+  2. `dev.craftui.craftui_example_scancraft` (`libcraftui_example_scancraft.so`): Flagship ScanCraft document scanner running all 4 tabs (Camera Viewfinder, Filter Studio with Canvas, Document Library with sortable DataTable, and Export & Info).
+* **Screenshots & Artifacts:**
+  - `scancraft_android_safe_full.png`: Edge-to-edge camera viewfinder with punch-hole cutout padding.
+  - `scancraft_tab_tap.png`: Filter and enhancement studio with sliders and rotation.
+  - `scancraft_library.png`: Document management DataTable with selection and deletion.
+  - `scancraft_export.png`: System export format picker and share sheet trigger.
