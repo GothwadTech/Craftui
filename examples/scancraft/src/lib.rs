@@ -1,7 +1,14 @@
 use craftui::prelude::*;
 
 pub mod aot_ui {
-    include!(concat!(env!("OUT_DIR"), "/scancraft.rs"));
+    pub mod scancraft {
+        include!(concat!(env!("OUT_DIR"), "/scancraft.rs"));
+    }
+    pub mod html_style {
+        include!(concat!(env!("OUT_DIR"), "/scanapp_html_style.rs"));
+    }
+    pub use html_style::ScanAppHtmlView;
+    pub use scancraft::ScanCraftApp;
 }
 
 #[derive(Debug, Clone, PartialEq)]

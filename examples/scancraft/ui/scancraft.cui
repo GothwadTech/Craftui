@@ -347,7 +347,7 @@ export component ScanCraftApp {
                                 align: Center;
                                 justify: Center;
                                 on_tap => {
-                                    active_tab = 3;
+                                    active_tab = 5;
                                 }
                                 Icon {
                                     svg: "pdf";
@@ -423,6 +423,49 @@ export component ScanCraftApp {
                                 color: #E2E8F0;
                             }
                         }
+                    }
+                }
+
+                // --- Engine Mode Switcher Bar ---
+                Row {
+                    width: 100%;
+                    gap: 6dp;
+                    align: Center;
+
+                    Button {
+                        text: "📱 AMOLED Native";
+                        background: active_tab == 0 ? #0E3B43 : #18222F;
+                        foreground: active_tab == 0 ? #00BCD4 : #94A3B8;
+                        border_radius: 12dp;
+                        padding_x: 8dp;
+                        padding_y: 5dp;
+                        font_size: 11;
+                        font_weight: 600;
+                        on_tap => { active_tab = 0; }
+                    }
+
+                    Button {
+                        text: "⚡ HTML (Rust)";
+                        background: active_tab == 3 ? #0E3B43 : #18222F;
+                        foreground: active_tab == 3 ? #00BCD4 : #94A3B8;
+                        border_radius: 12dp;
+                        padding_x: 8dp;
+                        padding_y: 5dp;
+                        font_size: 11;
+                        font_weight: 600;
+                        on_tap => { active_tab = 3; }
+                    }
+
+                    Button {
+                        text: "🌐 Tauri 2.0";
+                        background: active_tab == 4 ? #0E3B43 : #18222F;
+                        foreground: active_tab == 4 ? #00BCD4 : #94A3B8;
+                        border_radius: 12dp;
+                        padding_x: 8dp;
+                        padding_y: 5dp;
+                        font_size: 11;
+                        font_weight: 600;
+                        on_tap => { active_tab = 4; }
                     }
                 }
 
@@ -1161,9 +1204,9 @@ export component ScanCraftApp {
             }
 
             // =========================================================================
-            // VIEW 3: PDF TOOLS & EXPORT
+            // VIEW 5: PDF TOOLS & EXPORT
             // =========================================================================
-            if active_tab == 3 : Column {
+            if active_tab == 5 : Column {
                 flex_grow: 1.0;
                 width: 100%;
                 gap: 12dp;
@@ -1244,6 +1287,199 @@ export component ScanCraftApp {
                             status_message = "PDF Security settings applied";
                         }
                     }
+                }
+            }
+
+            // =========================================================================
+            // VIEW 3: HTML & TAILWIND SYNTAX SCREEN (COMPILED DIRECTLY INTO RUST)
+            // =========================================================================
+            if active_tab == 3 : Column {
+                flex_grow: 1.0;
+                width: 100%;
+                gap: 12dp;
+
+                // Back Row & Engine Badge
+                Row {
+                    width: 100%;
+                    justify: SpaceBetween;
+                    align: Center;
+
+                    Button {
+                        text: "← Back";
+                        background: #1E293B;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        on_tap => {
+                            active_tab = 0;
+                        }
+                    }
+
+                    Text {
+                        text: "HTML+Tailwind (AOT Pure Rust)";
+                        font_size: 15;
+                        font_weight: 700;
+                        color: #00BCD4;
+                    }
+
+                    Badge {
+                        label: "0ms Webview • 120 FPS";
+                        background: #064E3B;
+                        color: #34D399;
+                    }
+                }
+
+                // HTML Semantic Tags compiled to pure native Rust GPU nodes
+                header {
+                    class: "flex flex-row justify-between items-center w-full py-1";
+                    button {
+                        class: "w-10 h-10 rounded-full bg-[#0E2938]";
+                        Icon { svg: "user"; }
+                    }
+                    div {
+                        class: "flex flex-row items-center gap-2";
+                        span {
+                            class: "text-xl font-bold text-[#00BCD4]";
+                            text: "ScanApp (HTML AOT)";
+                        }
+                    }
+                    div {
+                        class: "flex flex-row items-center gap-3";
+                        button {
+                            class: "w-8 h-8 rounded-full";
+                            on_tap => { on_theme_toggle(); }
+                            Icon { svg: "sun"; }
+                        }
+                        button {
+                            class: "w-8 h-8 rounded-full";
+                            Icon { svg: "search"; }
+                        }
+                    }
+                }
+
+                section {
+                    class: "flex flex-row justify-between items-center w-full py-2";
+                    button {
+                        class: "flex flex-col items-center gap-2";
+                        on_tap => { on_capture_photo(); }
+                        div {
+                            class: "w-14 h-14 rounded-full bg-[#0E3B43] shadow-md";
+                            Icon { svg: "camera"; }
+                        }
+                        span {
+                            class: "text-xs font-medium text-slate-200";
+                            text: "Smart Scan";
+                        }
+                    }
+                    button {
+                        class: "flex flex-col items-center gap-2";
+                        on_tap => { on_import_gallery(); }
+                        div {
+                            class: "w-14 h-14 rounded-full bg-[#1E3A68] shadow-md";
+                            Icon { svg: "image"; }
+                        }
+                        span {
+                            class: "text-xs font-medium text-slate-200";
+                            text: "Import Photos";
+                        }
+                    }
+                    button {
+                        class: "flex flex-col items-center gap-2";
+                        div {
+                            class: "w-14 h-14 rounded-full bg-[#452A14] shadow-md";
+                            Icon { svg: "upload"; }
+                        }
+                        span {
+                            class: "text-xs font-medium text-slate-200";
+                            text: "Import Files";
+                        }
+                    }
+                    button {
+                        class: "flex flex-col items-center gap-2";
+                        div {
+                            class: "w-14 h-14 rounded-full bg-[#0E2F38] shadow-md";
+                            Icon { svg: "badge_id"; }
+                        }
+                        span {
+                            class: "text-xs font-medium text-slate-200";
+                            text: "ID Card";
+                        }
+                    }
+                }
+
+                // Recent Docs List
+                section {
+                    class: "flex flex-col w-full gap-3";
+                    div {
+                        class: "flex flex-row justify-between items-center w-full";
+                        span {
+                            class: "text-lg font-bold text-white";
+                            text: "Recent Scans (Compiled HTML)";
+                        }
+                    }
+                    div {
+                        class: "flex flex-row items-center justify-between w-full p-3 bg-zinc-900 rounded-xl";
+                        div {
+                            class: "flex flex-row items-center gap-3";
+                            div {
+                                class: "w-12 h-14 bg-slate-800 rounded-md";
+                            }
+                            div {
+                                class: "flex flex-col gap-1";
+                                span {
+                                    class: "text-sm font-semibold text-white";
+                                    text: "Contract_Agreement_v2.pdf";
+                                }
+                                span {
+                                    class: "text-xs text-slate-400";
+                                    text: "09/11/26 21:46 • 3 Pages • AOT Pure Rust";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // =========================================================================
+            // VIEW 4: TAURI 2.0 HYBRID WEBVIEW MODE (scanapp.html)
+            // =========================================================================
+            if active_tab == 4 : Column {
+                flex_grow: 1.0;
+                width: 100%;
+                gap: 12dp;
+
+                Row {
+                    width: 100%;
+                    justify: SpaceBetween;
+                    align: Center;
+
+                    Button {
+                        text: "← Back";
+                        background: #1E293B;
+                        foreground: #FFFFFF;
+                        border_radius: 8dp;
+                        padding: 6dp;
+                        on_tap => {
+                            active_tab = 0;
+                        }
+                    }
+
+                    Text {
+                        text: "Tauri 2.0 Hybrid Mode";
+                        font_size: 16;
+                        font_weight: 700;
+                        color: #00BCD4;
+                    }
+
+                    Badge {
+                        label: "Tauri IPC Active";
+                        background: #1E3A8A;
+                        color: #93C5FD;
+                    }
+                }
+
+                HtmlView {
+                    src: "ui/scanapp.html";
                 }
             }
         }

@@ -13,7 +13,7 @@ pub fn generate_rust(file: &CuiFile) -> String {
     let _ = writeln!(out, "#[allow(unused_imports)]");
     let _ = writeln!(out, "use ::craftui::core::*;");
     let _ = writeln!(out, "#[allow(unused_imports)]");
-    let _ = writeln!(out, "use ::craftui::layout::LayoutStyle;");
+    let _ = writeln!(out, "use ::craftui::layout::{{LayoutMode, LayoutStyle}};");
     let _ = writeln!(out, "#[allow(unused_imports)]");
     let _ = writeln!(out, "use ::craftui::reactive::{{Scope, Signal}};");
     let _ = writeln!(out, "#[allow(unused_imports)]");
@@ -1272,7 +1272,7 @@ fn emit_element(
                 .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
             let _ = writeln!(
                 out,
-                "{indent}let {var} = {{ let __st = TextStyle::default().with_size({default_size}).with_weight({default_weight}){style_chain}; {tr}.text({cx}, {content_expr}, __st) }};"
+                "{indent}let {var} = {{ let __st = TextStyle::default().with_size({default_size}f32).with_weight({default_weight}f32){style_chain}; {tr}.text({cx}, {content_expr}, __st) }};"
             );
         }
         "button" => {
