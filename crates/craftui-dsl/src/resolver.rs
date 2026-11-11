@@ -162,21 +162,24 @@ fn resolve_source_internal(
         process_import(imp, base_dir, loader, &mut state, &mut extra_known_symbols);
     }
 
-    // Merge entry declarations after dependencies, preferring entry definitions on name match.
+    // Merge entry declarations after dependencies, always overriding colliding imported names
+    // while keeping entry declarations ordered last (so `components.last()` targets entry file).
     for st in &parsed.file.structs {
-        if state.seen_structs.insert(st.name.clone()) {
-            state.merged_structs.push(st.clone());
-        }
+        state.merged_structs.retain(|existing| existing.name != st.name);
+        state.seen_structs.insert(st.name.clone());
+        state.merged_structs.push(st.clone());
     }
     for en in &parsed.file.enums {
-        if state.seen_enums.insert(en.name.clone()) {
-            state.merged_enums.push(en.clone());
-        }
+        state.merged_enums.retain(|existing| existing.name != en.name);
+        state.seen_enums.insert(en.name.clone());
+        state.merged_enums.push(en.clone());
     }
     for comp in &parsed.file.components {
-        if state.seen_components.insert(comp.name.clone()) {
-            state.merged_components.push(comp.clone());
-        }
+        state
+            .merged_components
+            .retain(|existing| existing.name != comp.name);
+        state.seen_components.insert(comp.name.clone());
+        state.merged_components.push(comp.clone());
     }
 
     let merged = CuiFile {

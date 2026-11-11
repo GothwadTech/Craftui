@@ -68,6 +68,14 @@ pub enum TokenKind {
     AndAnd,
     #[token("||")]
     OrOr,
+    #[token("+=")]
+    PlusEq,
+    #[token("-=")]
+    MinusEq,
+    #[token("*=")]
+    StarEq,
+    #[token("/=")]
+    SlashEq,
 
     // Single-char punctuation & operators
     #[token("{")]
@@ -106,6 +114,8 @@ pub enum TokenKind {
     Star,
     #[token("/")]
     Slash,
+    #[token("?")]
+    Question,
 
     // Literals
     #[regex(r"#[0-9a-fA-F]{3,8}")]
@@ -113,6 +123,9 @@ pub enum TokenKind {
 
     #[regex(r"[0-9]+(\.[0-9]+)?(dp|px|%)")]
     Dimension,
+
+    #[regex(r"[0-9]+(\.[0-9]+)?(ms|s)")]
+    Duration,
 
     #[regex(r"[0-9]+\.[0-9]+")]
     Float,

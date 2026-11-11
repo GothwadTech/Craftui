@@ -249,4 +249,131 @@ mod tests {
         tick_timers_at(300);
         assert_eq!(ticks.get(), 2);
     }
+
+    #[derive(Clone, PartialEq)]
+    struct RowItem {
+        id: u64,
+        label: String,
+    }
+
+    #[test]
+    fn cui_macro_supports_phase3_if_else_keyed_for_two_way_transforms_glass_and_animate() {
+        reset_runtime();
+        let cx = Scope::root();
+        let show_alt = cx.signal(false);
+        let zoomed = cx.signal(false);
+        let text_val = cx.signal("hello".to_string());
+        let rows = cx.signal(vec![
+            RowItem {
+                id: 1,
+                label: "Alpha".into(),
+            },
+            RowItem {
+                id: 2,
+                label: "Beta".into(),
+            },
+        ]);
+
+        let view = cui! {
+            Column(width: pct(100), height: pct(100), gap: 8) {
+                Container(
+                    id: "glass_card",
+                    width: dp(200),
+                    height: dp(80),
+                    backdrop_blur: 14.0,
+                    backdrop_tint: Color::rgba(15, 23, 42, 160),
+                    blend_mode: BlendMode::Overlay,
+                    cursor: CursorIcon::Pointer,
+                    scale: move || if zoomed.get() { 1.12 } else { 1.0 },
+                    opacity: move || if show_alt.get() { 0.85 } else { 1.0 }
+                ) {
+                    animate scale { curve: TransitionCurve::snappy() }
+                    animate opacity { duration: 0.18, easing: EaseOut }
+                    Text(text: "Card")
+                }
+
+                TextInput(id: "name_box", value <=> text_val, placeholder: "Type")
+
+                if show_alt.get() {
+                    Text(id: "branch_then", text: "ThenBranch")
+                } else {
+                    Text(id: "branch_else", text: "ElseBranch")
+                }
+
+                for (item, idx) in rows key: item.id {
+                    Text(text: move || format!("{}:{}", idx.get(), item.get().label))
+                }
+            }
+        };
+
+        let mut tree = WidgetTree::new(cx);
+        tree.mount(cx, view);
+        let metrics = WindowMetrics {
+            logical_size: Size::new(640.0, 480.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Initial snapshot checks: no spurious animations, glassmorphism/cursor/blend set, Else branch visible
+        let card = tree.node_by_id("glass_card").expect("glass_card registered");
+        let card_node = tree.nodes.get(card).unwrap();
+        assert!((card_node.box_style.backdrop_blur - 14.0).abs() < 0.01);
+        assert_eq!(card_node.box_style.blend_mode, BlendMode::Overlay);
+        assert_eq!(card_node.box_style.cursor, Some(CursorIcon::Pointer));
+        assert!(tree.node_by_id("branch_else").is_some());
+        assert!(tree.node_by_id("branch_then").is_none());
+
+        // Trigger animate scale & if/else switch
+        zoomed.set(true);
+        show_alt.set(true);
+        tree.layout(metrics);
+        assert!(tree.has_active_animations(), "zoom/opacity transitions should activate");
+        assert!(tree.node_by_id("branch_then").is_some());
+        for _ in 0..120 {
+            if !tree.tick_animations(0.016) {
+                break;
+            }
+        }
+        assert!(!tree.has_active_animations());
+
+        // Find the rendered key-1 and key-2 Text nodes and verify NodeId reuse across reorder + rename
+        let text_nodes_before: Vec<(NodeId, String)> = tree
+            .nodes
+            .iter()
+            .filter_map(|(id, n)| match &n.kind {
+                WidgetKind::Text { content, .. } => {
+                    let s = content.get();
+                    if s.ends_with(":Alpha") || s.ends_with(":Beta") {
+                        Some((id, s))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text_nodes_before.len(), 2);
+        let beta_id = text_nodes_before
+            .iter()
+            .find(|(_, s)| s == "1:Beta")
+            .unwrap()
+            .0;
+
+        rows.set(vec![
+            RowItem {
+                id: 2,
+                label: "BetaUpdated".into(),
+            },
+            RowItem {
+                id: 1,
+                label: "Alpha".into(),
+            },
+        ]);
+        tree.layout(metrics);
+
+        match &tree.nodes.get(beta_id).unwrap().kind {
+            WidgetKind::Text { content, .. } => assert_eq!(content.get(), "0:BetaUpdated"),
+            _ => panic!("expected Text node reuse"),
+        }
+    }
 }

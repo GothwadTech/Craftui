@@ -91,6 +91,17 @@ impl WidgetNode {
 pub type VirtualItemFactory = Rc<dyn Fn(Scope, usize, &mut WidgetTree) -> NodeId>;
 
 type DynamicSlotSync = Box<dyn FnMut(NodeId, &mut WidgetTree) -> bool>;
+type DynamicPropUpdater = (DirtyFlags, Box<dyn FnMut(NodeId, &mut WidgetTree)>);
+
+/// Portable snapshot of transient widget UI state (focus path, scroll offsets, text cursors)
+/// used by hot-reload sessions to preserve user state across live template rebuilds.
+#[derive(Debug, Clone, Default)]
+pub struct TreeUiSnapshot {
+    pub focused_path: Option<Vec<usize>>,
+    pub scroll_offsets: Vec<(Vec<usize>, f32)>,
+    pub editor_states: Vec<(Vec<usize>, usize, usize)>,
+    pub select_open_paths: Vec<Vec<usize>>,
+}
 
 const CARET_BLINK_INTERVAL_MS: u64 = 530;
 
@@ -102,6 +113,7 @@ struct PropEffectScopes {
     button_fg: Option<Scope>,
     disabled: Option<Scope>,
     visible_when: Option<Scope>,
+    dynamic_props: Vec<Scope>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -272,9 +284,11 @@ pub struct WidgetTree {
     pub clipboard_text: String,
     virtual_hosts: SecondaryMap<NodeId, VirtualListHost>,
     dynamic_hosts: SecondaryMap<NodeId, DynamicSlotSync>,
+    dynamic_prop_updaters: SecondaryMap<NodeId, Vec<DynamicPropUpdater>>,
     prop_scopes: SecondaryMap<NodeId, PropEffectScopes>,
     node_anims: SecondaryMap<NodeId, NodeAnimState>,
     control_anims: SecondaryMap<NodeId, ControlVisualAnim>,
+    named_nodes: HashMap<String, NodeId>,
     theme_spring: Option<(ThemeTokens, ThemeTokens, Spring)>,
     caret_visible: bool,
     caret_next_toggle_ms: Option<u64>,
@@ -312,9 +326,11 @@ impl WidgetTree {
             clipboard_text: String::new(),
             virtual_hosts: SecondaryMap::new(),
             dynamic_hosts: SecondaryMap::new(),
+            dynamic_prop_updaters: SecondaryMap::new(),
             prop_scopes: SecondaryMap::new(),
             node_anims: SecondaryMap::new(),
             control_anims: SecondaryMap::new(),
+            named_nodes: HashMap::new(),
             theme_spring: None,
             caret_visible: true,
             caret_next_toggle_ms: None,
@@ -363,6 +379,21 @@ impl WidgetTree {
 
     pub fn set_root(&mut self, root: NodeId) {
         self.root = Some(root);
+    }
+
+    /// Associate a string identifier (`id: "..."`) with `node` for host lookups (e.g., `Canvas` or `PlatformView`).
+    pub fn register_node_id(&mut self, node: NodeId, id: impl Into<String>) {
+        if self.nodes.contains_key(node) {
+            self.named_nodes.insert(id.into(), node);
+        }
+    }
+
+    /// Look up a mounted node registered via `id: "..."`.
+    pub fn node_by_id(&self, id: &str) -> Option<NodeId> {
+        self.named_nodes
+            .get(id)
+            .copied()
+            .filter(|nid| self.nodes.contains_key(*nid))
     }
 
     pub fn spawn_node(
@@ -754,8 +785,10 @@ impl WidgetTree {
         }
         self.virtual_hosts.remove(node_id);
         self.dynamic_hosts.remove(node_id);
+        self.dynamic_prop_updaters.remove(node_id);
         self.node_anims.remove(node_id);
         self.control_anims.remove(node_id);
+        self.named_nodes.retain(|_, v| *v != node_id);
         if let Some(mut scopes) = self.prop_scopes.remove(node_id) {
             for s in [
                 scopes.box_bg.take(),
@@ -767,6 +800,7 @@ impl WidgetTree {
             ]
             .into_iter()
             .flatten()
+            .chain(scopes.dynamic_props.drain(..))
             {
                 s.dispose();
             }
@@ -1653,6 +1687,64 @@ impl WidgetTree {
         }
     }
 
+    /// Replace draw and/or pointer callbacks on an existing [`WidgetKind::Canvas`] node.
+    pub fn set_canvas_callbacks(
+        &mut self,
+        node: NodeId,
+        on_paint: Option<crate::widgets::CanvasPaintFn>,
+        on_pointer: Option<CanvasPointerFn>,
+    ) {
+        if let Some(n) = self.nodes.get_mut(node)
+            && let WidgetKind::Canvas {
+                on_paint: p_slot,
+                on_pointer: ptr_slot,
+            } = &mut n.kind
+        {
+            if let Some(p) = on_paint {
+                *p_slot = p;
+            }
+            if let Some(ptr) = on_pointer {
+                *ptr_slot = Some(ptr);
+            }
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    /// Bind a reactive property updater that re-runs during `layout()` whenever any tracked signal changes.
+    pub fn bind_dynamic_prop(
+        &mut self,
+        node: NodeId,
+        dirty_mask: DirtyFlags,
+        track: impl Fn() + 'static,
+        mut apply: impl FnMut(NodeId, &mut WidgetTree) + 'static,
+    ) {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        apply(node, self);
+
+        let Some(node_scope) = self.nodes.get(node).map(|n| n.scope) else {
+            return;
+        };
+        let eff_scope = node_scope.child_scope();
+        eff_scope.effect(move || {
+            track();
+            mark_node_dirty(node, dirty_mask);
+        });
+        if !self.prop_scopes.contains_key(node) {
+            self.prop_scopes.insert(node, PropEffectScopes::default());
+        }
+        if let Some(scopes) = self.prop_scopes.get_mut(node) {
+            scopes.dynamic_props.push(eff_scope);
+        }
+        if !self.dynamic_prop_updaters.contains_key(node) {
+            self.dynamic_prop_updaters.insert(node, Vec::new());
+        }
+        if let Some(updaters) = self.dynamic_prop_updaters.get_mut(node) {
+            updaters.push((dirty_mask, Box::new(apply)));
+        }
+    }
+
     /// Configure a smooth transition curve for a specific property on `node`.
     pub fn set_transition(&mut self, node: NodeId, prop: AnimatableProp, curve: TransitionCurve) {
         let Some(n) = self.nodes.get(node) else {
@@ -2379,15 +2471,22 @@ impl WidgetTree {
             mark_node_dirty(host, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
         });
 
-        let mut active_by_key: HashMap<K, (NodeId, Scope)> = HashMap::new();
-        let mut last_keys: Option<Vec<K>> = None;
+        let mut active_by_key: HashMap<(K, usize), (NodeId, Scope)> = HashMap::new();
+        let mut last_keys: Option<Vec<(K, usize)>> = None;
 
         let sync_fn: DynamicSlotSync = Box::new(move |host_id, tree| {
             let items = model_rc();
-            let new_keys: Vec<K> = items
+            let mut seen_counts: HashMap<K, usize> = HashMap::new();
+            let new_keys: Vec<(K, usize)> = items
                 .iter()
                 .enumerate()
-                .map(|(i, it)| key_fn(i, it))
+                .map(|(i, it)| {
+                    let base = key_fn(i, it);
+                    let occ = seen_counts.entry(base.clone()).or_insert(0);
+                    let cur = *occ;
+                    *occ += 1;
+                    (base, cur)
+                })
                 .collect();
 
             if last_keys.as_ref() == Some(&new_keys) {
@@ -2395,8 +2494,8 @@ impl WidgetTree {
             }
             last_keys = Some(new_keys.clone());
 
-            let keep_set: HashSet<K> = new_keys.iter().cloned().collect();
-            let removed_keys: Vec<K> = active_by_key
+            let keep_set: HashSet<(K, usize)> = new_keys.iter().cloned().collect();
+            let removed_keys: Vec<(K, usize)> = active_by_key
                 .keys()
                 .filter(|k| !keep_set.contains(*k))
                 .cloned()
@@ -2430,6 +2529,109 @@ impl WidgetTree {
         host
     }
 
+    /// Mount a keyed reactive list container reconciling items when `model` changes.
+    /// Existing keyed subtrees keep their `NodeId` and [`Scope`] while receiving updated
+    /// `Signal<T>` and `Signal<usize>` values in place without rebuilding widgets.
+    pub fn reactive_for_keyed<T, K, M, KF, B>(
+        &mut self,
+        scope: Scope,
+        layout: LayoutStyle,
+        model: M,
+        key_fn: KF,
+        builder: B,
+    ) -> NodeId
+    where
+        T: Clone + PartialEq + 'static,
+        K: Eq + Hash + Clone + 'static,
+        M: Fn() -> Vec<T> + 'static,
+        KF: Fn(usize, &T) -> K + 'static,
+        B: Fn(Scope, Signal<T>, Signal<usize>, &mut WidgetTree) -> NodeId + 'static,
+    {
+        let host = self.container(scope, layout, BoxStyle::new());
+        let model_rc = Rc::new(model);
+        let model_eff = model_rc.clone();
+        scope.effect(move || {
+            let _ = model_eff();
+            mark_node_dirty(host, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+        });
+
+        type KeyedForSlot<K, T> = HashMap<(K, usize), (NodeId, Scope, Signal<T>, Signal<usize>)>;
+        let mut active_by_key: KeyedForSlot<K, T> = HashMap::new();
+        let mut last_keys: Option<Vec<(K, usize)>> = None;
+
+        let sync_fn: DynamicSlotSync = Box::new(move |host_id, tree| {
+            let items = model_rc();
+            let mut seen_counts: HashMap<K, usize> = HashMap::new();
+            let new_keys: Vec<(K, usize)> = items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| {
+                    let base = key_fn(i, it);
+                    let occ = seen_counts.entry(base.clone()).or_insert(0);
+                    let cur = *occ;
+                    *occ += 1;
+                    (base, cur)
+                })
+                .collect();
+
+            if last_keys.as_ref() == Some(&new_keys) {
+                for (idx, (item, key)) in items.into_iter().zip(new_keys).enumerate() {
+                    if let Some(&(_, _, item_sig, idx_sig)) = active_by_key.get(&key) {
+                        if item_sig.get_untracked() != item {
+                            item_sig.set(item);
+                        }
+                        if idx_sig.get_untracked() != idx {
+                            idx_sig.set(idx);
+                        }
+                    }
+                }
+                return false;
+            }
+            last_keys = Some(new_keys.clone());
+
+            let keep_set: HashSet<(K, usize)> = new_keys.iter().cloned().collect();
+            let removed_keys: Vec<(K, usize)> = active_by_key
+                .keys()
+                .filter(|k| !keep_set.contains(*k))
+                .cloned()
+                .collect();
+
+            for rk in removed_keys {
+                if let Some((node_id, item_scope, _, _)) = active_by_key.remove(&rk) {
+                    tree.remove_subtree(node_id);
+                    item_scope.dispose();
+                }
+            }
+
+            let mut ordered = Vec::with_capacity(items.len());
+            for (idx, (item, key)) in items.into_iter().zip(new_keys).enumerate() {
+                if let Some(&(existing, _, item_sig, idx_sig)) = active_by_key.get(&key) {
+                    if item_sig.get_untracked() != item {
+                        item_sig.set(item);
+                    }
+                    if idx_sig.get_untracked() != idx {
+                        idx_sig.set(idx);
+                    }
+                    ordered.push(existing);
+                } else {
+                    let item_scope = scope.child_scope();
+                    let item_sig = item_scope.signal(item);
+                    let idx_sig = item_scope.signal(idx);
+                    let child = builder(item_scope, item_sig, idx_sig, tree);
+                    active_by_key.insert(key, (child, item_scope, item_sig, idx_sig));
+                    ordered.push(child);
+                }
+            }
+
+            tree.set_children(host_id, ordered);
+            true
+        });
+
+        self.dynamic_hosts.insert(host, sync_fn);
+        self.sync_dynamic_slots();
+        host
+    }
+
     fn sync_dynamic_slots(&mut self) -> bool {
         let mut changed = false;
         let keys: Vec<NodeId> = self.dynamic_hosts.keys().collect();
@@ -2447,6 +2649,35 @@ impl WidgetTree {
             }
         }
         changed
+    }
+
+    fn sync_dynamic_props(&mut self, drained_masks: &HashMap<NodeId, DirtyFlags>) {
+        if drained_masks.is_empty() || self.dynamic_prop_updaters.is_empty() {
+            return;
+        }
+        let ids: Vec<NodeId> = self
+            .dynamic_prop_updaters
+            .keys()
+            .filter(|id| drained_masks.contains_key(id))
+            .collect();
+        for id in ids {
+            let Some(&flags) = drained_masks.get(&id) else {
+                continue;
+            };
+            if !self.nodes.contains_key(id) {
+                continue;
+            }
+            if let Some(mut list) = self.dynamic_prop_updaters.remove(id) {
+                for (mask, updater) in &mut list {
+                    if !(flags & *mask).is_empty() {
+                        updater(id, self);
+                    }
+                }
+                if self.nodes.contains_key(id) {
+                    self.dynamic_prop_updaters.insert(id, list);
+                }
+            }
+        }
     }
 
     pub fn rect(&self, node: NodeId) -> Rect {
@@ -2593,9 +2824,14 @@ impl WidgetTree {
         let dirty_updates = drain_dirty_nodes();
         let dirty_count = dirty_updates.len();
 
+        let mut drained_masks: HashMap<NodeId, DirtyFlags> = HashMap::new();
         for (id, flags) in dirty_updates {
             if let Some(node) = self.nodes.get_mut(id) {
                 node.dirty |= flags;
+                drained_masks
+                    .entry(id)
+                    .and_modify(|f| *f |= flags)
+                    .or_insert(flags);
                 if flags.contains(DirtyFlags::LAYOUT) {
                     self.layout_engine.mark_dirty(id);
                 }
@@ -2604,6 +2840,19 @@ impl WidgetTree {
 
         // Rebuild any reactive dynamic_slot / reactive_for subtrees before syncing properties/solving layout
         self.sync_dynamic_slots();
+        for (id, flags) in drain_dirty_nodes() {
+            if let Some(node) = self.nodes.get_mut(id) {
+                node.dirty |= flags;
+                drained_masks
+                    .entry(id)
+                    .and_modify(|f| *f |= flags)
+                    .or_insert(flags);
+                if flags.contains(DirtyFlags::LAYOUT) {
+                    self.layout_engine.mark_dirty(id);
+                }
+            }
+        }
+        self.sync_dynamic_props(&drained_masks);
 
         // Sync dynamic properties before layout
         let all_ids: Vec<NodeId> = self.nodes.keys().collect();
@@ -5826,6 +6075,120 @@ impl WidgetTree {
                 ok
             }
             A11yAction::ScrollIntoView(_) => false,
+        }
+    }
+
+    fn node_path(&self, target: NodeId) -> Option<Vec<usize>> {
+        let root = self.root?;
+        let mut rev = Vec::new();
+        let mut cur = target;
+        while cur != root {
+            let parent = self.nodes.get(cur)?.parent?;
+            let pnode = self.nodes.get(parent)?;
+            let idx = pnode.children.iter().position(|&c| c == cur)?;
+            rev.push(idx);
+            cur = parent;
+        }
+        rev.reverse();
+        Some(rev)
+    }
+
+    fn node_at_path(&self, path: &[usize]) -> Option<NodeId> {
+        let mut cur = self.root?;
+        for &idx in path {
+            cur = *self.nodes.get(cur)?.children.get(idx)?;
+        }
+        Some(cur)
+    }
+
+    /// Capture transient focus, scroll offsets, text cursor positions, and open selects for hot-reload preservation.
+    pub fn capture_ui_state(&self) -> TreeUiSnapshot {
+        let mut snap = TreeUiSnapshot {
+            focused_path: self.focused.and_then(|id| self.node_path(id)),
+            ..Default::default()
+        };
+        let Some(root) = self.root else {
+            return snap;
+        };
+        let mut stack = vec![(root, Vec::<usize>::new())];
+        while let Some((id, path)) = stack.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            match &node.kind {
+                WidgetKind::ScrollView { offset, .. } | WidgetKind::VirtualList { offset, .. } => {
+                    if *offset > 0.0 {
+                        snap.scroll_offsets.push((path.clone(), *offset));
+                    }
+                }
+                WidgetKind::TextInput { editor, .. } => {
+                    snap.editor_states
+                        .push((path.clone(), editor.cursor, editor.anchor));
+                }
+                WidgetKind::Select { open: true, .. } => {
+                    snap.select_open_paths.push(path.clone());
+                }
+                _ => {}
+            }
+            for (idx, &child) in node.children.iter().enumerate() {
+                let mut child_path = path.clone();
+                child_path.push(idx);
+                stack.push((child, child_path));
+            }
+        }
+        snap
+    }
+
+    /// Restore transient UI state captured before a hot-reload subtree replacement.
+    pub fn restore_ui_state(&mut self, snap: &TreeUiSnapshot) {
+        if let Some(ref fpath) = snap.focused_path
+            && let Some(fid) = self.node_at_path(fpath)
+            && self.nodes.get(fid).is_some_and(|n| n.a11y.focusable && !n.is_disabled())
+        {
+            self.focused = Some(fid);
+            if self.focused_is_text_input() {
+                self.reset_caret_blink(craftui_core::monotonic_ms());
+            }
+        }
+        for (path, off) in &snap.scroll_offsets {
+            if let Some(id) = self.node_at_path(path)
+                && let Some(n) = self.nodes.get_mut(id)
+            {
+                match &mut n.kind {
+                    WidgetKind::ScrollView { offset, .. }
+                    | WidgetKind::VirtualList { offset, .. } => {
+                        *offset = (*off).max(0.0);
+                        n.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let clamp_utf8 = |s: &str, pos: usize| -> usize {
+            let mut p = pos.min(s.len());
+            while p > 0 && !s.is_char_boundary(p) {
+                p -= 1;
+            }
+            p
+        };
+        for (path, cursor, anchor) in &snap.editor_states {
+            if let Some(id) = self.node_at_path(path)
+                && let Some(n) = self.nodes.get_mut(id)
+                && let WidgetKind::TextInput { editor, .. } = &mut n.kind
+            {
+                editor.cursor = clamp_utf8(&editor.text, *cursor);
+                editor.anchor = clamp_utf8(&editor.text, *anchor);
+                n.dirty |= DirtyFlags::PAINT;
+            }
+        }
+        for path in &snap.select_open_paths {
+            if let Some(id) = self.node_at_path(path)
+                && let Some(n) = self.nodes.get_mut(id)
+                && let WidgetKind::Select { open, .. } = &mut n.kind
+            {
+                *open = true;
+                n.dirty |= DirtyFlags::PAINT;
+            }
         }
     }
 }

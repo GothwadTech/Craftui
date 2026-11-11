@@ -12,6 +12,20 @@ new_key_type! {
     pub struct PlatformViewId;
 }
 
+impl PlatformViewId {
+    /// Construct a `PlatformViewId` handle from a raw numeric identifier.
+    #[inline]
+    pub fn from_raw(raw: u64) -> Self {
+        Self::from(slotmap::KeyData::from_ffi(raw))
+    }
+
+    /// Return the underlying raw numeric identifier for this `PlatformViewId`.
+    #[inline]
+    pub fn raw_id(self) -> u64 {
+        slotmap::Key::data(&self).as_ffi()
+    }
+}
+
 bitflags! {
     /// Fine-grained invalidation flags per retained widget node.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

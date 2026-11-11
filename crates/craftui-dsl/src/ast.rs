@@ -140,10 +140,18 @@ pub struct ComponentDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnimateSpec {
+    pub prop: String,
+    pub fields: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ElementNode {
     pub kind: String,
     pub props: Vec<PropBinding>,
     pub handlers: Vec<HandlerBinding>,
+    pub animations: Vec<AnimateSpec>,
     pub children: Vec<ChildItem>,
     pub span: Span,
 }
@@ -170,6 +178,7 @@ pub enum ChildItem {
         item_var: String,
         index_var: Option<String>,
         iterable: Expr,
+        key: Option<Expr>,
         body: Box<ElementNode>,
         span: Span,
     },
@@ -181,9 +190,27 @@ pub enum ChildItem {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssignOp {
+    Set,
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
-    Assign { target: String, value: Expr },
+    Assign {
+        target: Expr,
+        op: AssignOp,
+        value: Expr,
+    },
+    If {
+        condition: Expr,
+        then_branch: Vec<Stmt>,
+        else_branch: Vec<Stmt>,
+    },
     Call { callee: String, args: Vec<Expr> },
     Expr(Expr),
 }
@@ -231,10 +258,16 @@ pub enum Expr {
     Bool(bool),
     ColorHex(String),
     Length(f32, Unit),
+    DurationSec(f32),
     Array(Vec<Expr>),
     Call(String, Vec<Expr>),
     MethodCall(Box<Expr>, String, Vec<Expr>),
     UnaryNeg(Box<Expr>),
     UnaryNot(Box<Expr>),
     Binary(Box<Expr>, BinOp, Box<Expr>),
+    Ternary {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
 }

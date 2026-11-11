@@ -21,7 +21,7 @@ pub fn generate_rust(file: &CuiFile) -> String {
     let _ = writeln!(out, "#[allow(unused_imports)]");
     let _ = writeln!(
         out,
-        "use ::craftui::widgets::{{BoxStyle, ReactiveValue, WidgetTree}};"
+        "use ::craftui::widgets::{{AnimatableProp, BoxStyle, Easing, ReactiveValue, TransitionCurve, WidgetTree}};"
     );
     let _ = writeln!(out);
 
@@ -103,6 +103,7 @@ fn emit_struct(
     let _ = writeln!(out, "    fn default() -> Self {{");
     let _ = writeln!(out, "        Self {{");
     let empty_props = HashMap::new();
+    let empty_sig_locals = HashMap::new();
     let empty_cbs = HashMap::new();
     let empty_locals = HashMap::new();
     let empty_comps = HashMap::new();
@@ -111,6 +112,7 @@ fn emit_struct(
         struct_map,
         enum_map,
         prop_types: &empty_props,
+        signal_locals: &empty_sig_locals,
         cb_params: &empty_cbs,
         locals: &empty_locals,
         scope_var: "cx",
@@ -197,6 +199,7 @@ fn emit_component(
         .iter()
         .map(|p| (p.name.as_str(), map_type(&p.ty)))
         .collect();
+    let empty_sig_locals = HashMap::new();
     let cb_params: HashMap<&str, Vec<String>> = comp
         .callbacks
         .iter()
@@ -208,6 +211,7 @@ fn emit_component(
         struct_map,
         enum_map,
         prop_types: &prop_types,
+        signal_locals: &empty_sig_locals,
         cb_params: &cb_params,
         locals: &empty_locals,
         scope_var: "cx",
@@ -257,7 +261,7 @@ fn emit_component(
 
     let _ = writeln!(
         out,
-        "    #[allow(dead_code, unused_variables, unused_parens, unused_mut, clippy::double_parens, clippy::clone_on_copy, clippy::unnecessary_cast, clippy::redundant_locals, clippy::type_complexity, clippy::let_and_return, clippy::needless_parens_on_range_literals)]"
+        "    #[allow(dead_code, unused_variables, unused_parens, unused_mut, clippy::double_parens, clippy::clone_on_copy, clippy::unnecessary_cast, clippy::redundant_locals, clippy::type_complexity, clippy::let_and_return, clippy::needless_parens_on_range_literals, clippy::overly_complex_bool_expr)]"
     );
     let _ = writeln!(
         out,
@@ -276,6 +280,7 @@ fn emit_component(
             struct_map,
             enum_map,
             prop_types: &prop_types,
+            signal_locals: &empty_sig_locals,
             cb_params: &cb_params,
             locals: &empty_locals,
             scope_var: "cx",
@@ -298,6 +303,7 @@ struct EmitCtx<'a> {
     struct_map: &'a HashMap<&'a str, &'a StructDecl>,
     enum_map: &'a HashMap<&'a str, &'a EnumDecl>,
     prop_types: &'a HashMap<&'a str, String>,
+    signal_locals: &'a HashMap<String, String>,
     cb_params: &'a HashMap<&'a str, Vec<String>>,
     locals: &'a HashMap<String, String>,
     scope_var: &'a str,
@@ -306,8 +312,17 @@ struct EmitCtx<'a> {
 }
 
 impl<'a> EmitCtx<'a> {
+    fn signal_type(&self, name: &str) -> Option<&str> {
+        self.signal_locals
+            .get(name)
+            .or_else(|| self.prop_types.get(name))
+            .map(String::as_str)
+    }
+
     fn prop_access(&self, name: &str) -> String {
-        if self.use_self {
+        if self.signal_locals.contains_key(name) {
+            name.to_string()
+        } else if self.use_self {
             format!("self.{name}")
         } else {
             name.to_string()
@@ -346,10 +361,10 @@ fn emit_element(
                 let sub_ty = map_type(&sub_prop.ty);
                 if p.two_way
                     && let Expr::Ident(parent_id) = &p.value
-                    && let Some(parent_ty) = ctx.prop_types.get(parent_id.as_str())
+                    && let Some(parent_ty) = ctx.signal_type(parent_id.as_str())
                 {
                     let ps = ctx.prop_access(parent_id);
-                    if *parent_ty == sub_ty {
+                    if parent_ty == sub_ty {
                         let _ = writeln!(out, "{indent}    __sub.{} = {ps};", p.name);
                     } else if parent_ty == "i32" && sub_ty == "usize" {
                         let _ = writeln!(
@@ -373,10 +388,33 @@ fn emit_element(
                             "{indent}    {{ let __p = {ps}; let __c = __sub.{}; {cx}.effect(move || {{ let v = __p.get() as i32; if __c.get_untracked() != v {{ __c.set(v); }} }}); {cx}.effect(move || {{ let v = __c.get().max(0) as usize; if __p.get_untracked() != v {{ __p.set(v); }} }}); }}",
                             p.name
                         );
+                    } else if parent_ty == "f32" && sub_ty == "i32" {
+                        let _ = writeln!(
+                            out,
+                            "{indent}    __sub.{}.set({ps}.get_untracked().round() as i32);",
+                            p.name
+                        );
+                        let _ = writeln!(
+                            out,
+                            "{indent}    {{ let __p = {ps}; let __c = __sub.{}; {cx}.effect(move || {{ let v = __p.get().round() as i32; if __c.get_untracked() != v {{ __c.set(v); }} }}); {cx}.effect(move || {{ let v = __c.get() as f32; if (__p.get_untracked() - v).abs() > 1e-4 {{ __p.set(v); }} }}); }}",
+                            p.name
+                        );
+                    } else if parent_ty == "i32" && sub_ty == "f32" {
+                        let _ = writeln!(
+                            out,
+                            "{indent}    __sub.{}.set({ps}.get_untracked() as f32);",
+                            p.name
+                        );
+                        let _ = writeln!(
+                            out,
+                            "{indent}    {{ let __p = {ps}; let __c = __sub.{}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__c.get_untracked() - v).abs() > 1e-4 {{ __c.set(v); }} }}); {cx}.effect(move || {{ let v = __c.get().round() as i32; if __p.get_untracked() != v {{ __p.set(v); }} }}); }}",
+                            p.name
+                        );
                     }
                     continue;
                 }
 
+                // One-way `:` binding: initializes child and pushes parent -> child updates only.
                 let init_val = expr_to_typed_rust(&p.value, &sub_ty, ctx);
                 let _ = writeln!(out, "{indent}    __sub.{}.set({init_val});", p.name);
                 if expr_has_reactive_props(&p.value, ctx) {
@@ -398,12 +436,16 @@ fn emit_element(
                     .enumerate()
                     .map(|(i, pt)| format!("__arg_{i}: {}", map_type(pt)))
                     .collect();
+                let mut alias_stmts = String::new();
                 let mut h_locals = ctx.locals.clone();
                 for (i, pt) in sub_cb.params.iter().enumerate() {
+                    let mty = map_type(pt);
                     if i == 0 {
-                        h_locals.insert("value".into(), map_type(pt));
+                        h_locals.insert("value".into(), mty.clone());
+                        let _ = write!(alias_stmts, "let value = __arg_0.clone(); ");
                     }
-                    h_locals.insert(format!("arg{i}"), map_type(pt));
+                    h_locals.insert(format!("arg{i}"), mty);
+                    let _ = write!(alias_stmts, "let arg{i} = __arg_{i}.clone(); ");
                 }
                 let h_ctx = EmitCtx {
                     locals: &h_locals,
@@ -413,14 +455,14 @@ fn emit_element(
                 let body_code = emit_handler_body(&handler.body, &h_ctx);
                 let _ = writeln!(
                     out,
-                    "{indent}    {{ {captures} *__sub.{}.borrow_mut() = Box::new(move |{}| {{ {body_code} }}); }}",
+                    "{indent}    {{ {captures} *__sub.{}.borrow_mut() = Box::new(move |{}| {{ {alias_stmts}{body_code} }}); }}",
                     handler.event,
                     param_binds.join(", ")
                 );
             }
         }
         let _ = writeln!(out, "{indent}    let __sub_node = __sub.build({cx}, {tr});");
-        emit_common_props_and_events(out, "__sub_node", el, indent, ctx, true);
+        emit_common_props_and_events(out, "__sub_node", el, &format!("{indent}    "), ctx, true);
         let _ = writeln!(out, "{indent}    __sub_node");
         let _ = writeln!(out, "{indent}}};");
         return var;
@@ -432,19 +474,13 @@ fn emit_element(
             let text_expr = find_prop(el, &["text", "title", "content"])
                 .map(|p| expr_to_reactive_string(&p.value, ctx))
                 .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
-            let size_code = find_prop(el, &["font_size"])
-                .map(|p| expr_to_f32(&p.value, ctx))
-                .unwrap_or_else(|| "16.0".into());
-            let weight_code = find_prop(el, &["font_weight"])
-                .map(|p| expr_to_font_weight(&p.value))
-                .unwrap_or_else(|| "400.0".into());
-            let color_expr = find_prop(el, &["color", "foreground"])
-                .map(|p| &p.value)
-                .cloned()
-                .unwrap_or_else(|| {
-                    Expr::Member(Box::new(Expr::Ident("Theme".into())), "text_primary".into())
-                });
-            let style_rv = emit_reactive_text_style(&size_code, &weight_code, &color_expr, ctx);
+            let size_expr = find_prop(el, &["font_size"]).map(|p| &p.value);
+            let weight_expr = find_prop(el, &["font_weight"]).map(|p| &p.value);
+            let default_color =
+                Expr::Member(Box::new(Expr::Ident("Theme".into())), "text_primary".into());
+            let color_prop = find_prop(el, &["color", "foreground"]).map(|p| &p.value);
+            let color_expr = color_prop.unwrap_or(&default_color);
+            let style_rv = emit_reactive_text_style(size_expr, weight_expr, color_expr, ctx);
             let _ = writeln!(
                 out,
                 "{indent}let {var} = {tr}.text({cx}, {text_expr}, {style_rv});"
@@ -455,7 +491,7 @@ fn emit_element(
                 .map(|p| expr_to_reactive_string(&p.value, ctx))
                 .unwrap_or_else(|| "ReactiveValue::Static(\"info\".to_string())".into());
             let size_code = find_prop(el, &["size", "font_size"])
-                .map(|p| expr_to_f32(&p.value, ctx))
+                .map(|p| expr_to_f32(&p.value, ctx, false))
                 .unwrap_or_else(|| "20.0".into());
             let col_opt = match find_prop(el, &["color", "foreground"]) {
                 Some(p) => format!("Some({})", expr_to_reactive_color(&p.value, ctx)),
@@ -467,12 +503,11 @@ fn emit_element(
             );
         }
         "Divider" => {
-            let axis = match find_prop(el, &["direction"]).map(|p| &p.value) {
-                Some(Expr::Ident(s)) if s == "Vertical" => "Axis::Vertical",
-                _ => "Axis::Horizontal",
-            };
+            let axis = find_prop(el, &["direction"])
+                .map(|p| expr_to_axis(&p.value, ctx, false))
+                .unwrap_or_else(|| "Axis::Horizontal".into());
             let thick = find_prop(el, &["thickness"])
-                .map(|p| expr_to_f32(&p.value, ctx))
+                .map(|p| expr_to_f32(&p.value, ctx, false))
                 .unwrap_or_else(|| "1.0".into());
             let _ = writeln!(
                 out,
@@ -486,7 +521,13 @@ fn emit_element(
         "Button" => {
             let text_expr = find_prop(el, &["text", "title", "label"])
                 .map(|p| expr_to_reactive_string(&p.value, ctx))
-                .unwrap_or_else(|| "ReactiveValue::Static(\"Button\".to_string())".into());
+                .unwrap_or_else(|| {
+                    if el.children.is_empty() {
+                        "ReactiveValue::Static(\"Button\".to_string())".into()
+                    } else {
+                        "ReactiveValue::Static(String::new())".into()
+                    }
+                });
             let handler_code = find_handler(el, &["on_tap", "on_click"])
                 .map(|h| emit_handler_body(&h.body, ctx))
                 .unwrap_or_default();
@@ -508,28 +549,27 @@ fn emit_element(
             let tex_expr = find_prop(el, &["source"])
                 .map(|p| {
                     if let Expr::Ident(id) = &p.value
-                        && ctx.prop_types.get(id.as_str()).map(String::as_str)
-                            == Some("Option<TextureId>")
+                        && ctx.signal_type(id.as_str()) == Some("Option<TextureId>")
                     {
                         format!("ReactiveValue::from({})", ctx.prop_access(id))
                     } else if expr_has_reactive_props(&p.value, ctx) {
                         let captures = emit_signal_captures(ctx, &[]);
-                        let body = expr_to_typed_rust_captured(&p.value, "Option<TextureId>", ctx);
-                        format!("{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {body})) }}")
+                        let body =
+                            expr_to_typed_rust_captured(&p.value, "Option<TextureId>", ctx);
+                        format!(
+                            "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {body})) }}"
+                        )
                     } else {
                         let v = expr_to_typed_rust(&p.value, "Option<TextureId>", ctx);
                         format!("ReactiveValue::Static({v})")
                     }
                 })
                 .unwrap_or_else(|| "ReactiveValue::Static(None)".to_string());
-            let fit = match find_prop(el, &["fit"]).map(|p| &p.value) {
-                Some(Expr::Ident(s)) if s == "Cover" => "Fit::Cover",
-                Some(Expr::Ident(s)) if s == "Fill" => "Fit::Fill",
-                Some(Expr::Ident(s)) if s == "None" => "Fit::None",
-                _ => "Fit::Contain",
-            };
+            let fit = find_prop(el, &["fit"])
+                .map(|p| expr_to_fit(&p.value, ctx, false))
+                .unwrap_or_else(|| "Fit::Contain".into());
             let rad = find_prop(el, &["border_radius"])
-                .map(|p| format!("CornerRadii::all({})", expr_to_f32(&p.value, ctx)))
+                .map(|p| format!("CornerRadii::all({})", expr_to_f32(&p.value, ctx, false)))
                 .unwrap_or_else(|| "CornerRadii::ZERO".into());
             let _ = writeln!(
                 out,
@@ -544,32 +584,48 @@ fn emit_element(
         }
         "Slider" => {
             let min = find_prop(el, &["min"])
-                .map(|p| expr_to_f32(&p.value, ctx))
+                .map(|p| expr_to_f32(&p.value, ctx, false))
                 .unwrap_or_else(|| "0.0".into());
             let max = find_prop(el, &["max"])
-                .map(|p| expr_to_f32(&p.value, ctx))
+                .map(|p| expr_to_f32(&p.value, ctx, false))
                 .unwrap_or_else(|| "100.0".into());
             let lbl = find_prop(el, &["label"])
-                .map(|p| expr_to_string_literal(&p.value))
-                .unwrap_or_else(|| "\"\"".into());
+                .map(|p| expr_to_typed_rust(&p.value, "String", ctx))
+                .unwrap_or_else(|| "String::new()".into());
             let val_prop = find_prop(el, &["value"]);
-            let sig_setup = match val_prop.map(|p| &p.value) {
-                Some(Expr::Ident(id))
-                    if ctx.prop_types.get(id.as_str()).map(String::as_str) == Some("f32") =>
-                {
-                    ctx.prop_access(id)
-                }
-                Some(Expr::Ident(id))
-                    if ctx.prop_types.get(id.as_str()).map(String::as_str) == Some("i32") =>
-                {
-                    let acc = ctx.prop_access(id);
-                    format!(
-                        "{{ let __s = {cx}.signal({acc}.get_untracked() as f32); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); {cx}.effect(move || {{ let v = __s.get().round() as i32; if __p.get_untracked() != v {{ __p.set(v); }} }}); __s }}"
-                    )
-                }
-                Some(other) => {
-                    let v = expr_to_f32(other, ctx);
-                    format!("{cx}.signal({v})")
+            let sig_setup = match val_prop {
+                Some(p) if p.two_way => match &p.value {
+                    Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("f32") => {
+                        ctx.prop_access(id)
+                    }
+                    Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("i32") => {
+                        let acc = ctx.prop_access(id);
+                        format!(
+                            "{{ let __s = {cx}.signal({acc}.get_untracked() as f32); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); {cx}.effect(move || {{ let v = __s.get().round() as i32; if __p.get_untracked() != v {{ __p.set(v); }} }}); __s }}"
+                        )
+                    }
+                    Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("usize") => {
+                        let acc = ctx.prop_access(id);
+                        format!(
+                            "{{ let __s = {cx}.signal({acc}.get_untracked() as f32); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get() as f32; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); {cx}.effect(move || {{ let v = __s.get().max(0.0).round() as usize; if __p.get_untracked() != v {{ __p.set(v); }} }}); __s }}"
+                        )
+                    }
+                    other => {
+                        let v = expr_to_f32(other, ctx, false);
+                        format!("{cx}.signal({v})")
+                    }
+                },
+                Some(p) => {
+                    let init_f = expr_to_f32(&p.value, ctx, false);
+                    if expr_has_reactive_props(&p.value, ctx) {
+                        let captures = emit_signal_captures(ctx, &[]);
+                        let dyn_f = expr_to_f32(&p.value, ctx, true);
+                        format!(
+                            "{{ {captures} let __s = {cx}.signal({init_f}); {cx}.effect(move || {{ let v = {dyn_f}; if (__s.get_untracked() - v).abs() > 1e-4 {{ __s.set(v); }} }}); __s }}"
+                        )
+                    } else {
+                        format!("{cx}.signal({init_f})")
+                    }
                 }
                 None => format!("{cx}.signal(0.0f32)"),
             };
@@ -600,7 +656,9 @@ fn emit_element(
             };
             let checked_prop = find_prop(el, &["checked", "value"]);
             let sig_code = match checked_prop {
-                Some(p) if matches!(&p.value, Expr::Ident(id) if ctx.prop_types.get(id.as_str()).map(String::as_str) == Some("bool")) =>
+                Some(p)
+                    if p.two_way
+                        && matches!(&p.value, Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("bool")) =>
                 {
                     let Expr::Ident(id) = &p.value else {
                         unreachable!()
@@ -622,13 +680,13 @@ fn emit_element(
                 None => format!("{cx}.signal(false)"),
             };
             let lbl = find_prop(el, &["label", "text"])
-                .map(|p| expr_to_string_literal(&p.value))
-                .unwrap_or_else(|| "\"\"".into());
+                .map(|p| expr_to_typed_rust(&p.value, "String", ctx))
+                .unwrap_or_else(|| "String::new()".into());
             let _ = writeln!(
                 out,
                 "{indent}let {var} = {tr}.{method}({cx}, {sig_code}, {lbl});"
             );
-            if let Some(h) = find_handler(el, &["on_change", "on_tap"]) {
+            if let Some(h) = find_handler(el, &["on_change", "on_tap", "on_click"]) {
                 let mut h_locals = ctx.locals.clone();
                 h_locals.insert("checked".into(), "bool".into());
                 h_locals.insert("value".into(), "bool".into());
@@ -656,41 +714,73 @@ fn emit_element(
                 "text_input"
             };
             let ph = find_prop(el, &["placeholder"])
-                .map(|p| expr_to_string_literal(&p.value))
-                .unwrap_or_else(|| "\"\"".into());
+                .map(|p| expr_to_typed_rust(&p.value, "String", ctx))
+                .unwrap_or_else(|| "String::new()".into());
             let val_prop = find_prop(el, &["value", "text"]);
             let (init_str, sig_opt) = match val_prop {
-                Some(p) if matches!(&p.value, Expr::Ident(id) if ctx.prop_types.get(id.as_str()).map(String::as_str) == Some("String")) =>
+                Some(p)
+                    if p.two_way
+                        && matches!(&p.value, Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("String")) =>
                 {
                     let Expr::Ident(id) = &p.value else {
                         unreachable!()
                     };
                     (
-                        "\"\".to_string()".to_string(),
+                        "String::new()".to_string(),
                         format!("Some({})", ctx.prop_access(id)),
+                    )
+                }
+                Some(p) if expr_has_reactive_props(&p.value, ctx) => {
+                    let init_s = expr_to_typed_rust(&p.value, "String", ctx);
+                    let dyn_s = expr_to_typed_rust_captured(&p.value, "String", ctx);
+                    let captures = emit_signal_captures(ctx, &[]);
+                    (
+                        "String::new()".to_string(),
+                        format!(
+                            "Some({{ {captures} let __tsig = {cx}.signal({init_s}); {cx}.effect(move || {{ let v = {dyn_s}; if __tsig.get_untracked() != v {{ __tsig.set(v); }} }}); __tsig }})"
+                        ),
                     )
                 }
                 Some(p) => (
                     expr_to_typed_rust(&p.value, "String", ctx),
                     "None".to_string(),
                 ),
-                None => ("\"\"".to_string(), "None".to_string()),
+                None => ("String::new()".to_string(), "None".to_string()),
             };
             let _ = writeln!(
                 out,
                 "{indent}let {var} = {tr}.{method}({cx}, {init_str}, {ph}, {sig_opt});"
             );
             if find_prop(el, &["font_size", "font_weight"]).is_some() {
-                let sz = find_prop(el, &["font_size"])
-                    .map(|p| expr_to_f32(&p.value, ctx))
+                let sz_prop = find_prop(el, &["font_size"]).map(|p| &p.value);
+                let wt_prop = find_prop(el, &["font_weight"]).map(|p| &p.value);
+                let init_sz = sz_prop
+                    .map(|e| expr_to_f32(e, ctx, false))
                     .unwrap_or_else(|| "14.0".into());
-                let wt = find_prop(el, &["font_weight"])
-                    .map(|p| expr_to_font_weight(&p.value))
+                let init_wt = wt_prop
+                    .map(|e| expr_to_font_weight(e, ctx, false))
                     .unwrap_or_else(|| "400.0".into());
-                let _ = writeln!(
-                    out,
-                    "{indent}{tr}.set_text_input_style({var}, TextStyle::default().with_size({sz}).with_weight({wt}));"
-                );
+                let reactive_style = sz_prop.is_some_and(|e| expr_has_reactive_props(e, ctx))
+                    || wt_prop.is_some_and(|e| expr_has_reactive_props(e, ctx));
+                if reactive_style {
+                    let dyn_sz = sz_prop
+                        .map(|e| expr_to_f32(e, ctx, true))
+                        .unwrap_or_else(|| "14.0".into());
+                    let dyn_wt = wt_prop
+                        .map(|e| expr_to_font_weight(e, ctx, true))
+                        .unwrap_or_else(|| "400.0".into());
+                    let cap_t = emit_signal_captures(ctx, &[]);
+                    let cap_a = emit_signal_captures(ctx, &[]);
+                    let _ = writeln!(
+                        out,
+                        "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::LAYOUT | DirtyFlags::PAINT, {{ {cap_t} move || {{ let _ = ({dyn_sz}, {dyn_wt}); }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_text_input_style(__id, TextStyle::default().with_size({dyn_sz}).with_weight({dyn_wt})); }} }});"
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "{indent}{tr}.set_text_input_style({var}, TextStyle::default().with_size({init_sz}).with_weight({init_wt}));"
+                    );
+                }
             }
             if let Some(h) = find_handler(el, &["on_change"]) {
                 let mut h_locals = ctx.locals.clone();
@@ -740,8 +830,8 @@ fn emit_element(
                 .map(|p| expr_to_reactive_string_list(&p.value, ctx))
                 .unwrap_or_else(|| "ReactiveValue::Static(Vec::<String>::new())".into());
             let ph = find_prop(el, &["placeholder", "label"])
-                .map(|p| expr_to_string_literal(&p.value))
-                .unwrap_or_else(|| "\"Select...\"".into());
+                .map(|p| expr_to_typed_rust(&p.value, "String", ctx))
+                .unwrap_or_else(|| "\"Select...\".to_string()".into());
             let idx_prop = find_prop(el, &["selected", "value"]);
             let idx_sig = emit_usize_signal_adapter(idx_prop, cx, ctx);
             let _ = writeln!(
@@ -754,10 +844,9 @@ fn emit_element(
             let opts_rv = find_prop(el, &["options", "items"])
                 .map(|p| expr_to_reactive_string_list(&p.value, ctx))
                 .unwrap_or_else(|| "ReactiveValue::Static(Vec::<String>::new())".into());
-            let axis = match find_prop(el, &["direction"]).map(|p| &p.value) {
-                Some(Expr::Ident(s)) if s == "Horizontal" => "Axis::Horizontal",
-                _ => "Axis::Vertical",
-            };
+            let axis = find_prop(el, &["direction"])
+                .map(|p| expr_to_axis(&p.value, ctx, false))
+                .unwrap_or_else(|| "Axis::Vertical".into());
             let idx_prop = find_prop(el, &["selected", "value"]);
             let idx_sig = emit_usize_signal_adapter(idx_prop, cx, ctx);
             let _ = writeln!(
@@ -778,6 +867,9 @@ fn emit_element(
                 let mut h_locals = ctx.locals.clone();
                 h_locals.insert("index".into(), "i32".into());
                 h_locals.insert("idx".into(), "i32".into());
+                h_locals.insert("selected".into(), "i32".into());
+                h_locals.insert("active".into(), "i32".into());
+                h_locals.insert("value".into(), "i32".into());
                 let h_ctx = EmitCtx {
                     locals: &h_locals,
                     ..*ctx
@@ -785,7 +877,7 @@ fn emit_element(
                 let captures = emit_signal_captures(ctx, &[]);
                 let body = emit_handler_body(&h.body, &h_ctx);
                 format!(
-                    "Some({{ {captures} std::rc::Rc::new(std::cell::RefCell::new(move |__idx: usize| {{ let index = __idx as i32; let idx = __idx as i32; {body} }})) as std::rc::Rc<std::cell::RefCell<dyn FnMut(usize)>> }})"
+                    "Some({{ {captures} std::rc::Rc::new(std::cell::RefCell::new(move |__idx: usize| {{ let index = __idx as i32; let idx = __idx as i32; let selected = __idx as i32; let active = __idx as i32; let value = __idx as i32; {body} }})) as std::rc::Rc<std::cell::RefCell<dyn FnMut(usize)>> }})"
                 )
             } else {
                 "None".into()
@@ -806,7 +898,7 @@ fn emit_element(
             let prog_rv = match find_prop(el, &["progress", "value"]) {
                 Some(p) => {
                     if let Expr::Ident(id) = &p.value
-                        && let Some(pty) = ctx.prop_types.get(id.as_str())
+                        && let Some(pty) = ctx.signal_type(id.as_str())
                     {
                         let acc = ctx.prop_access(id);
                         if pty == "Option<f32>" {
@@ -825,7 +917,7 @@ fn emit_element(
                             "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || Some({v}))) }}"
                         )
                     } else {
-                        let v = expr_to_f32(&p.value, ctx);
+                        let v = expr_to_f32(&p.value, ctx, false);
                         format!("ReactiveValue::Static(Some({v}))")
                     }
                 }
@@ -849,9 +941,17 @@ fn emit_element(
             );
         }
         "PlatformView" => {
+            let vid = find_prop(el, &["view_id"])
+                .map(|p| {
+                    format!(
+                        "PlatformViewId::from_raw({} as u64)",
+                        expr_to_typed_rust(&p.value, "usize", ctx)
+                    )
+                })
+                .unwrap_or_else(|| "PlatformViewId::default()".into());
             let _ = writeln!(
                 out,
-                "{indent}let {var} = {tr}.platform_view({cx}, PlatformViewId::default(), LayoutStyle::column());"
+                "{indent}let {var} = {tr}.platform_view({cx}, {vid}, LayoutStyle::column());"
             );
         }
         "ScrollView" => {
@@ -867,30 +967,20 @@ fn emit_element(
             );
         }
         "VirtualList" | "VirtualGrid" => {
-            let axis = match find_prop(el, &["direction"]).map(|p| &p.value) {
-                Some(Expr::Ident(s)) if s == "Horizontal" => "Axis::Horizontal",
-                _ => "Axis::Vertical",
-            };
-            let cols = if el.kind == "VirtualGrid" {
-                find_prop(el, &["columns"])
-                    .and_then(|p| match p.value {
-                        Expr::Int(n) => Some(n.max(1)),
-                        _ => None,
-                    })
-                    .unwrap_or(2)
-            } else {
-                find_prop(el, &["columns"])
-                    .and_then(|p| match p.value {
-                        Expr::Int(n) => Some(n.max(1)),
-                        _ => None,
-                    })
-                    .unwrap_or(1)
-            };
+            let axis = find_prop(el, &["direction"])
+                .map(|p| expr_to_axis(&p.value, ctx, false))
+                .unwrap_or_else(|| "Axis::Vertical".into());
+            let default_cols = if el.kind == "VirtualGrid" { 2 } else { 1 };
+            let cols = find_prop(el, &["columns"])
+                .and_then(|p| match p.value {
+                    Expr::Int(n) => Some(n.max(1)),
+                    _ => None,
+                })
+                .unwrap_or(default_cols);
             let extent = find_prop(el, &["item_extent", "item_height"])
-                .map(|p| expr_to_f32(&p.value, ctx))
+                .map(|p| expr_to_f32(&p.value, ctx, false))
                 .unwrap_or_else(|| "48.0".into());
 
-            // Check if children contain a `for` loop or template element to virtualize
             if let Some(ChildItem::For {
                 item_var,
                 index_var,
@@ -911,7 +1001,7 @@ fn emit_element(
                 };
                 let idx_ident = index_var.clone().unwrap_or_else(|| "_idx".into());
                 let mut loop_locals = ctx.locals.clone();
-                loop_locals.insert(item_var.clone(), item_ty.clone());
+                loop_locals.insert(item_var.clone(), item_ty);
                 loop_locals.insert(idx_ident.clone(), "usize".into());
                 let fac_ctx = EmitCtx {
                     locals: &loop_locals,
@@ -921,10 +1011,11 @@ fn emit_element(
                     ..*ctx
                 };
                 let mut body_buf = String::new();
-                let bvar = emit_element(&mut body_buf, body, counter, "                ", &fac_ctx);
+                let bvar =
+                    emit_element(&mut body_buf, body, counter, &format!("{indent}        "), &fac_ctx);
                 let _ = writeln!(
                     out,
-                    "{indent}let {var} = {{ {captures_fac} {tr}.virtual_list({cx}, {axis}, {cols}, {extent}, {count_rv}, LayoutStyle::column(), std::rc::Rc::new(move |__v_cx, __v_idx, __v_tree| {{ let __v_items = {vec_dyn}; if let Some({item_var}) = __v_items.get(__v_idx).cloned() {{ let {idx_ident} = __v_idx;\n{body_buf}                {bvar}\n            }} else {{ __v_tree.spacer(__v_cx) }} }})) }};"
+                    "{indent}let {var} = {{ {captures_fac} {tr}.virtual_list({cx}, {axis}, {cols}, {extent}, {count_rv}, LayoutStyle::column(), std::rc::Rc::new(move |__v_cx, __v_idx, __v_tree| {{ let __v_items = {vec_dyn}; if let Some({item_var}) = __v_items.get(__v_idx).cloned() {{ let {idx_ident} = __v_idx;\n{body_buf}{indent}        {bvar}\n{indent}    }} else {{ __v_tree.spacer(__v_cx) }} }})) }};"
                 );
                 emit_common_props_and_events(out, &var, el, indent, ctx, false);
                 return var;
@@ -932,16 +1023,16 @@ fn emit_element(
                 let count_rv = match find_prop(el, &["item_count", "count", "model", "items"]) {
                     Some(p) => {
                         if let Expr::Ident(id) = &p.value
-                            && let Some(pty) = ctx.prop_types.get(id.as_str())
+                            && let Some(pty) = ctx.signal_type(id.as_str())
                         {
-                            let captures = emit_signal_captures(ctx, &[]);
+                            let acc = ctx.prop_access(id);
                             if pty.starts_with("Vec<") {
                                 format!(
-                                    "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {id}.get().len())) }}"
+                                    "{{ let __p = {acc}; ReactiveValue::Dynamic(std::rc::Rc::new(move || __p.get().len())) }}"
                                 )
                             } else {
                                 format!(
-                                    "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || ({id}.get() as isize).max(0) as usize)) }}"
+                                    "{{ let __p = {acc}; ReactiveValue::Dynamic(std::rc::Rc::new(move || (__p.get() as isize).max(0) as usize)) }}"
                                 )
                             }
                         } else if expr_has_reactive_props(&p.value, ctx) {
@@ -974,7 +1065,7 @@ fn emit_element(
                 })
                 .unwrap_or(2);
             let gap = find_prop(el, &["gap"])
-                .map(|p| expr_to_f32(&p.value, ctx))
+                .map(|p| expr_to_f32(&p.value, ctx, false))
                 .unwrap_or_else(|| "8.0".into());
             let _ = writeln!(out, "{indent}let {var} = {tr}.grid({cx}, {cols}, {gap});");
         }
@@ -997,6 +1088,76 @@ fn emit_element(
     var
 }
 
+fn layout_stmt_for_prop(p: &PropBinding, ctx: &EmitCtx<'_>, tracked: bool) -> Option<String> {
+    let f = |e: &Expr| expr_to_f32(e, ctx, tracked);
+    let b = |e: &Expr| {
+        if tracked {
+            expr_to_typed_rust_captured(e, "bool", ctx)
+        } else {
+            expr_to_typed_rust(e, "bool", ctx)
+        }
+    };
+    match p.name.as_str() {
+        "width" => Some(format!("ls.width = {};", expr_to_len(&p.value, ctx, tracked))),
+        "height" => Some(format!(
+            "ls.height = {};",
+            expr_to_len(&p.value, ctx, tracked)
+        )),
+        "min_width" => Some(format!(
+            "ls.min_width = {};",
+            expr_to_len(&p.value, ctx, tracked)
+        )),
+        "max_width" => Some(format!(
+            "ls.max_width = {};",
+            expr_to_len(&p.value, ctx, tracked)
+        )),
+        "min_height" => Some(format!(
+            "ls.min_height = {};",
+            expr_to_len(&p.value, ctx, tracked)
+        )),
+        "max_height" => Some(format!(
+            "ls.max_height = {};",
+            expr_to_len(&p.value, ctx, tracked)
+        )),
+        "flex_grow" => Some(format!("ls.flex_grow = {};", f(&p.value))),
+        "flex_shrink" => Some(format!("ls.flex_shrink = {};", f(&p.value))),
+        "gap" => {
+            let v = f(&p.value);
+            Some(format!("ls.gap_x = {v}; ls.gap_y = {v};"))
+        }
+        "safe_area" => Some(format!("ls.safe_area = {};", b(&p.value))),
+        "padding" => {
+            if let Expr::Member(base, field) = &p.value
+                && matches!(base.as_ref(), Expr::Ident(s) if s == "SafeArea")
+                && field == "insets"
+            {
+                Some("ls.safe_area = true;".into())
+            } else {
+                Some(format!("ls.padding = Insets::all({});", f(&p.value)))
+            }
+        }
+        "padding_x" => {
+            let v = f(&p.value);
+            Some(format!("ls.padding.left = {v}; ls.padding.right = {v};"))
+        }
+        "padding_y" => {
+            let v = f(&p.value);
+            Some(format!("ls.padding.top = {v}; ls.padding.bottom = {v};"))
+        }
+        "margin" => Some(format!("ls.margin = Insets::all({});", f(&p.value))),
+        "justify" => Some(format!(
+            "ls.justify_content = {};",
+            expr_to_justify(&p.value, ctx, tracked)
+        )),
+        "align" => Some(format!(
+            "ls.align_items = {};",
+            expr_to_align(&p.value, ctx, tracked)
+        )),
+        "clip" => Some(format!("ls.clip_overflow = {};", b(&p.value))),
+        _ => None,
+    }
+}
+
 fn emit_common_props_and_events(
     out: &mut String,
     var: &str,
@@ -1006,92 +1167,76 @@ fn emit_common_props_and_events(
     is_subcomponent: bool,
 ) {
     let tr = ctx.tree_var;
-    let mut layout_stmts = Vec::new();
+
+    // Register node `id` if provided
+    if let Some(id_prop) = find_prop(el, &["id"]) {
+        let id_expr = expr_to_typed_rust(&id_prop.value, "String", ctx);
+        let _ = writeln!(out, "{indent}{tr}.register_node_id({var}, {id_expr});");
+    }
+
+    // 1. Layout properties (static + initial + optional reactive updater)
+    let mut layout_init_stmts = Vec::new();
+    let mut layout_dyn_stmts = Vec::new();
+    let mut layout_dyn_tracks = Vec::new();
+
+    for p in &el.props {
+        if let Some(init_stmt) = layout_stmt_for_prop(p, ctx, false) {
+            layout_init_stmts.push(init_stmt);
+            if expr_has_reactive_props(&p.value, ctx)
+                && let Some(dyn_stmt) = layout_stmt_for_prop(p, ctx, true)
+            {
+                layout_dyn_stmts.push(dyn_stmt);
+                layout_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
+            }
+        }
+    }
+
+    if !layout_init_stmts.is_empty() {
+        let _ = writeln!(
+            out,
+            "{indent}{{ let mut ls = {tr}.nodes.get({var}).map(|n| n.layout.clone()).unwrap_or_default(); {} {tr}.set_layout({var}, ls); }}",
+            layout_init_stmts.join(" ")
+        );
+    }
+    if !layout_dyn_stmts.is_empty() {
+        let cap_t = emit_signal_captures(ctx, &[]);
+        let cap_a = emit_signal_captures(ctx, &[]);
+        let _ = writeln!(
+            out,
+            "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::LAYOUT | DirtyFlags::PAINT, {{ {cap_t} move || {{ {} }} }}, {{ {cap_a} move |__id, __tree| {{ if let Some(mut ls) = __tree.nodes.get(__id).map(|n| n.layout.clone()) {{ {} __tree.set_layout(__id, ls); }} }} }});",
+            layout_dyn_tracks.join(" "),
+            layout_dyn_stmts.join(" ")
+        );
+    }
+
+    // 2. BoxStyle properties (background, border, opacity, clip, shadow)
     let mut box_stmts = Vec::new();
+    let mut box_dyn_stmts = Vec::new();
+    let mut box_dyn_tracks = Vec::new();
+    let mut reactive_opacity_expr: Option<&Expr> = None;
+    let mut static_opacity_expr: Option<&Expr> = None;
 
     for p in &el.props {
         match p.name.as_str() {
-            "width" => layout_stmts.push(format!("ls.width = {};", expr_to_len(&p.value))),
-            "height" => layout_stmts.push(format!("ls.height = {};", expr_to_len(&p.value))),
-            "min_width" => layout_stmts.push(format!("ls.min_width = {};", expr_to_len(&p.value))),
-            "max_width" => layout_stmts.push(format!("ls.max_width = {};", expr_to_len(&p.value))),
-            "min_height" => layout_stmts.push(format!("ls.min_height = {};", expr_to_len(&p.value))),
-            "max_height" => layout_stmts.push(format!("ls.max_height = {};", expr_to_len(&p.value))),
-            "flex_grow" => {
-                layout_stmts.push(format!("ls.flex_grow = {};", expr_to_f32(&p.value, ctx)));
-            }
-            "flex_shrink" => {
-                layout_stmts.push(format!("ls.flex_shrink = {};", expr_to_f32(&p.value, ctx)));
-            }
-            "gap" => {
-                let v = expr_to_f32(&p.value, ctx);
-                layout_stmts.push(format!("ls.gap_x = {v}; ls.gap_y = {v};"));
-            }
-            "safe_area" => {
-                let b = expr_to_typed_rust(&p.value, "bool", ctx);
-                layout_stmts.push(format!("ls.safe_area = {b};"));
-            }
-            "padding" => {
-                if let Expr::Member(base, field) = &p.value
-                    && matches!(base.as_ref(), Expr::Ident(s) if s == "SafeArea")
-                    && field == "insets"
-                {
-                    layout_stmts.push("ls.safe_area = true;".into());
-                } else {
-                    layout_stmts.push(format!(
-                        "ls.padding = Insets::all({});",
-                        expr_to_f32(&p.value, ctx)
-                    ));
-                }
-            }
-            "padding_x" => {
-                let v = expr_to_f32(&p.value, ctx);
-                layout_stmts.push(format!("ls.padding.left = {v}; ls.padding.right = {v};"));
-            }
-            "padding_y" => {
-                let v = expr_to_f32(&p.value, ctx);
-                layout_stmts.push(format!("ls.padding.top = {v}; ls.padding.bottom = {v};"));
-            }
-            "margin" => {
-                layout_stmts.push(format!(
-                    "ls.margin = Insets::all({});",
-                    expr_to_f32(&p.value, ctx)
-                ));
-            }
-            "justify" => {
-                if let Expr::Ident(s) = &p.value {
-                    let j = match s.as_str() {
-                        "Center" => "Justify::Center",
-                        "End" => "Justify::End",
-                        "SpaceBetween" => "Justify::SpaceBetween",
-                        "SpaceAround" => "Justify::SpaceAround",
-                        "SpaceEvenly" => "Justify::SpaceEvenly",
-                        _ => "Justify::Start",
-                    };
-                    layout_stmts.push(format!("ls.justify_content = {j};"));
-                }
-            }
-            "align" => {
-                if let Expr::Ident(s) = &p.value {
-                    let a = match s.as_str() {
-                        "Center" => "Alignment::Center",
-                        "End" => "Alignment::End",
-                        "Stretch" => "Alignment::Stretch",
-                        _ => "Alignment::Start",
-                    };
-                    layout_stmts.push(format!("ls.align_items = {a};"));
-                }
-            }
             "background" => {
                 let brush_rv = expr_to_reactive_brush(&p.value, ctx);
                 box_stmts.push(format!("bs.background = Some({brush_rv});"));
             }
             "border_radius" => {
-                let rad = expr_to_f32(&p.value, ctx);
-                box_stmts.push(format!("bs.radius = CornerRadii::all({rad}); if let Some(ref mut br) = bs.border {{ br.radius = bs.radius; }}"));
+                let rad = expr_to_f32(&p.value, ctx, false);
+                box_stmts.push(format!(
+                    "bs.radius = CornerRadii::all({rad}); if let Some(ref mut br) = bs.border {{ br.radius = bs.radius; }}"
+                ));
+                if expr_has_reactive_props(&p.value, ctx) {
+                    let drad = expr_to_f32(&p.value, ctx, true);
+                    box_dyn_stmts.push(format!(
+                        "bs.radius = CornerRadii::all({drad}); if let Some(ref mut br) = bs.border {{ br.radius = bs.radius; }}"
+                    ));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
+                }
             }
             "border_width" => {
-                let bw = expr_to_f32(&p.value, ctx);
+                let bw = expr_to_f32(&p.value, ctx, false);
                 box_stmts.push(format!(
                     "let __br = bs.border.unwrap_or_else(|| Border {{ width: {bw}, color: {tr}.theme().border, radius: bs.radius }}); bs.border = Some(Border {{ width: {bw}, color: __br.color, radius: bs.radius }});"
                 ));
@@ -1100,6 +1245,13 @@ fn emit_common_props_and_events(
                         "if bs.border_color.is_none() { let __ts_b = __theme_sig; bs.border_color = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_b.get().border))); }"
                             .into(),
                     );
+                }
+                if expr_has_reactive_props(&p.value, ctx) {
+                    let dbw = expr_to_f32(&p.value, ctx, true);
+                    box_dyn_stmts.push(format!(
+                        "let __br = bs.border.unwrap_or_else(|| Border {{ width: {dbw}, color: __tree.theme().border, radius: bs.radius }}); bs.border = Some(Border {{ width: {dbw}, color: __br.color, radius: bs.radius }});"
+                    ));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
                 }
             }
             "border_color" => {
@@ -1111,39 +1263,32 @@ fn emit_common_props_and_events(
                 );
             }
             "opacity" => {
-                box_stmts.push(format!("bs.opacity = {};", expr_to_f32(&p.value, ctx)));
+                if expr_has_reactive_props(&p.value, ctx) {
+                    reactive_opacity_expr = Some(&p.value);
+                } else {
+                    static_opacity_expr = Some(&p.value);
+                }
             }
             "clip" => {
                 let b = expr_to_typed_rust(&p.value, "bool", ctx);
                 box_stmts.push(format!("bs.clip = {b};"));
-                if matches!(&p.value, Expr::Bool(true)) {
-                    layout_stmts.push("ls.clip_overflow = true;".into());
+                if expr_has_reactive_props(&p.value, ctx) {
+                    let db = expr_to_typed_rust_captured(&p.value, "bool", ctx);
+                    box_dyn_stmts.push(format!("bs.clip = {db};"));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
                 }
             }
-            "shadow" => match &p.value {
-                Expr::Bool(true) => box_stmts.push(
-                    "bs.shadow = Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80)));"
-                        .into(),
-                ),
-                Expr::Bool(false) => box_stmts.push("bs.shadow = None;".into()),
-                other => {
-                    let blur = expr_to_f32(other, ctx);
-                    box_stmts.push(format!(
-                        "bs.shadow = Some(BoxShadow::new(0.0, 4.0, {blur}, Color::rgba(0, 0, 0, 80)));"
-                    ));
+            "shadow" => {
+                box_stmts.push(emit_shadow_assignment(&p.value, ctx, false));
+                if expr_has_reactive_props(&p.value, ctx) {
+                    box_dyn_stmts.push(emit_shadow_assignment(&p.value, ctx, true));
+                    box_dyn_tracks.push(emit_expr_dependency_reads(&p.value, ctx));
                 }
-            },
+            }
             _ => {}
         }
     }
 
-    if !layout_stmts.is_empty() {
-        let _ = writeln!(
-            out,
-            "{indent}{{ let mut ls = {tr}.nodes.get({var}).map(|n| n.layout.clone()).unwrap_or_default(); {} {tr}.set_layout({var}, ls); }}",
-            layout_stmts.join(" ")
-        );
-    }
     if !box_stmts.is_empty() {
         let _ = writeln!(
             out,
@@ -1151,7 +1296,232 @@ fn emit_common_props_and_events(
             box_stmts.join(" ")
         );
     }
+    if !box_dyn_stmts.is_empty() {
+        let cap_t = emit_signal_captures(ctx, &[]);
+        let cap_a = emit_signal_captures(ctx, &[]);
+        let _ = writeln!(
+            out,
+            "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {} }} }}, {{ {cap_a} move |__id, __tree| {{ if let Some(mut bs) = __tree.nodes.get(__id).map(|n| n.box_style.clone()) {{ {} __tree.set_box_style(__id, bs); }} }} }});",
+            box_dyn_tracks.join(" "),
+            box_dyn_stmts.join(" ")
+        );
+    }
 
+    if let Some(op_e) = reactive_opacity_expr {
+        let track = emit_expr_dependency_reads(op_e, ctx);
+        let dyn_op = expr_to_f32(op_e, ctx, true);
+        let cap_t = emit_signal_captures(ctx, &[]);
+        let cap_a = emit_signal_captures(ctx, &[]);
+        let _ = writeln!(
+            out,
+            "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {track} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_opacity(__id, {dyn_op}); }} }});"
+        );
+    } else if let Some(op_e) = static_opacity_expr {
+        let op = expr_to_f32(op_e, ctx, false);
+        let _ = writeln!(out, "{indent}{tr}.set_opacity({var}, {op});");
+    }
+
+    // 3. Glassmorphism (`backdrop_blur`, `backdrop_tint`)
+    let blur_prop = find_prop(el, &["backdrop_blur"]);
+    let tint_prop = find_prop(el, &["backdrop_tint"]);
+    if blur_prop.is_some() || tint_prop.is_some() {
+        let blur_reactive = blur_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
+        let tint_reactive = tint_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
+        if blur_reactive || tint_reactive {
+            let mut tracks = String::new();
+            if let Some(bp) = blur_prop {
+                tracks.push_str(&emit_expr_dependency_reads(&bp.value, ctx));
+            }
+            if let Some(tp) = tint_prop {
+                tracks.push_str(&emit_expr_dependency_reads(&tp.value, ctx));
+            }
+            let dblur = blur_prop
+                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .unwrap_or_else(|| "0.0".into());
+            let dtint = tint_prop
+                .map(|p| expr_to_typed_rust_captured(&p.value, "Color", ctx))
+                .unwrap_or_else(|| "Color::TRANSPARENT".into());
+            let cap_t = emit_signal_captures(ctx, &[]);
+            let cap_a = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {tracks} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_backdrop_blur(__id, {dblur}, {dtint}); }} }});"
+            );
+        } else {
+            let blur_c = blur_prop
+                .map(|p| expr_to_f32(&p.value, ctx, false))
+                .unwrap_or_else(|| "0.0".into());
+            let tint_c = tint_prop
+                .map(|p| expr_to_typed_rust(&p.value, "Color", ctx))
+                .unwrap_or_else(|| "Color::TRANSPARENT".into());
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.set_backdrop_blur({var}, {blur_c}, {tint_c});"
+            );
+        }
+    }
+
+    // 4. Blend mode & Cursor
+    if let Some(bm_prop) = find_prop(el, &["blend_mode"]) {
+        if expr_has_reactive_props(&bm_prop.value, ctx) {
+            let track = emit_expr_dependency_reads(&bm_prop.value, ctx);
+            let dbm = expr_to_blend_mode(&bm_prop.value, ctx, true);
+            let cap_t = emit_signal_captures(ctx, &[]);
+            let cap_a = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {track} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_blend_mode(__id, {dbm}); }} }});"
+            );
+        } else {
+            let bm = expr_to_blend_mode(&bm_prop.value, ctx, false);
+            let _ = writeln!(out, "{indent}{tr}.set_blend_mode({var}, {bm});");
+        }
+    }
+
+    if let Some(cur_prop) = find_prop(el, &["cursor"]) {
+        if expr_has_reactive_props(&cur_prop.value, ctx) {
+            let track = emit_expr_dependency_reads(&cur_prop.value, ctx);
+            let dcur = expr_to_cursor_opt(&cur_prop.value, ctx, true);
+            let cap_t = emit_signal_captures(ctx, &[]);
+            let cap_a = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {track} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_cursor(__id, {dcur}); }} }});"
+            );
+        } else {
+            let cur = expr_to_cursor_opt(&cur_prop.value, ctx, false);
+            let _ = writeln!(out, "{indent}{tr}.set_cursor({var}, {cur});");
+        }
+    }
+
+    // 5. Transforms: scale / translate / rotate BEFORE `set_transition` so initial states snap!
+    let sc_prop = find_prop(el, &["scale"]);
+    let scx_prop = find_prop(el, &["scale_x"]);
+    let scy_prop = find_prop(el, &["scale_y"]);
+    if sc_prop.is_some() || scx_prop.is_some() || scy_prop.is_some() {
+        let reactive = sc_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx))
+            || scx_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx))
+            || scy_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
+        let scale_pair = |tracked: bool| {
+            let base = sc_prop.map(|p| expr_to_f32(&p.value, ctx, tracked));
+            let sx = match (&base, scx_prop) {
+                (Some(b), Some(x)) => format!("({b} * {})", expr_to_f32(&x.value, ctx, tracked)),
+                (Some(b), None) => b.clone(),
+                (None, Some(x)) => expr_to_f32(&x.value, ctx, tracked),
+                (None, None) => "1.0f32".into(),
+            };
+            let sy = match (&base, scy_prop) {
+                (Some(b), Some(y)) => format!("({b} * {})", expr_to_f32(&y.value, ctx, tracked)),
+                (Some(b), None) => b.clone(),
+                (None, Some(y)) => expr_to_f32(&y.value, ctx, tracked),
+                (None, None) => "1.0f32".into(),
+            };
+            (sx, sy)
+        };
+        if reactive {
+            let mut tracks = String::new();
+            for p in [sc_prop, scx_prop, scy_prop].into_iter().flatten() {
+                tracks.push_str(&emit_expr_dependency_reads(&p.value, ctx));
+            }
+            let (dsx, dsy) = scale_pair(true);
+            let cap_t = emit_signal_captures(ctx, &[]);
+            let cap_a = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {tracks} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_scale(__id, {dsx}, {dsy}); }} }});"
+            );
+        } else {
+            let (sx, sy) = scale_pair(false);
+            let _ = writeln!(out, "{indent}{tr}.set_scale({var}, {sx}, {sy});");
+        }
+    }
+
+    let tx_prop = find_prop(el, &["translate_x"]);
+    let ty_prop = find_prop(el, &["translate_y"]);
+    if tx_prop.is_some() || ty_prop.is_some() {
+        let reactive = tx_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx))
+            || ty_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
+        if reactive {
+            let mut tracks = String::new();
+            for p in [tx_prop, ty_prop].into_iter().flatten() {
+                tracks.push_str(&emit_expr_dependency_reads(&p.value, ctx));
+            }
+            let dtx = tx_prop
+                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .unwrap_or_else(|| "0.0".into());
+            let dty = ty_prop
+                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .unwrap_or_else(|| "0.0".into());
+            let cap_t = emit_signal_captures(ctx, &[]);
+            let cap_a = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {tracks} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_translate(__id, {dtx}, {dty}); }} }});"
+            );
+        } else {
+            let tx = tx_prop
+                .map(|p| expr_to_f32(&p.value, ctx, false))
+                .unwrap_or_else(|| "0.0".into());
+            let ty = ty_prop
+                .map(|p| expr_to_f32(&p.value, ctx, false))
+                .unwrap_or_else(|| "0.0".into());
+            let _ = writeln!(out, "{indent}{tr}.set_translate({var}, {tx}, {ty});");
+        }
+    }
+
+    if let Some(rot_prop) = find_prop(el, &["rotate", "rotation"]) {
+        if expr_has_reactive_props(&rot_prop.value, ctx) {
+            let track = emit_expr_dependency_reads(&rot_prop.value, ctx);
+            let drot = expr_to_f32(&rot_prop.value, ctx, true);
+            let cap_t = emit_signal_captures(ctx, &[]);
+            let cap_a = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {track} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_rotation(__id, {drot}); }} }});"
+            );
+        } else {
+            let rot = expr_to_f32(&rot_prop.value, ctx, false);
+            let _ = writeln!(out, "{indent}{tr}.set_rotation({var}, {rot});");
+        }
+    }
+
+    let kx_prop = find_prop(el, &["skew_x"]);
+    let ky_prop = find_prop(el, &["skew_y"]);
+    if kx_prop.is_some() || ky_prop.is_some() {
+        let reactive = kx_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx))
+            || ky_prop.is_some_and(|p| expr_has_reactive_props(&p.value, ctx));
+        if reactive {
+            let mut tracks = String::new();
+            for p in [kx_prop, ky_prop].into_iter().flatten() {
+                tracks.push_str(&emit_expr_dependency_reads(&p.value, ctx));
+            }
+            let dkx = kx_prop
+                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .unwrap_or_else(|| "0.0".into());
+            let dky = ky_prop
+                .map(|p| expr_to_f32(&p.value, ctx, true))
+                .unwrap_or_else(|| "0.0".into());
+            let cap_t = emit_signal_captures(ctx, &[]);
+            let cap_a = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.bind_dynamic_prop({var}, DirtyFlags::PAINT, {{ {cap_t} move || {{ {tracks} }} }}, {{ {cap_a} move |__id, __tree| {{ __tree.set_transform(__id, Transform2D::skew({dkx}, {dky})); }} }});"
+            );
+        } else {
+            let kx = kx_prop
+                .map(|p| expr_to_f32(&p.value, ctx, false))
+                .unwrap_or_else(|| "0.0".into());
+            let ky = ky_prop
+                .map(|p| expr_to_f32(&p.value, ctx, false))
+                .unwrap_or_else(|| "0.0".into());
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.set_transform({var}, Transform2D::skew({kx}, {ky}));"
+            );
+        }
+    }
+
+    // 6. Visibility & Disabled
     if let Some(vp) = find_prop(el, &["visible"])
         && !matches!(el.kind.as_str(), "Modal" | "BottomSheet" | "PopupMenu")
     {
@@ -1173,7 +1543,7 @@ fn emit_common_props_and_events(
         let _ = writeln!(out, "{indent}{tr}.set_disabled({var}, {drv});");
     }
 
-    // Gesture & pointer handlers supported on all nodes (skip Button's primary on_tap unless subcomponent)
+    // 7. Gesture & pointer handlers supported on all nodes (skip Button's primary on_tap unless subcomponent)
     if (is_subcomponent || el.kind != "Button")
         && let Some(h) = find_handler(el, &["on_tap", "on_click"])
         && (!is_subcomponent
@@ -1220,6 +1590,199 @@ fn emit_common_props_and_events(
             "{indent}{{ {captures} {tr}.set_on_hover({var}, move |hovered| {{ let value = hovered; {body} }}); }}"
         );
     }
+
+    // 8. Declarative `animate` transitions LAST (after initial values + initial bind_dynamic_prop snaps)
+    for spec in &el.animations {
+        let curve = emit_animate_curve(spec, ctx);
+        for anim_prop in animatable_props_for_name(&spec.prop) {
+            let _ = writeln!(
+                out,
+                "{indent}{tr}.set_transition({var}, {anim_prop}, {curve});"
+            );
+        }
+    }
+}
+
+fn animatable_props_for_name(name: &str) -> &'static [&'static str] {
+    match name {
+        "opacity" => &["AnimatableProp::Opacity"],
+        "translate_x" => &["AnimatableProp::TranslateX"],
+        "translate_y" => &["AnimatableProp::TranslateY"],
+        "scale" => &["AnimatableProp::ScaleX", "AnimatableProp::ScaleY"],
+        "scale_x" => &["AnimatableProp::ScaleX"],
+        "scale_y" => &["AnimatableProp::ScaleY"],
+        "rotate" | "rotation" => &["AnimatableProp::Rotation"],
+        "background" => &["AnimatableProp::BackgroundColor"],
+        "border_color" => &["AnimatableProp::BorderColor"],
+        _ => &[],
+    }
+}
+
+fn emit_animate_curve(spec: &AnimateSpec, ctx: &EmitCtx<'_>) -> String {
+    if let Some((_, Expr::Call(cname, args))) = spec.fields.iter().find(|(n, _)| n == "curve") {
+        return match cname.as_str() {
+            "snappy" => "TransitionCurve::snappy()".into(),
+            "gentle" => "TransitionCurve::gentle()".into(),
+            "instant" => "TransitionCurve::instant()".into(),
+            "spring" if args.len() == 2 => {
+                let s = expr_to_f32(&args[0], ctx, false);
+                let d = expr_to_f32(&args[1], ctx, false);
+                format!("TransitionCurve::spring({s}, {d})")
+            }
+            "tween" if !args.is_empty() => {
+                let dur = expr_to_f32(&args[0], ctx, false);
+                let eas = args
+                    .get(1)
+                    .map(emit_easing_name)
+                    .unwrap_or("Easing::EaseOut");
+                format!("TransitionCurve::tween({dur}, {eas})")
+            }
+            _ => "TransitionCurve::default()".into(),
+        };
+    }
+
+    let stiffness = spec.fields.iter().find(|(n, _)| n == "stiffness");
+    let damping = spec.fields.iter().find(|(n, _)| n == "damping");
+    if stiffness.is_some() || damping.is_some() {
+        let s = stiffness
+            .map(|(_, e)| expr_to_f32(e, ctx, false))
+            .unwrap_or_else(|| "280.0".into());
+        let d = damping
+            .map(|(_, e)| expr_to_f32(e, ctx, false))
+            .unwrap_or_else(|| "26.0".into());
+        return format!("TransitionCurve::spring({s}, {d})");
+    }
+
+    let dur = spec.fields.iter().find(|(n, _)| n == "duration");
+    let eas = spec.fields.iter().find(|(n, _)| n == "easing");
+    if dur.is_some() || eas.is_some() {
+        let d = dur
+            .map(|(_, e)| expr_to_f32(e, ctx, false))
+            .unwrap_or_else(|| "0.2".into());
+        let e = eas.map(|(_, e)| emit_easing_name(e)).unwrap_or("Easing::EaseInOut");
+        return format!("TransitionCurve::tween({d}, {e})");
+    }
+
+    "TransitionCurve::default()".into()
+}
+
+fn emit_easing_name(expr: &Expr) -> &'static str {
+    let s = match expr {
+        Expr::Ident(id) => id.as_str(),
+        Expr::Member(_, v) => v.as_str(),
+        _ => "",
+    };
+    match s {
+        "Linear" => "Easing::Linear",
+        "EaseIn" => "Easing::EaseIn",
+        "EaseOut" => "Easing::EaseOut",
+        _ => "Easing::EaseInOut",
+    }
+}
+
+fn emit_shadow_assignment(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    match expr {
+        Expr::Array(items) => {
+            let shadows: Vec<String> = items
+                .iter()
+                .map(|it| {
+                    let blur = expr_to_f32(it, ctx, tracked);
+                    format!("BoxShadow::new(0.0, 4.0, {blur}, Color::rgba(0, 0, 0, 80))")
+                })
+                .collect();
+            format!(
+                "bs.shadows = vec![{}]; bs.shadow = bs.shadows.first().copied();",
+                shadows.join(", ")
+            )
+        }
+        Expr::Bool(true) => {
+            "bs.shadow = Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80)));".into()
+        }
+        Expr::Bool(false) => "bs.shadow = None; bs.shadows.clear();".into(),
+        other if infer_expr_type(other, ctx) == "bool" => {
+            let cond = if tracked {
+                expr_to_typed_rust_captured(other, "bool", ctx)
+            } else {
+                expr_to_typed_rust(other, "bool", ctx)
+            };
+            format!(
+                "bs.shadow = if {cond} {{ Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80))) }} else {{ None }};"
+            )
+        }
+        other => {
+            let blur = expr_to_f32(other, ctx, tracked);
+            format!(
+                "let __sh_blur = {blur}; bs.shadow = if __sh_blur > 0.0 {{ Some(BoxShadow::new(0.0, 4.0, __sh_blur, Color::rgba(0, 0, 0, 80))) }} else {{ None }};"
+            )
+        }
+    }
+}
+
+fn emit_expr_dependency_reads(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+    let mut deps = Vec::new();
+    let mut needs_theme = false;
+    collect_expr_deps(expr, ctx, &mut deps, &mut needs_theme);
+    let mut s = String::new();
+    if needs_theme {
+        let _ = write!(s, "let _ = __theme_sig.get(); let _ = __theme_ov_sig.get(); ");
+    }
+    for d in deps {
+        let acc = ctx.prop_access(&d);
+        let _ = write!(s, "let _ = {acc}.get(); ");
+    }
+    s
+}
+
+fn collect_expr_deps(expr: &Expr, ctx: &EmitCtx<'_>, out: &mut Vec<String>, theme: &mut bool) {
+    match expr {
+        Expr::Ident(id) => {
+            if ctx.signal_type(id.as_str()).is_some() && !out.contains(id) {
+                out.push(id.clone());
+            }
+        }
+        Expr::Member(base, _) => {
+            if matches!(base.as_ref(), Expr::Ident(r) if r == "Theme") {
+                *theme = true;
+            } else {
+                collect_expr_deps(base, ctx, out, theme);
+            }
+        }
+        Expr::Index(a, b) | Expr::Binary(a, _, b) => {
+            collect_expr_deps(a, ctx, out, theme);
+            collect_expr_deps(b, ctx, out, theme);
+        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_deps(cond, ctx, out, theme);
+            collect_expr_deps(then_expr, ctx, out, theme);
+            collect_expr_deps(else_expr, ctx, out, theme);
+        }
+        Expr::Range { start, end, .. } => {
+            collect_expr_deps(start, ctx, out, theme);
+            collect_expr_deps(end, ctx, out, theme);
+        }
+        Expr::UnaryNot(i) | Expr::UnaryNeg(i) => collect_expr_deps(i, ctx, out, theme),
+        Expr::Array(items) | Expr::Call(_, items) => {
+            for x in items {
+                collect_expr_deps(x, ctx, out, theme);
+            }
+        }
+        Expr::MethodCall(recv, _, args) => {
+            collect_expr_deps(recv, ctx, out, theme);
+            for x in args {
+                collect_expr_deps(x, ctx, out, theme);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, v) in fields {
+                collect_expr_deps(v, ctx, out, theme);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn emit_children(
@@ -1249,7 +1812,7 @@ fn emit_children(
             _ => "LayoutStyle::column()".to_string(),
         };
         if let Some(g) = find_prop(el, &["gap"]) {
-            let gv = expr_to_f32(&g.value, ctx);
+            let gv = expr_to_f32(&g.value, ctx, false);
             let _ = write!(base, ".with_gap({gv})");
         }
         base
@@ -1265,18 +1828,27 @@ fn emit_children(
                 item_var,
                 index_var,
                 iterable,
+                key,
                 body,
                 ..
             } => {
                 let (item_ty, vec_init, vec_dyn) = emit_iterable_info(iterable, ctx);
                 let captures = emit_signal_captures(ctx, &[]);
+                let captures_key = emit_signal_captures(ctx, &[]);
                 let captures_fac = emit_signal_captures(ctx, &[]);
-                let idx_ident = index_var.clone().unwrap_or_else(|| "_idx".into());
-                let mut loop_locals = ctx.locals.clone();
-                loop_locals.insert(item_var.clone(), item_ty.clone());
-                loop_locals.insert(idx_ident.clone(), "usize".into());
+
+                let mut body_sig_locals = ctx.signal_locals.clone();
+                body_sig_locals.insert(item_var.clone(), item_ty.clone());
+                let idx_param = match index_var {
+                    Some(iv) => {
+                        body_sig_locals.insert(iv.clone(), "usize".into());
+                        iv.as_str()
+                    }
+                    None => "__for_idx",
+                };
+
                 let body_ctx = EmitCtx {
-                    locals: &loop_locals,
+                    signal_locals: &body_sig_locals,
                     scope_var: "__for_cx",
                     tree_var: "__for_tree",
                     use_self: false,
@@ -1296,9 +1868,36 @@ fn emit_children(
                     format!("{{ {captures} move || {{ {vec_init} }} }}")
                 };
 
+                let explicit_key_expr = key
+                    .as_ref()
+                    .or_else(|| find_prop(body, &["key"]).map(|p| &p.value));
+                let key_fn = if let Some(ke) = explicit_key_expr {
+                    let mut key_locals = ctx.locals.clone();
+                    key_locals.insert(item_var.clone(), item_ty);
+                    let idx_bind = index_var
+                        .as_ref()
+                        .map(|iv| {
+                            key_locals.insert(iv.clone(), "usize".into());
+                            format!("let {iv} = __k_idx; ")
+                        })
+                        .unwrap_or_default();
+                    let key_ctx = EmitCtx {
+                        locals: &key_locals,
+                        use_self: false,
+                        ..*ctx
+                    };
+                    let key_ty = infer_expr_type(ke, &key_ctx);
+                    let kcode = expr_to_typed_rust_inner(ke, &key_ty, &key_ctx, true);
+                    format!(
+                        "{{ {captures_key} move |__k_idx, __k_it| {{ let {item_var} = __k_it.clone(); {idx_bind}format!(\"{{:?}}\", {kcode}) }} }}"
+                    )
+                } else {
+                    "move |_, __k_it| format!(\"{__k_it:?}\")".into()
+                };
+
                 let _ = writeln!(
                     out,
-                    "{indent}{{ {captures_fac} let __for_host = {tr}.reactive_for({cx}, {slot_layout}, {model_fn}, |__k_idx, __k_it| format!(\"{{__k_idx}}:{{__k_it:?}}\"), move |__for_cx, {item_var}, {idx_ident}, __for_tree| {{\n{body_buf}{indent}        {bvar}\n{indent}    }}); {tr}.append_child({var}, __for_host); }}"
+                    "{indent}{{ {captures_fac} let __for_host = {tr}.reactive_for_keyed({cx}, {slot_layout}, {model_fn}, {key_fn}, move |__for_cx, {item_var}, {idx_param}, __for_tree| {{\n{body_buf}{indent}        {bvar}\n{indent}    }}); {tr}.append_child({var}, __for_host); }}"
                 );
             }
             ChildItem::If {
@@ -1401,7 +2000,7 @@ fn emit_iterable_info(expr: &Expr, ctx: &EmitCtx<'_>) -> (String, String, String
                 .map(|it| expr_to_typed_rust_captured(it, &elem_ty, ctx))
                 .collect();
             (
-                elem_ty.clone(),
+                elem_ty,
                 format!("vec![{}]", init_parts.join(", ")),
                 format!("vec![{}]", dyn_parts.join(", ")),
             )
@@ -1422,23 +2021,37 @@ fn emit_iterable_info(expr: &Expr, ctx: &EmitCtx<'_>) -> (String, String, String
 }
 
 fn emit_usize_signal_adapter(prop: Option<&PropBinding>, cx: &str, ctx: &EmitCtx<'_>) -> String {
-    match prop.map(|p| &p.value) {
-        Some(Expr::Ident(id)) => {
-            let pty = ctx.prop_types.get(id.as_str()).map(String::as_str);
-            if pty == Some("usize") {
-                return ctx.prop_access(id);
+    match prop {
+        Some(p) if p.two_way => match &p.value {
+            Expr::Ident(id) => {
+                let pty = ctx.signal_type(id.as_str());
+                if pty == Some("usize") {
+                    return ctx.prop_access(id);
+                }
+                if pty == Some("i32") {
+                    let acc = ctx.prop_access(id);
+                    return format!(
+                        "{{ let __us = {cx}.signal({acc}.get_untracked().max(0) as usize); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get().max(0) as usize; if __us.get_untracked() != v {{ __us.set(v); }} }}); {cx}.effect(move || {{ let v = __us.get() as i32; if __p.get_untracked() != v {{ __p.set(v); }} }}); __us }}"
+                    );
+                }
+                format!("{cx}.signal(0usize)")
             }
-            if pty == Some("i32") {
-                let acc = ctx.prop_access(id);
-                return format!(
-                    "{{ let __us = {cx}.signal({acc}.get_untracked().max(0) as usize); let __p = {acc}; {cx}.effect(move || {{ let v = __p.get().max(0) as usize; if __us.get_untracked() != v {{ __us.set(v); }} }}); {cx}.effect(move || {{ let v = __us.get() as i32; if __p.get_untracked() != v {{ __p.set(v); }} }}); __us }}"
-                );
+            other => {
+                let v = expr_to_typed_rust(other, "usize", ctx);
+                format!("{cx}.signal({v})")
             }
-            format!("{cx}.signal(0usize)")
-        }
-        Some(other) => {
-            let v = expr_to_typed_rust(other, "usize", ctx);
-            format!("{cx}.signal({v})")
+        },
+        Some(p) => {
+            let init_v = expr_to_typed_rust(&p.value, "usize", ctx);
+            if expr_has_reactive_props(&p.value, ctx) {
+                let captures = emit_signal_captures(ctx, &[]);
+                let dyn_v = expr_to_typed_rust_captured(&p.value, "usize", ctx);
+                format!(
+                    "{{ {captures} let __us = {cx}.signal({init_v}); {cx}.effect(move || {{ let v = {dyn_v}; if __us.get_untracked() != v {{ __us.set(v); }} }}); __us }}"
+                )
+            } else {
+                format!("{cx}.signal({init_v})")
+            }
         }
         None => format!("{cx}.signal(0usize)"),
     }
@@ -1455,6 +2068,7 @@ fn emit_index_change_handler(
     if let Some(h) = find_handler(el, &["on_change", "on_select"]) {
         let mut h_locals = ctx.locals.clone();
         h_locals.insert("index".into(), "i32".into());
+        h_locals.insert("idx".into(), "i32".into());
         h_locals.insert("selected".into(), "i32".into());
         h_locals.insert("active".into(), "i32".into());
         h_locals.insert("value".into(), "i32".into());
@@ -1466,7 +2080,7 @@ fn emit_index_change_handler(
         let body = emit_handler_body(&h.body, &h_ctx);
         let _ = writeln!(
             out,
-            "{indent}{{ {captures} {tr}.set_on_index_change({var}, move |__idx| {{ let index = __idx as i32; let selected = __idx as i32; let active = __idx as i32; let value = __idx as i32; {body} }}); }}"
+            "{indent}{{ {captures} {tr}.set_on_index_change({var}, move |__idx| {{ let index = __idx as i32; let idx = __idx as i32; let selected = __idx as i32; let active = __idx as i32; let value = __idx as i32; {body} }}); }}"
         );
     }
 }
@@ -1486,7 +2100,7 @@ fn emit_overlay_close_handler(
     if let Some(op) = open_prop
         && op.two_way
         && let Expr::Ident(id) = &op.value
-        && ctx.prop_types.get(id.as_str()).map(String::as_str) == Some("bool")
+        && ctx.signal_type(id.as_str()) == Some("bool")
     {
         let acc = ctx.prop_access(id);
         return format!(
@@ -1499,9 +2113,14 @@ fn emit_overlay_close_handler(
 fn emit_signal_captures(ctx: &EmitCtx<'_>, skip: &[&str]) -> String {
     let mut s = String::new();
     for &p in ctx.prop_types.keys() {
-        if !skip.contains(&p) {
+        if !skip.contains(&p) && !ctx.signal_locals.contains_key(p) {
             let acc = ctx.prop_access(p);
             let _ = write!(s, "let {p} = {acc}; ");
+        }
+    }
+    for sl in ctx.signal_locals.keys() {
+        if !skip.contains(&sl.as_str()) {
+            let _ = write!(s, "let {sl} = {sl}; ");
         }
     }
     for &cb in ctx.cb_params.keys() {
@@ -1511,21 +2130,179 @@ fn emit_signal_captures(ctx: &EmitCtx<'_>, skip: &[&str]) -> String {
         }
     }
     for l in ctx.locals.keys() {
-        if !skip.contains(&l.as_str()) {
+        if !skip.contains(&l.as_str())
+            && !ctx.signal_locals.contains_key(l.as_str())
+            && !ctx.prop_types.contains_key(l.as_str())
+        {
             let _ = write!(s, "let {l} = {l}.clone(); ");
         }
     }
     s
 }
 
+enum LValueStep<'a> {
+    Field(&'a str),
+    Index(&'a Expr),
+}
+
+fn extract_lvalue_path<'a>(
+    expr: &'a Expr,
+    steps: &mut Vec<LValueStep<'a>>,
+) -> Option<&'a str> {
+    match expr {
+        Expr::Ident(id) => Some(id.as_str()),
+        Expr::Member(base, field) => {
+            let root = extract_lvalue_path(base, steps)?;
+            steps.push(LValueStep::Field(field.as_str()));
+            Some(root)
+        }
+        Expr::Index(base, idx) => {
+            let root = extract_lvalue_path(base, steps)?;
+            steps.push(LValueStep::Index(idx));
+            Some(root)
+        }
+        _ => None,
+    }
+}
+
+fn emit_nested_lvalue_apply(
+    root_sym: &str,
+    steps: &[LValueStep<'_>],
+    op: AssignOp,
+    leaf_ty: &str,
+    rhs_expr: &str,
+) -> String {
+    let mut pre_indices = String::new();
+    let mut idx_vars = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        if let LValueStep::Index(_) = step {
+            idx_vars.push((i, format!("__lidx_{i}")));
+        }
+    }
+    let _ = &idx_vars;
+
+    let assign_leaf = |slot_var: &str| -> String {
+        match op {
+            AssignOp::Set => format!("*{slot_var} = __rhs;"),
+            AssignOp::Add if leaf_ty == "String" => format!("{slot_var}.push_str(&__rhs);"),
+            AssignOp::Add => format!("*{slot_var} += __rhs;"),
+            AssignOp::Sub => format!("*{slot_var} -= __rhs;"),
+            AssignOp::Mul => format!("*{slot_var} *= __rhs;"),
+            AssignOp::Div => {
+                if leaf_ty == "f32" {
+                    format!("if __rhs != 0.0 {{ *{slot_var} /= __rhs; }}")
+                } else {
+                    format!("if __rhs != 0 {{ *{slot_var} /= __rhs; }}")
+                }
+            }
+        }
+    };
+
+    fn build_steps(
+        steps: &[LValueStep<'_>],
+        idx: usize,
+        cur_var: &str,
+        assign_leaf: &dyn Fn(&str) -> String,
+    ) -> String {
+        if idx >= steps.len() {
+            return assign_leaf(cur_var);
+        }
+        let next_var = format!("__lv_{}", idx + 1);
+        let rest = build_steps(steps, idx + 1, &next_var, assign_leaf);
+        match &steps[idx] {
+            LValueStep::Field(f) => {
+                format!("let {next_var} = &mut {cur_var}.{f}; {rest}")
+            }
+            LValueStep::Index(_) => {
+                let iv = format!("__lidx_{idx}");
+                format!("if let Some({next_var}) = {cur_var}.get_mut({iv}) {{ {rest} }}")
+            }
+        }
+    }
+
+    let inner = build_steps(steps, 0, "__root", &assign_leaf);
+    let _ = &mut pre_indices;
+    format!(
+        "{{ let __rhs = {rhs_expr}; {root_sym}.update(|__root| {{ {inner} }}); }}"
+    )
+}
+
 fn emit_handler_body(stmts: &[Stmt], ctx: &EmitCtx<'_>) -> String {
     let mut out = String::new();
     for stmt in stmts {
         match stmt {
-            Stmt::Assign { target, value } => {
-                if let Some(target_ty) = ctx.prop_types.get(target.as_str()) {
-                    let rhs = expr_to_typed_rust_captured(value, target_ty, ctx);
-                    let _ = write!(out, "{target}.set({rhs}); ");
+            Stmt::Assign { target, op, value } => {
+                let mut steps = Vec::new();
+                if let Some(root_name) = extract_lvalue_path(target, &mut steps)
+                    && ctx.prop_types.contains_key(root_name)
+                {
+                    let mut cap_ctx = *ctx;
+                    cap_ctx.use_self = false;
+                    let leaf_ty = infer_expr_type(target, &cap_ctx);
+                    let rhs_code = expr_to_typed_rust_captured(value, &leaf_ty, ctx);
+                    if steps.is_empty() {
+                        match op {
+                            AssignOp::Set => {
+                                let _ = write!(out, "let __rhs = {rhs_code}; {root_name}.set(__rhs); ");
+                            }
+                            AssignOp::Add if leaf_ty == "String" => {
+                                let _ = write!(
+                                    out,
+                                    "let __rhs = {rhs_code}; {root_name}.update(|__v| __v.push_str(&__rhs)); "
+                                );
+                            }
+                            AssignOp::Add => {
+                                let _ = write!(
+                                    out,
+                                    "let __rhs = {rhs_code}; {root_name}.update(|__v| *__v += __rhs); "
+                                );
+                            }
+                            AssignOp::Sub => {
+                                let _ = write!(
+                                    out,
+                                    "let __rhs = {rhs_code}; {root_name}.update(|__v| *__v -= __rhs); "
+                                );
+                            }
+                            AssignOp::Mul => {
+                                let _ = write!(
+                                    out,
+                                    "let __rhs = {rhs_code}; {root_name}.update(|__v| *__v *= __rhs); "
+                                );
+                            }
+                            AssignOp::Div => {
+                                let zero = if leaf_ty == "f32" { "0.0" } else { "0" };
+                                let _ = write!(
+                                    out,
+                                    "let __rhs = {rhs_code}; if __rhs != {zero} {{ {root_name}.update(|__v| *__v /= __rhs); }} "
+                                );
+                            }
+                        }
+                    } else {
+                        let mut idx_pre = String::new();
+                        for (i, st) in steps.iter().enumerate() {
+                            if let LValueStep::Index(ie) = st {
+                                let ic = expr_to_typed_rust_captured(ie, "usize", ctx);
+                                let _ = write!(idx_pre, "let __lidx_{i}: usize = {ic}; ");
+                            }
+                        }
+                        let body =
+                            emit_nested_lvalue_apply(root_name, &steps, *op, &leaf_ty, &rhs_code);
+                        let _ = write!(out, "{{ {idx_pre}{body} }} ");
+                    }
+                }
+            }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let cond = expr_to_typed_rust_captured(condition, "bool", ctx);
+                let then_code = emit_handler_body(then_branch, ctx);
+                let else_code = emit_handler_body(else_branch, ctx);
+                if else_code.is_empty() {
+                    let _ = write!(out, "if {cond} {{ {then_code} }} ");
+                } else {
+                    let _ = write!(out, "if {cond} {{ {then_code} }} else {{ {else_code} }} ");
                 }
             }
             Stmt::Call { callee, args } => {
@@ -1554,11 +2331,10 @@ fn emit_handler_body(stmts: &[Stmt], ctx: &EmitCtx<'_>) -> String {
 fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
     match expr {
         Expr::Int(_) => "i32".into(),
-        Expr::Float(_) => "f32".into(),
+        Expr::Float(_) | Expr::Length(_, _) | Expr::DurationSec(_) => "f32".into(),
         Expr::Bool(_) => "bool".into(),
         Expr::String(_) => "String".into(),
         Expr::ColorHex(_) => "Color".into(),
-        Expr::Length(_, _) => "f32".into(),
         Expr::StructLit { name, .. } => name.clone(),
         Expr::Array(items) => {
             let inner = items
@@ -1572,8 +2348,8 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
             if let Some(t) = ctx.locals.get(id) {
                 return t.clone();
             }
-            if let Some(t) = ctx.prop_types.get(id.as_str()) {
-                return t.clone();
+            if let Some(t) = ctx.signal_type(id.as_str()) {
+                return t.to_string();
             }
             "String".into()
         }
@@ -1581,6 +2357,9 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
             if let Expr::Ident(root) = base.as_ref() {
                 if root == "Theme" {
                     return "Color".into();
+                }
+                if root == "ThemeMode" {
+                    return "ThemeMode".into();
                 }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return root.clone();
@@ -1600,7 +2379,7 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
         }
         Expr::UnaryNot(_) => "bool".into(),
         Expr::UnaryNeg(inner) => infer_expr_type(inner, ctx),
-        Expr::Binary(_, op, _) => match op {
+        Expr::Binary(l, op, r) => match op {
             BinOp::Eq
             | BinOp::Ne
             | BinOp::Lt
@@ -1609,26 +2388,83 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
             | BinOp::Ge
             | BinOp::And
             | BinOp::Or => "bool".into(),
-            _ => "i32".into(),
+            BinOp::Add => {
+                let lt = infer_expr_type(l, ctx);
+                let rt = infer_expr_type(r, ctx);
+                if lt == "String" || rt == "String" {
+                    "String".into()
+                } else if lt == "f32" || rt == "f32" {
+                    "f32".into()
+                } else if lt == "usize" || rt == "usize" {
+                    "usize".into()
+                } else {
+                    "i32".into()
+                }
+            }
+            _ => {
+                let lt = infer_expr_type(l, ctx);
+                let rt = infer_expr_type(r, ctx);
+                if lt == "f32" || rt == "f32" {
+                    "f32".into()
+                } else if lt == "usize" && rt == "usize" {
+                    "usize".into()
+                } else {
+                    "i32".into()
+                }
+            }
         },
+        Expr::Ternary {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let t = infer_expr_type(then_expr, ctx);
+            if t != "String" {
+                t
+            } else {
+                infer_expr_type(else_expr, ctx)
+            }
+        }
         Expr::MethodCall(base, m, _) => match m.as_str() {
-            "len" => "i32".into(),
-            "is_empty" => "bool".into(),
+            "len" => "usize".into(),
+            "is_empty" | "contains" | "starts_with" | "ends_with" => "bool".into(),
+            "to_lowercase" | "to_uppercase" | "trim" => "String".into(),
             _ => infer_expr_type(base, ctx),
         },
-        Expr::Call(_, _) => "String".into(),
+        Expr::Call(name, args) => match name.as_str() {
+            "rgb" | "rgba" => "Color".into(),
+            "Some" => args
+                .first()
+                .map(|a| format!("Option<{}>", infer_expr_type(a, ctx)))
+                .unwrap_or_else(|| "Option<String>".into()),
+            "abs" | "round" | "floor" | "ceil" | "min" | "max" | "clamp" => {
+                args.first()
+                    .map(|a| infer_expr_type(a, ctx))
+                    .unwrap_or_else(|| "f32".into())
+            }
+            _ => "String".into(),
+        },
     }
 }
 
 fn expr_has_reactive_props(expr: &Expr, ctx: &EmitCtx<'_>) -> bool {
     match expr {
-        Expr::Ident(id) => ctx.prop_types.contains_key(id.as_str()),
+        Expr::Ident(id) => ctx.signal_type(id.as_str()).is_some(),
         Expr::Member(base, _) => {
             matches!(base.as_ref(), Expr::Ident(s) if s == "Theme")
                 || expr_has_reactive_props(base, ctx)
         }
         Expr::Index(a, b) | Expr::Binary(a, _, b) => {
             expr_has_reactive_props(a, ctx) || expr_has_reactive_props(b, ctx)
+        }
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            expr_has_reactive_props(cond, ctx)
+                || expr_has_reactive_props(then_expr, ctx)
+                || expr_has_reactive_props(else_expr, ctx)
         }
         Expr::Range { start, end, .. } => {
             expr_has_reactive_props(start, ctx) || expr_has_reactive_props(end, ctx)
@@ -1672,6 +2508,12 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
             "String" => format!("{v:?}.to_string()"),
             _ => format!("{v}f32"),
         },
+        Expr::DurationSec(v) => match ty {
+            "String" => format!("{v:?}.to_string()"),
+            "i32" => format!("{}i32", *v as i32),
+            "usize" => format!("{}usize", (*v).max(0.0) as usize),
+            _ => format!("{v}f32"),
+        },
         Expr::Bool(b) => match ty {
             "String" => format!("{b:?}.to_string()"),
             _ => format!("{b}"),
@@ -1684,7 +2526,7 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
         Expr::Ident(id) => {
             if let Some(lty) = ctx.locals.get(id) {
                 cast_expr_var(id, lty, ty)
-            } else if let Some(pty) = ctx.prop_types.get(id.as_str()) {
+            } else if let Some(pty) = ctx.signal_type(id.as_str()) {
                 let acc = ctx.prop_access(id);
                 let get_call = if tracked {
                     format!("{acc}.get()")
@@ -1692,10 +2534,8 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                     format!("{acc}.get_untracked()")
                 };
                 cast_expr_var(&get_call, pty, ty)
-            } else if id == "None" && ty.starts_with("Option<") {
+            } else if matches!(id.as_str(), "None" | "null") && ty.starts_with("Option<") {
                 "None".into()
-            } else if ty == "String" {
-                format!("{id:?}.to_string()")
             } else {
                 "Default::default()".into()
             }
@@ -1722,7 +2562,9 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
             let base_ty = infer_expr_type(base, ctx);
             let base_code = expr_to_typed_rust_inner(base, &base_ty, ctx, tracked);
             let idx_code = expr_to_typed_rust_inner(idx, "usize", ctx, tracked);
-            format!("{base_code}.get({idx_code}).cloned().unwrap_or_default()")
+            let elem_ty = unwrap_list_item_type(&base_ty);
+            let got = format!("{base_code}.get({idx_code}).cloned().unwrap_or_default()");
+            cast_expr_var(&got, &elem_ty, ty)
         }
         Expr::StructLit { name, fields } => {
             let st_decl = ctx.struct_map.get(name.as_str());
@@ -1766,20 +2608,102 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
             let op = if *inclusive { "..=" } else { ".." };
             format!("(({s}){op}({e})).collect::<Vec<i32>>()")
         }
-        Expr::Call(name, args) if name == "Some" && args.len() == 1 => {
-            let inner_ty = ty
-                .strip_prefix("Option<")
-                .and_then(|s| s.strip_suffix('>'))
-                .unwrap_or("String");
-            let inner = expr_to_typed_rust_inner(&args[0], inner_ty, ctx, tracked);
-            format!("Some({inner})")
-        }
+        Expr::Call(name, args) => match name.as_str() {
+            "Some" if args.len() == 1 => {
+                let inner_ty = ty
+                    .strip_prefix("Option<")
+                    .and_then(|s| s.strip_suffix('>'))
+                    .unwrap_or("String");
+                let inner = expr_to_typed_rust_inner(&args[0], inner_ty, ctx, tracked);
+                format!("Some({inner})")
+            }
+            "min" | "max" if args.len() == 2 => {
+                let arg_ty = if ty == "f32" || ty == "i32" || ty == "usize" {
+                    ty.to_string()
+                } else {
+                    infer_expr_type(&args[0], ctx)
+                };
+                let a = expr_to_typed_rust_inner(&args[0], &arg_ty, ctx, tracked);
+                let b = expr_to_typed_rust_inner(&args[1], &arg_ty, ctx, tracked);
+                let raw = format!("({a}).{name}({b})");
+                cast_expr_var(&raw, &arg_ty, ty)
+            }
+            "clamp" if args.len() == 3 => {
+                let arg_ty = if ty == "f32" || ty == "i32" || ty == "usize" {
+                    ty.to_string()
+                } else {
+                    infer_expr_type(&args[0], ctx)
+                };
+                let x = expr_to_typed_rust_inner(&args[0], &arg_ty, ctx, tracked);
+                let lo = expr_to_typed_rust_inner(&args[1], &arg_ty, ctx, tracked);
+                let hi = expr_to_typed_rust_inner(&args[2], &arg_ty, ctx, tracked);
+                let raw = format!("({x}).clamp({lo}, {hi})");
+                cast_expr_var(&raw, &arg_ty, ty)
+            }
+            "abs" if args.len() == 1 => {
+                let arg_ty = infer_expr_type(&args[0], ctx);
+                let op_ty = if arg_ty == "i32" { "i32" } else { "f32" };
+                let x = expr_to_typed_rust_inner(&args[0], op_ty, ctx, tracked);
+                cast_expr_var(&format!("({x}).abs()"), op_ty, ty)
+            }
+            "round" | "floor" | "ceil" if args.len() == 1 => {
+                let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                cast_expr_var(&format!("({x}).{name}()"), "f32", ty)
+            }
+            "rgb" if args.len() == 3 => {
+                let r = expr_to_typed_rust_inner(&args[0], "i32", ctx, tracked);
+                let g = expr_to_typed_rust_inner(&args[1], "i32", ctx, tracked);
+                let b = expr_to_typed_rust_inner(&args[2], "i32", ctx, tracked);
+                format!(
+                    "Color::rgb(({r}).clamp(0, 255) as u8, ({g}).clamp(0, 255) as u8, ({b}).clamp(0, 255) as u8)"
+                )
+            }
+            "rgba" if args.len() == 4 => {
+                let r = expr_to_typed_rust_inner(&args[0], "i32", ctx, tracked);
+                let g = expr_to_typed_rust_inner(&args[1], "i32", ctx, tracked);
+                let b = expr_to_typed_rust_inner(&args[2], "i32", ctx, tracked);
+                let a_is_float = infer_expr_type(&args[3], ctx) == "f32";
+                let a = if a_is_float {
+                    let af = expr_to_typed_rust_inner(&args[3], "f32", ctx, tracked);
+                    format!("((({af}).clamp(0.0, 1.0) * 255.0).round() as u8)")
+                } else {
+                    let ai = expr_to_typed_rust_inner(&args[3], "i32", ctx, tracked);
+                    format!("(({ai}).clamp(0, 255) as u8)")
+                };
+                format!(
+                    "Color::rgba(({r}).clamp(0, 255) as u8, ({g}).clamp(0, 255) as u8, ({b}).clamp(0, 255) as u8, {a})"
+                )
+            }
+            _ => "Default::default()".into(),
+        },
         Expr::MethodCall(recv, method, args) => {
             let rty = infer_expr_type(recv, ctx);
             let rc = expr_to_typed_rust_inner(recv, &rty, ctx, tracked);
             match method.as_str() {
                 "len" if args.is_empty() => cast_expr_var(&format!("{rc}.len()"), "usize", ty),
-                "is_empty" if args.is_empty() => format!("{rc}.is_empty()"),
+                "is_empty" if args.is_empty() => {
+                    cast_expr_var(&format!("{rc}.is_empty()"), "bool", ty)
+                }
+                "contains" if args.len() == 1 => {
+                    if rty.starts_with("Vec<") {
+                        let elem_ty = unwrap_list_item_type(&rty);
+                        let ac = expr_to_typed_rust_inner(&args[0], &elem_ty, ctx, tracked);
+                        cast_expr_var(&format!("{rc}.contains(&{ac})"), "bool", ty)
+                    } else {
+                        let ac = expr_to_typed_rust_inner(&args[0], "String", ctx, tracked);
+                        cast_expr_var(&format!("{rc}.contains({ac}.as_str())"), "bool", ty)
+                    }
+                }
+                "starts_with" | "ends_with" if args.len() == 1 => {
+                    let ac = expr_to_typed_rust_inner(&args[0], "String", ctx, tracked);
+                    cast_expr_var(&format!("{rc}.{method}({ac}.as_str())"), "bool", ty)
+                }
+                "to_lowercase" | "to_uppercase" if args.is_empty() => {
+                    cast_expr_var(&format!("{rc}.{method}()"), "String", ty)
+                }
+                "trim" if args.is_empty() => {
+                    cast_expr_var(&format!("{rc}.trim().to_string()"), "String", ty)
+                }
                 _ => "Default::default()".into(),
             }
         }
@@ -1799,6 +2723,8 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
         Expr::Binary(l, op, r) => {
             if *op == BinOp::Add
                 && (ty == "String"
+                    || infer_expr_type(l, ctx) == "String"
+                    || infer_expr_type(r, ctx) == "String"
                     || matches!(l.as_ref(), Expr::String(_))
                     || matches!(r.as_ref(), Expr::String(_)))
             {
@@ -1850,14 +2776,41 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                 BinOp::And => "&&",
                 BinOp::Or => "||",
             };
-            format!("({ls} {op_s} {rs})")
+            let raw = format!("({ls} {op_s} {rs})");
+            let res_ty = match op {
+                BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => "bool",
+                _ => operand_ty.as_str(),
+            };
+            cast_expr_var(&raw, res_ty, ty)
         }
-        _ => "Default::default()".into(),
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
+            let t = expr_to_typed_rust_inner(then_expr, ty, ctx, tracked);
+            let e = expr_to_typed_rust_inner(else_expr, ty, ctx, tracked);
+            format!("(if {c} {{ {t} }} else {{ {e} }})")
+        }
     }
 }
 
 fn cast_expr_var(expr_code: &str, actual_ty: &str, expected_ty: &str) -> String {
     if actual_ty == expected_ty {
+        if matches!(
+            actual_ty,
+            "i32" | "usize" | "f32" | "bool" | "Color" | "ThemeMode"
+        ) {
+            return expr_code.to_string();
+        }
         return format!("{expr_code}.clone()");
     }
     match (actual_ty, expected_ty) {
@@ -1866,9 +2819,6 @@ fn cast_expr_var(expr_code: &str, actual_ty: &str, expected_ty: &str) -> String 
         ("i32", "f32") | ("usize", "f32") => format!("({expr_code} as f32)"),
         ("f32", "i32") => format!("({expr_code} as i32)"),
         ("f32", "usize") => format!("(({expr_code}).max(0.0) as usize)"),
-        ("i32", "String") | ("usize", "String") | ("f32", "String") | ("bool", "String") => {
-            format!("format!(\"{{}}\", {expr_code})")
-        }
         (_, "String") => format!("format!(\"{{}}\", {expr_code})"),
         _ => format!("{expr_code}.clone()"),
     }
@@ -1881,13 +2831,9 @@ fn expr_to_reactive_string(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
             let code = expr_to_typed_rust(expr, "String", ctx);
             format!("ReactiveValue::Static({code})")
         }
-        Expr::Ident(id) if ctx.prop_types.contains_key(id.as_str()) => {
+        Expr::Ident(id) if ctx.signal_type(id.as_str()).is_some() => {
             let acc = ctx.prop_access(id);
-            let p_ty = ctx
-                .prop_types
-                .get(id.as_str())
-                .map(String::as_str)
-                .unwrap_or("String");
+            let p_ty = ctx.signal_type(id.as_str()).unwrap_or("String");
             if p_ty == "String" {
                 format!("ReactiveValue::from({acc})")
             } else {
@@ -1934,7 +2880,7 @@ fn expr_part_for_format_mode(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> S
     match expr {
         Expr::String(s) => format!("{s:?}"),
         Expr::Ident(id) if ctx.locals.contains_key(id) => id.clone(),
-        Expr::Ident(id) if ctx.prop_types.contains_key(id.as_str()) => {
+        Expr::Ident(id) if ctx.signal_type(id.as_str()).is_some() => {
             let acc = ctx.prop_access(id);
             if tracked {
                 format!("{acc}.get()")
@@ -1968,7 +2914,15 @@ fn theme_color_expr_tracked(field: &str, tracked: bool) -> String {
 }
 
 fn expr_is_theme_color(expr: &Expr) -> bool {
-    matches!(expr, Expr::Member(base, _) if matches!(base.as_ref(), Expr::Ident(s) if s == "Theme"))
+    match expr {
+        Expr::Member(base, _) => matches!(base.as_ref(), Expr::Ident(s) if s == "Theme"),
+        Expr::Ternary {
+            then_expr,
+            else_expr,
+            ..
+        } => expr_is_theme_color(then_expr) || expr_is_theme_color(else_expr),
+        _ => false,
+    }
 }
 
 fn expr_to_reactive_color(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
@@ -1996,34 +2950,171 @@ fn expr_to_reactive_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
 }
 
 fn emit_reactive_text_style(
-    size_code: &str,
-    weight_code: &str,
+    size_expr: Option<&Expr>,
+    weight_expr: Option<&Expr>,
     color_expr: &Expr,
     ctx: &EmitCtx<'_>,
 ) -> String {
-    if expr_is_theme_color(color_expr) || expr_has_reactive_props(color_expr, ctx) {
+    let reactive = expr_is_theme_color(color_expr)
+        || expr_has_reactive_props(color_expr, ctx)
+        || size_expr.is_some_and(|e| expr_has_reactive_props(e, ctx))
+        || weight_expr.is_some_and(|e| expr_has_reactive_props(e, ctx));
+
+    if reactive {
+        let size_c = size_expr
+            .map(|e| expr_to_f32(e, ctx, true))
+            .unwrap_or_else(|| "16.0".into());
+        let weight_c = weight_expr
+            .map(|e| expr_to_font_weight(e, ctx, true))
+            .unwrap_or_else(|| "400.0".into());
         let captures = emit_signal_captures(ctx, &[]);
         let cbody = expr_to_typed_rust_captured(color_expr, "Color", ctx);
         format!(
-            "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || TextStyle::default().with_size({size_code}).with_weight({weight_code}).with_color({cbody}))) }}"
+            "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || TextStyle::default().with_size({size_c}).with_weight({weight_c}).with_color({cbody}))) }}"
         )
     } else {
+        let size_c = size_expr
+            .map(|e| expr_to_f32(e, ctx, false))
+            .unwrap_or_else(|| "16.0".into());
+        let weight_c = weight_expr
+            .map(|e| expr_to_font_weight(e, ctx, false))
+            .unwrap_or_else(|| "400.0".into());
         let c = expr_to_typed_rust(color_expr, "Color", ctx);
         format!(
-            "ReactiveValue::Static(TextStyle::default().with_size({size_code}).with_weight({weight_code}).with_color({c}))"
+            "ReactiveValue::Static(TextStyle::default().with_size({size_c}).with_weight({weight_c}).with_color({c}))"
         )
     }
 }
 
-fn expr_to_string_literal(expr: &Expr) -> String {
+fn expr_to_keyword_enum(
+    expr: &Expr,
+    ctx: &EmitCtx<'_>,
+    tracked: bool,
+    map_ident: &dyn Fn(&str) -> Option<&'static str>,
+    fallback: &str,
+) -> String {
     match expr {
-        Expr::String(s) => format!("{s:?}"),
-        Expr::Ident(s) => format!("{s:?}"),
-        _ => "\"\"".into(),
+        Expr::Ident(s) => map_ident(s.as_str()).unwrap_or(fallback).to_string(),
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
+            let t = expr_to_keyword_enum(then_expr, ctx, tracked, map_ident, fallback);
+            let e = expr_to_keyword_enum(else_expr, ctx, tracked, map_ident, fallback);
+            format!("(if {c} {{ {t} }} else {{ {e} }})")
+        }
+        _ => fallback.to_string(),
     }
 }
 
-fn expr_to_font_weight(expr: &Expr) -> String {
+fn expr_to_align(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    expr_to_keyword_enum(
+        expr,
+        ctx,
+        tracked,
+        &|s| match s {
+            "Start" => Some("Alignment::Start"),
+            "Center" => Some("Alignment::Center"),
+            "End" => Some("Alignment::End"),
+            "Stretch" => Some("Alignment::Stretch"),
+            _ => None,
+        },
+        "Alignment::Start",
+    )
+}
+
+fn expr_to_justify(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    expr_to_keyword_enum(
+        expr,
+        ctx,
+        tracked,
+        &|s| match s {
+            "Start" => Some("Justify::Start"),
+            "Center" => Some("Justify::Center"),
+            "End" => Some("Justify::End"),
+            "SpaceBetween" => Some("Justify::SpaceBetween"),
+            "SpaceAround" => Some("Justify::SpaceAround"),
+            "SpaceEvenly" => Some("Justify::SpaceEvenly"),
+            _ => None,
+        },
+        "Justify::Start",
+    )
+}
+
+fn expr_to_fit(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    expr_to_keyword_enum(
+        expr,
+        ctx,
+        tracked,
+        &|s| match s {
+            "Contain" => Some("Fit::Contain"),
+            "Cover" => Some("Fit::Cover"),
+            "Fill" => Some("Fit::Fill"),
+            "None" => Some("Fit::None"),
+            _ => None,
+        },
+        "Fit::Contain",
+    )
+}
+
+fn expr_to_axis(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    expr_to_keyword_enum(
+        expr,
+        ctx,
+        tracked,
+        &|s| match s {
+            "Horizontal" => Some("Axis::Horizontal"),
+            "Vertical" => Some("Axis::Vertical"),
+            _ => None,
+        },
+        "Axis::Vertical",
+    )
+}
+
+fn expr_to_blend_mode(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    expr_to_keyword_enum(
+        expr,
+        ctx,
+        tracked,
+        &|s| match s {
+            "Normal" => Some("BlendMode::Normal"),
+            "Multiply" => Some("BlendMode::Multiply"),
+            "Screen" => Some("BlendMode::Screen"),
+            "Overlay" => Some("BlendMode::Overlay"),
+            "Darken" => Some("BlendMode::Darken"),
+            "Lighten" => Some("BlendMode::Lighten"),
+            "Plus" => Some("BlendMode::Plus"),
+            _ => None,
+        },
+        "BlendMode::Normal",
+    )
+}
+
+fn expr_to_cursor_opt(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
+    expr_to_keyword_enum(
+        expr,
+        ctx,
+        tracked,
+        &|s| match s {
+            "Default" => Some("Some(CursorIcon::Default)"),
+            "Pointer" => Some("Some(CursorIcon::Pointer)"),
+            "Text" => Some("Some(CursorIcon::Text)"),
+            "Grab" => Some("Some(CursorIcon::Grab)"),
+            "Grabbing" => Some("Some(CursorIcon::Grabbing)"),
+            "ResizeHorizontal" => Some("Some(CursorIcon::ResizeHorizontal)"),
+            "ResizeVertical" => Some("Some(CursorIcon::ResizeVertical)"),
+            "NotAllowed" => Some("Some(CursorIcon::NotAllowed)"),
+            "Crosshair" => Some("Some(CursorIcon::Crosshair)"),
+            "None" | "null" => Some("None"),
+            _ => None,
+        },
+        "None",
+    )
+}
+
+fn expr_to_font_weight(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
     match expr {
         Expr::Ident(s) => match s.as_str() {
             "Thin" => "100.0".into(),
@@ -2035,24 +3126,48 @@ fn expr_to_font_weight(expr: &Expr) -> String {
             "Bold" => "700.0".into(),
             "ExtraBold" => "800.0".into(),
             "Black" => "900.0".into(),
-            _ => "400.0".into(),
+            _ => expr_to_f32(expr, ctx, tracked),
         },
-        Expr::Int(v) => format!("{v}.0"),
-        Expr::Float(v) => format!("{v:.1}"),
-        _ => "400.0".into(),
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
+            let t = expr_to_font_weight(then_expr, ctx, tracked);
+            let e = expr_to_font_weight(else_expr, ctx, tracked);
+            format!("(if {c} {{ {t} }} else {{ {e} }})")
+        }
+        other => expr_to_f32(other, ctx, tracked),
     }
 }
 
-fn expr_to_f32(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+fn expr_to_f32(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
     match expr {
-        Expr::Length(v, _) => format!("{v:.2}"),
-        Expr::Float(v) => format!("{v:.2}"),
-        Expr::Int(v) => format!("{v}.0"),
-        other => expr_to_typed_rust(other, "f32", ctx),
+        Expr::Length(v, _) | Expr::DurationSec(v) => format!("{v}f32"),
+        Expr::Float(v) => format!("{v}f32"),
+        Expr::Int(v) => format!("{v}.0f32"),
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
+            let t = expr_to_f32(then_expr, ctx, tracked);
+            let e = expr_to_f32(else_expr, ctx, tracked);
+            format!("(if {c} {{ {t} }} else {{ {e} }})")
+        }
+        other => {
+            if tracked {
+                expr_to_typed_rust_captured(other, "f32", ctx)
+            } else {
+                expr_to_typed_rust(other, "f32", ctx)
+            }
+        }
     }
 }
 
-fn expr_to_len(expr: &Expr) -> String {
+fn expr_to_len(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
     match expr {
         Expr::Length(v, Unit::Dp) => format!("Length::Dp({v:.2})"),
         Expr::Length(v, Unit::Px) => format!("Length::Px({v:.2})"),
@@ -2060,7 +3175,17 @@ fn expr_to_len(expr: &Expr) -> String {
         Expr::Int(v) => format!("Length::Dp({v}.0)"),
         Expr::Float(v) => format!("Length::Dp({v:.2})"),
         Expr::Ident(s) if s == "Auto" => "Length::Auto".into(),
-        _ => "Length::Auto".into(),
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            let c = expr_to_typed_rust_inner(cond, "bool", ctx, tracked);
+            let t = expr_to_len(then_expr, ctx, tracked);
+            let e = expr_to_len(else_expr, ctx, tracked);
+            format!("(if {c} {{ {t} }} else {{ {e} }})")
+        }
+        other => format!("Length::Dp({})", expr_to_f32(other, ctx, tracked)),
     }
 }
 

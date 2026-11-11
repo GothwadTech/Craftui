@@ -10,9 +10,9 @@ pub mod resolver;
 pub mod validator;
 
 pub use ast::{
-    BinOp, CallbackDecl, ChildItem, ComponentDecl, CuiFile, Diagnostic, ElementNode, EnumDecl,
-    Expr, HandlerBinding, ImportDecl, PropBinding, PropertyDecl, PropertyDir, Severity, Span, Stmt,
-    StructDecl, StructField, TypeExpr, Unit,
+    AnimateSpec, AssignOp, BinOp, CallbackDecl, ChildItem, ComponentDecl, CuiFile, Diagnostic,
+    ElementNode, EnumDecl, Expr, HandlerBinding, ImportDecl, PropBinding, PropertyDecl,
+    PropertyDir, Severity, Span, Stmt, StructDecl, StructField, TypeExpr, Unit,
 };
 pub use codegen::{compile_cui_dir, compile_cui_file, generate_rust};
 pub use cst::{CuiLanguage, SyntaxKind, SyntaxNode, SyntaxToken};
@@ -23,7 +23,8 @@ pub use resolver::{
     resolve_file, resolve_source, resolve_source_with_loader,
 };
 pub use validator::{
-    BUILTIN_EVENTS, BUILTIN_PROPS, BUILTIN_WIDGETS, validate, validate_file_with_symbols,
+    ANIMATABLE_PROPS, BUILTIN_EVENTS, BUILTIN_PROPS, BUILTIN_WIDGETS, events_for_widget,
+    props_for_widget, validate, validate_file_with_symbols, widget_allows_children,
 };
 
 #[cfg(test)]
@@ -208,5 +209,126 @@ export component App {
                 .iter()
                 .any(|d| d.severity == Severity::Error && d.message.contains("circular import"))
         );
+    }
+
+    #[test]
+    fn phase3_cst_roundtrip_animate_ternary_strict_diagnostics_and_codegen() {
+        let src = r#"export struct TodoRow {
+    id: int = 0,
+    title: string = "",
+    done: bool = false,
+}
+
+export component ChildBadge {
+    in property <string> label: "Tag";
+    in-out property <bool> active: false;
+    callback toggled(bool);
+    Row {
+        id: "badge_row";
+        Button {
+            on_tap => { active = !active; toggled(active); }
+            Text { text: label; }
+        }
+    }
+}
+
+export component Phase3Demo {
+    in-out property <[TodoRow]> rows: [];
+    in-out property <int> score: 10;
+    in-out property <bool> highlighted: false;
+
+    Column {
+        opacity: highlighted ? 1.0 : 0.65;
+        scale: highlighted ? 1.05 : 1.0;
+        background: highlighted ? #2563EB : #1E293B;
+        backdrop_blur: 16dp;
+        cursor: Pointer;
+        shadow: [0dp, 4dp, 12dp, #00000044, 0dp, 1dp, 2dp, #FFFFFF22];
+        animate opacity { duration: 180ms; easing: EaseOut; }
+        animate scale { curve: snappy(); }
+
+        ChildBadge {
+            label: highlighted ? "Active" : "Idle";
+            active: highlighted;
+        }
+
+        for row, idx in rows key: row.id : Button {
+            on_tap => {
+                if highlighted {
+                    rows[idx].done = !rows[idx].done;
+                    score += 5;
+                } else {
+                    score /= 2;
+                }
+            }
+            Text { text: row.title; font_size: highlighted ? 16 : 14; }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(parsed.diagnostics.is_empty(), "parse diags: {:?}", parsed.diagnostics);
+        assert_eq!(parsed.cst.text().to_string(), src, "lossless CST round-trip failed");
+
+        let sem_diags = validate(&parsed.file);
+        assert!(sem_diags.is_empty(), "semantic diags: {sem_diags:?}");
+
+        let rust_code = generate_rust(&parsed.file);
+        // Keyed reactive_for uses reactive_for_keyed without "{__k_idx}:" prefix
+        assert!(rust_code.contains("reactive_for_keyed"));
+        assert!(!rust_code.contains("{__k_idx}:"));
+        // Strict `:` vs `<=>`: ChildBadge `active: highlighted;` must emit one-way effect, NOT `__sub.active = self.highlighted;`
+        assert!(!rust_code.contains("__sub.active = self.highlighted;"));
+        // Compound + nested lvalue update & zero-division guard
+        assert!(rust_code.contains("__root.get_mut(__lidx_0)"));
+        assert!(rust_code.contains(".done"));
+        assert!(rust_code.contains("__rhs != 0"));
+        // Button with children and no `text:` prop defaults label to empty string ""
+        assert!(rust_code.contains("ReactiveValue::Static(String::new())"));
+        assert!(!rust_code.contains("\"Button\".to_string()"));
+        // animate transitions MUST be attached AFTER initial opacity & initial bind_dynamic_prop!
+        let bind_op_pos = rust_code
+            .find("set_opacity(")
+            .expect("set_opacity generated");
+        let trans_op_pos = rust_code
+            .find("AnimatableProp::Opacity")
+            .expect("opacity transition generated");
+        assert!(bind_op_pos < trans_op_pos, "set_transition must come after initial set_opacity/bind_dynamic_prop");
+
+        // Strict compile-time Severity::Error checks
+        let invalid = r#"export component Bad {
+    in property <int> ro: 1;
+    in-out property <bool> ok: false;
+    Column {
+        UnknownWidget { }
+        Text {
+            unknown_prop: 1;
+            text: "hi";
+            Text { text: "nested leaf"; }
+        }
+        Button {
+            on_fake => { ro = 2; }
+            opacity: ro;
+            animate width { duration: 100ms; }
+        }
+        Text { text <=> ro; }
+        Slider { min: 0; max: 10; value <=> ro; }
+    }
+}"#;
+        let p_bad = parse(invalid);
+        let d_bad = validate(&p_bad.file);
+        let err_msgs: Vec<&str> = d_bad
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(err_msgs.iter().any(|m| m.contains("unknown component or widget")), "{err_msgs:?}");
+        assert!(err_msgs.iter().any(|m| m.contains("unknown property 'unknown_prop'")), "{err_msgs:?}");
+        assert!(err_msgs.iter().any(|m| m.contains("leaf widget 'Text' cannot contain")), "{err_msgs:?}");
+        assert!(err_msgs.iter().any(|m| m.contains("unknown event handler 'on_fake'")), "{err_msgs:?}");
+        assert!(err_msgs.iter().any(|m| m.contains("cannot mutate read-only 'in property' 'ro'")), "{err_msgs:?}");
+        assert!(err_msgs.iter().any(|m| m.contains("cannot be animated")), "{err_msgs:?}");
+        assert!(err_msgs.iter().any(|m| m.contains("does not support two-way binding")), "{err_msgs:?}");
+        assert!(err_msgs.iter().any(|m| m.contains("read-only 'in property' 'ro'")), "{err_msgs:?}");
     }
 }

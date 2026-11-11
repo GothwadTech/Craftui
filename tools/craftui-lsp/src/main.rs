@@ -1,5 +1,6 @@
 use craftui_dsl::{
-    BUILTIN_EVENTS, BUILTIN_PROPS, BUILTIN_WIDGETS, Severity, SyntaxKind, parse, resolve_source,
+    ANIMATABLE_PROPS, BUILTIN_EVENTS, BUILTIN_PROPS, BUILTIN_WIDGETS, Severity, SyntaxKind,
+    events_for_widget, parse, props_for_widget, resolve_source,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -194,6 +195,139 @@ pub fn extract_color_information(text: &str) -> Vec<ColorInformation> {
     out
 }
 
+enum CursorContext {
+    AnimatePropName,
+    AnimateBlock,
+    PropValue(String),
+    ElementBody(String),
+    ComponentBody,
+    TopLevel,
+}
+
+fn infer_cursor_context(prefix: &str) -> CursorContext {
+    enum BlockKind {
+        Component,
+        Element(String),
+        Animate,
+        HandlerOrOther,
+    }
+
+    let bytes = prefix.as_bytes();
+    let mut i = 0usize;
+    let mut stack: Vec<BlockKind> = Vec::new();
+    let mut last_word = String::new();
+    let mut second_last_word = String::new();
+    let mut pending_prop_colon: Option<String> = None;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            pending_prop_colon = None;
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            second_last_word = std::mem::replace(&mut last_word, prefix[start..i].to_string());
+            continue;
+        }
+        match b {
+            b':' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    i += 1;
+                } else if !last_word.is_empty() {
+                    pending_prop_colon = Some(last_word.clone());
+                }
+            }
+            b';' => {
+                pending_prop_colon = None;
+                last_word.clear();
+                second_last_word.clear();
+            }
+            b'{' => {
+                let kind = if second_last_word == "component" {
+                    BlockKind::Component
+                } else if second_last_word == "animate" {
+                    BlockKind::Animate
+                } else if last_word.starts_with("on_")
+                    || matches!(last_word.as_str(), "else" | "if")
+                    || second_last_word == "struct"
+                    || second_last_word == "enum"
+                {
+                    BlockKind::HandlerOrOther
+                } else if !last_word.is_empty()
+                    && last_word.chars().next().is_some_and(|c| c.is_uppercase())
+                {
+                    BlockKind::Element(last_word.clone())
+                } else {
+                    BlockKind::HandlerOrOther
+                };
+                stack.push(kind);
+                pending_prop_colon = None;
+                last_word.clear();
+                second_last_word.clear();
+            }
+            b'}' => {
+                let _ = stack.pop();
+                pending_prop_colon = None;
+                last_word.clear();
+                second_last_word.clear();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if let Some(prop) = pending_prop_colon
+        && matches!(stack.last(), Some(BlockKind::Element(_)))
+    {
+        return CursorContext::PropValue(prop);
+    }
+
+    let trimmed = prefix.trim_end();
+    if trimmed.ends_with("animate")
+        || (second_last_word == "animate" && !trimmed.ends_with('{') && !trimmed.ends_with(';'))
+    {
+        return CursorContext::AnimatePropName;
+    }
+
+    match stack.last() {
+        Some(BlockKind::Animate) => CursorContext::AnimateBlock,
+        Some(BlockKind::Element(kind)) => CursorContext::ElementBody(kind.clone()),
+        Some(BlockKind::Component) => CursorContext::ComponentBody,
+        Some(BlockKind::HandlerOrOther) => {
+            for blk in stack.iter().rev() {
+                if let BlockKind::Element(kind) = blk {
+                    return CursorContext::ElementBody(kind.clone());
+                }
+            }
+            CursorContext::TopLevel
+        }
+        None => CursorContext::TopLevel,
+    }
+}
+
 pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
     let offset = position_to_offset(text, pos);
     let prefix = &text[..offset.min(text.len())];
@@ -220,7 +354,217 @@ pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
         .collect();
     }
 
+    let parsed = parse(text);
+    let ctx = infer_cursor_context(prefix);
     let mut items = Vec::new();
+
+    match ctx {
+        CursorContext::AnimatePropName => {
+            for &p in ANIMATABLE_PROPS {
+                items.push(CompletionItem {
+                    label: p.to_string(),
+                    kind: Some(CompletionItemKind::PROPERTY),
+                    detail: Some("Animatable CraftUI Property".to_string()),
+                    ..Default::default()
+                });
+            }
+            return items;
+        }
+        CursorContext::AnimateBlock => {
+            for (k, d) in [
+                ("duration", "Tween animation duration (e.g. 180ms or 0.2s)"),
+                ("easing", "Tween easing curve (Linear, EaseIn, EaseOut, EaseInOut)"),
+                ("stiffness", "Spring stiffness constant (e.g. 340)"),
+                ("damping", "Spring damping constant (e.g. 28)"),
+                ("curve", "Preset curve call: snappy(), gentle(), instant(), spring(s, d), tween(ms, EaseOut)"),
+                ("snappy()", "Snappy critically damped spring preset"),
+                ("gentle()", "Gentle spring preset"),
+                ("instant()", "Immediate 0ms transition preset"),
+                ("spring(320, 28)", "Custom stiffness + damping spring"),
+                ("tween(180ms, EaseOut)", "Timed tween curve"),
+                ("EaseOut", "Decelerating easing curve"),
+                ("EaseInOut", "Symmetric smooth easing curve"),
+                ("EaseIn", "Accelerating easing curve"),
+                ("Linear", "Constant-speed easing curve"),
+            ] {
+                items.push(CompletionItem {
+                    label: k.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    detail: Some(d.to_string()),
+                    ..Default::default()
+                });
+            }
+            return items;
+        }
+        CursorContext::PropValue(ref prop_name) => {
+            let values: &[&str] = match prop_name.as_str() {
+                "cursor" => &[
+                    "Default",
+                    "Pointer",
+                    "Text",
+                    "Grab",
+                    "Grabbing",
+                    "ResizeHorizontal",
+                    "ResizeVertical",
+                    "NotAllowed",
+                    "Crosshair",
+                ],
+                "blend_mode" => &[
+                    "Normal",
+                    "Multiply",
+                    "Screen",
+                    "Overlay",
+                    "Darken",
+                    "Lighten",
+                    "Plus",
+                ],
+                "justify" => &[
+                    "Start",
+                    "Center",
+                    "End",
+                    "SpaceBetween",
+                    "SpaceAround",
+                    "SpaceEvenly",
+                ],
+                "align" => &["Start", "Center", "End", "Stretch"],
+                "direction" => &["Vertical", "Horizontal"],
+                "fit" => &["Contain", "Cover", "Fill", "None"],
+                "font_weight" => &[
+                    "Thin",
+                    "ExtraLight",
+                    "Light",
+                    "Normal",
+                    "Medium",
+                    "SemiBold",
+                    "Bold",
+                    "ExtraBold",
+                    "Black",
+                ],
+                _ => &["Theme.", "true", "false"],
+            };
+            for &v in values {
+                items.push(CompletionItem {
+                    label: v.to_string(),
+                    kind: Some(CompletionItemKind::ENUM_MEMBER),
+                    detail: Some(format!("Value for `{prop_name}`")),
+                    ..Default::default()
+                });
+            }
+            return items;
+        }
+        CursorContext::ElementBody(ref kind) => {
+            if BUILTIN_WIDGETS.contains(&kind.as_str()) {
+                for p in props_for_widget(kind) {
+                    items.push(CompletionItem {
+                        label: p.to_string(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some(format!("{kind} property")),
+                        ..Default::default()
+                    });
+                }
+                for ev in events_for_widget(kind) {
+                    items.push(CompletionItem {
+                        label: ev.to_string(),
+                        kind: Some(CompletionItemKind::EVENT),
+                        detail: Some(format!("{kind} event handler")),
+                        ..Default::default()
+                    });
+                }
+            } else if let Some(comp) = parsed.file.components.iter().find(|c| &c.name == kind) {
+                for prop in &comp.properties {
+                    items.push(CompletionItem {
+                        label: prop.name.clone(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some(format!("{kind} declared property ({})", prop.ty)),
+                        ..Default::default()
+                    });
+                }
+                for cb in &comp.callbacks {
+                    items.push(CompletionItem {
+                        label: cb.name.clone(),
+                        kind: Some(CompletionItemKind::EVENT),
+                        detail: Some(format!("{kind} callback")),
+                        ..Default::default()
+                    });
+                }
+                for p in props_for_widget("Spacer") {
+                    items.push(CompletionItem {
+                        label: p.to_string(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some("CraftUI Common Property".to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
+
+            if craftui_dsl::widget_allows_children(kind) {
+                for &w in BUILTIN_WIDGETS {
+                    items.push(CompletionItem {
+                        label: w.to_string(),
+                        kind: Some(CompletionItemKind::STRUCT),
+                        detail: Some("CraftUI Built-in Widget".to_string()),
+                        ..Default::default()
+                    });
+                }
+                for comp in &parsed.file.components {
+                    items.push(CompletionItem {
+                        label: comp.name.clone(),
+                        kind: Some(CompletionItemKind::CLASS),
+                        detail: Some("User .cui Component".to_string()),
+                        ..Default::default()
+                    });
+                }
+                for kw in ["for item, idx in", "if", "else"] {
+                    items.push(CompletionItem {
+                        label: kw.to_string(),
+                        kind: Some(CompletionItemKind::KEYWORD),
+                        ..Default::default()
+                    });
+                }
+            }
+
+            items.push(CompletionItem {
+                label: "animate".to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("Declarative property transition block".to_string()),
+                ..Default::default()
+            });
+            return items;
+        }
+        CursorContext::ComponentBody => {
+            for kw in [
+                "in property",
+                "out property",
+                "in-out property",
+                "callback",
+            ] {
+                items.push(CompletionItem {
+                    label: kw.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    ..Default::default()
+                });
+            }
+            for &w in BUILTIN_WIDGETS {
+                items.push(CompletionItem {
+                    label: w.to_string(),
+                    kind: Some(CompletionItemKind::STRUCT),
+                    detail: Some("CraftUI Built-in Widget".to_string()),
+                    ..Default::default()
+                });
+            }
+            for comp in &parsed.file.components {
+                items.push(CompletionItem {
+                    label: comp.name.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    detail: Some("User .cui Component".to_string()),
+                    ..Default::default()
+                });
+            }
+            return items;
+        }
+        CursorContext::TopLevel => {}
+    }
+
     for &w in BUILTIN_WIDGETS {
         items.push(CompletionItem {
             label: w.to_string(),
@@ -229,23 +573,6 @@ pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
             ..Default::default()
         });
     }
-    for &p in BUILTIN_PROPS {
-        items.push(CompletionItem {
-            label: p.to_string(),
-            kind: Some(CompletionItemKind::PROPERTY),
-            detail: Some("CraftUI Layout / Style Property".to_string()),
-            ..Default::default()
-        });
-    }
-    for &ev in BUILTIN_EVENTS {
-        items.push(CompletionItem {
-            label: ev.to_string(),
-            kind: Some(CompletionItemKind::EVENT),
-            detail: Some("CraftUI Widget Event Handler".to_string()),
-            ..Default::default()
-        });
-    }
-    let parsed = parse(text);
     for comp in &parsed.file.components {
         items.push(CompletionItem {
             label: comp.name.clone(),
@@ -282,13 +609,6 @@ pub fn build_completions(text: &str, pos: Position) -> Vec<CompletionItem> {
         "Theme",
         "ThemeMode",
         "SafeArea.insets",
-        "for item, idx in",
-        "if",
-        "else",
-        "on_tap =>",
-        "on_change =>",
-        "on_submit =>",
-        "on_close =>",
     ] {
         items.push(CompletionItem {
             label: kw.to_string(),
@@ -361,6 +681,11 @@ pub fn lookup_hover(text: &str, pos: Position) -> Option<Hover> {
             "Reactive `ThemeTokens` design system palette (`background`, `surface`, `primary`, `border`, etc.)."
         }
         "ThemeMode" => "Theme variant enum (`Light`, `Dark`, `Amoled`, `HighContrast`).",
+        "animate" => "Declarative property transition block (`animate opacity { duration: 180ms; easing: EaseOut; }`).",
+        "backdrop_blur" => "Frosted glass background blur radius in `dp` (`gpu-sdf` blurs underlying scene).",
+        "backdrop_tint" => "Optional color overlay blended onto the frosted `backdrop_blur` surface.",
+        "blend_mode" => "Porter-Duff/blend compositing mode (`Normal`, `Multiply`, `Screen`, `Overlay`, etc.).",
+        "cursor" => "Hover pointer cursor shape (`Default`, `Pointer`, `Text`, `Grab`, `NotAllowed`, etc.).",
         w if BUILTIN_EVENTS.contains(&w) => "CraftUI widget event handler (`on_tap => { ... }`).",
         w if BUILTIN_PROPS.contains(&w) => {
             "CraftUI element property (`px`, `dp`, `%`, Color, Enum, or reactive binding)."
@@ -480,7 +805,7 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.severity == Some(DiagnosticSeverity::WARNING))
+                .any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         );
     }
 
@@ -518,11 +843,23 @@ export component App {
         let diags = analyze_cui_document(Some(&url), app_src);
         assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 
-        let comps = build_completions(app_src, Position::new(4, 12));
-        assert!(comps.iter().any(|c| c.label == "Tabs"));
-        assert!(comps.iter().any(|c| c.label == "PopupMenu"));
-        assert!(comps.iter().any(|c| c.label == "on_submit"));
-        assert!(comps.iter().any(|c| c.label == "on_double_tap"));
+        // Context inside `Column { ... }` offers child widgets like Tabs & PopupMenu
+        let comps_col = build_completions(app_src, Position::new(4, 8));
+        assert!(comps_col.iter().any(|c| c.label == "Tabs"));
+        assert!(comps_col.iter().any(|c| c.label == "PopupMenu"));
+        assert!(!comps_col.iter().any(|c| c.label == "on_submit"));
+
+        // Context inside `TextInput { ... }` offers `on_submit` and `value`, NOT `tabs`!
+        let comps_input = build_completions(app_src, Position::new(5, 20));
+        assert!(comps_input.iter().any(|c| c.label == "on_submit"));
+        assert!(comps_input.iter().any(|c| c.label == "value"));
+        assert!(!comps_input.iter().any(|c| c.label == "tabs"));
+
+        // Context inside `animate opacity { ... }` offers curve/duration completions
+        let anim_src = "export component A { Column { animate opacity {  } } }";
+        let comps_anim = build_completions(anim_src, Position::new(0, 48));
+        assert!(comps_anim.iter().any(|c| c.label == "duration"));
+        assert!(comps_anim.iter().any(|c| c.label == "snappy()"));
 
         let hover_tabs = lookup_hover(app_src, Position::new(4, 9)).expect("hover on Tabs");
         match hover_tabs.contents {

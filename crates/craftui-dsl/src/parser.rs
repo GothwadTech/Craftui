@@ -73,6 +73,17 @@ impl Parser {
         None
     }
 
+    fn peek_text(&self) -> Option<&str> {
+        let mut idx = self.pos;
+        while let Some(tok) = self.tokens.get(idx) {
+            if !tok.kind.is_trivia() {
+                return Some(tok.text.as_str());
+            }
+            idx += 1;
+        }
+        None
+    }
+
     fn current_offset(&self) -> usize {
         let mut idx = self.pos;
         while let Some(tok) = self.tokens.get(idx) {
@@ -484,6 +495,7 @@ impl Parser {
 
         let mut props = Vec::new();
         let mut handlers = Vec::new();
+        let mut animations = Vec::new();
         let mut children = Vec::new();
 
         while let Some(pk) = self.peek() {
@@ -497,31 +509,43 @@ impl Parser {
                 TokenKind::KwIf => {
                     children.push(self.parse_if());
                 }
-                TokenKind::Ident => match self.peek_nth(1) {
-                    Some(TokenKind::LBrace) => {
-                        children.push(ChildItem::Element(self.parse_element()));
+                TokenKind::Ident => {
+                    if self.peek_text() == Some("animate")
+                        && self.peek_nth(1) == Some(TokenKind::Ident)
+                        && matches!(
+                            self.peek_nth(2),
+                            Some(TokenKind::Comma | TokenKind::LBrace)
+                        )
+                    {
+                        animations.extend(self.parse_animate_block());
+                        continue;
                     }
-                    Some(TokenKind::Colon) => {
-                        props.push(self.parse_prop_binding(false));
-                    }
-                    Some(TokenKind::TwoWayBind) => {
-                        props.push(self.parse_prop_binding(true));
-                    }
-                    Some(TokenKind::FatArrow) => {
-                        handlers.push(self.parse_handler_binding());
-                    }
-                    _ => {
-                        self.builder.start_node(SyntaxKind::ErrorNode.into());
-                        if let Some(t) = self.bump() {
-                            self.diagnostics.push(Diagnostic {
-                                span: Span::new(t.start, t.end),
-                                severity: Severity::Error,
-                                message: format!("unexpected identifier '{}' in element", t.text),
-                            });
+                    match self.peek_nth(1) {
+                        Some(TokenKind::LBrace) => {
+                            children.push(ChildItem::Element(self.parse_element()));
                         }
-                        self.builder.finish_node();
+                        Some(TokenKind::Colon) => {
+                            props.push(self.parse_prop_binding(false));
+                        }
+                        Some(TokenKind::TwoWayBind) => {
+                            props.push(self.parse_prop_binding(true));
+                        }
+                        Some(TokenKind::FatArrow) => {
+                            handlers.push(self.parse_handler_binding());
+                        }
+                        _ => {
+                            self.builder.start_node(SyntaxKind::ErrorNode.into());
+                            if let Some(t) = self.bump() {
+                                self.diagnostics.push(Diagnostic {
+                                    span: Span::new(t.start, t.end),
+                                    severity: Severity::Error,
+                                    message: format!("unexpected identifier '{}' in element", t.text),
+                                });
+                            }
+                            self.builder.finish_node();
+                        }
                     }
-                },
+                }
                 _ => {
                     self.builder.start_node(SyntaxKind::ErrorNode.into());
                     if let Some(t) = self.bump() {
@@ -542,9 +566,83 @@ impl Parser {
             kind,
             props,
             handlers,
+            animations,
             children,
             span: Span::new(start, end),
         }
+    }
+
+    fn parse_animate_block(&mut self) -> Vec<AnimateSpec> {
+        self.builder.start_node(SyntaxKind::AnimateBlock.into());
+        let start = self.current_offset();
+        self.bump(); // 'animate'
+        let mut target_props = Vec::new();
+        while let Some(pk) = self.peek() {
+            if pk == TokenKind::LBrace {
+                break;
+            }
+            if pk == TokenKind::Ident {
+                target_props.push(self.bump().unwrap().text);
+                let _ = self.eat_if(TokenKind::Comma);
+            } else if pk == TokenKind::Comma {
+                self.bump();
+            } else {
+                let off = self.current_offset();
+                self.diagnostics.push(Diagnostic {
+                    span: Span::new(off, off + 1),
+                    severity: Severity::Error,
+                    message: "expected animated property name or '{' in animate block".into(),
+                });
+                break;
+            }
+        }
+        self.expect(TokenKind::LBrace, "expected '{' in animate block");
+        let mut fields = Vec::new();
+        while let Some(pk) = self.peek() {
+            if pk == TokenKind::RBrace {
+                break;
+            }
+            if pk == TokenKind::Semi || pk == TokenKind::Comma {
+                self.bump();
+                continue;
+            }
+            if pk == TokenKind::Ident {
+                let fname = self.bump().unwrap().text;
+                if self.eat_if(TokenKind::Colon) {
+                    let val = self.parse_expr();
+                    fields.push((fname, val));
+                    let _ = self.eat_if(TokenKind::Semi) || self.eat_if(TokenKind::Comma);
+                } else if self.eat_if(TokenKind::LParen) {
+                    let args = self.parse_call_args();
+                    fields.push(("curve".to_string(), Expr::Call(fname, args)));
+                    let _ = self.eat_if(TokenKind::Semi) || self.eat_if(TokenKind::Comma);
+                } else {
+                    self.expect(TokenKind::Colon, "expected ':' or '(' in animate field");
+                    break;
+                }
+            } else {
+                self.builder.start_node(SyntaxKind::ErrorNode.into());
+                if let Some(t) = self.bump() {
+                    self.diagnostics.push(Diagnostic {
+                        span: Span::new(t.start, t.end),
+                        severity: Severity::Error,
+                        message: format!("unexpected token '{}' in animate block", t.text),
+                    });
+                }
+                self.builder.finish_node();
+            }
+        }
+        self.expect(TokenKind::RBrace, "expected '}' closing animate block");
+        let end = self.current_offset();
+        self.builder.finish_node();
+        target_props
+            .into_iter()
+            .map(|prop| AnimateSpec {
+                prop,
+                fields: fields.clone(),
+                span: Span::new(start, end),
+            })
+            .collect()
     }
 
     fn parse_prop_binding(&mut self, two_way: bool) -> PropBinding {
@@ -580,6 +678,10 @@ impl Parser {
                 if pk == TokenKind::RBrace {
                     break;
                 }
+                if pk == TokenKind::Semi {
+                    self.bump();
+                    continue;
+                }
                 body.push(self.parse_stmt());
                 self.eat_if(TokenKind::Semi);
             }
@@ -598,18 +700,76 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Stmt {
-        if self.peek() == Some(TokenKind::Ident) && self.peek_nth(1) == Some(TokenKind::Eq) {
-            let target = self.bump().unwrap().text;
-            self.bump(); // '='
-            let value = self.parse_expr();
-            return Stmt::Assign { target, value };
+        if self.peek() == Some(TokenKind::KwIf) {
+            return self.parse_stmt_if();
         }
         let expr = self.parse_expr();
+        let assign_op = match self.peek() {
+            Some(TokenKind::Eq) => Some(AssignOp::Set),
+            Some(TokenKind::PlusEq) => Some(AssignOp::Add),
+            Some(TokenKind::MinusEq) => Some(AssignOp::Sub),
+            Some(TokenKind::StarEq) => Some(AssignOp::Mul),
+            Some(TokenKind::SlashEq) => Some(AssignOp::Div),
+            _ => None,
+        };
+        if let Some(op) = assign_op {
+            self.bump();
+            let value = self.parse_expr();
+            return Stmt::Assign {
+                target: expr,
+                op,
+                value,
+            };
+        }
         if let Expr::Call(callee, args) = expr {
             Stmt::Call { callee, args }
         } else {
             Stmt::Expr(expr)
         }
+    }
+
+    fn parse_stmt_if(&mut self) -> Stmt {
+        self.bump(); // 'if'
+        let condition = self.parse_expr();
+        let _ = self.eat_if(TokenKind::Colon);
+        let then_branch = self.parse_stmt_block();
+        let else_branch = if self.eat_if(TokenKind::KwElse) {
+            if self.peek() == Some(TokenKind::KwIf) {
+                vec![self.parse_stmt_if()]
+            } else {
+                let _ = self.eat_if(TokenKind::Colon);
+                self.parse_stmt_block()
+            }
+        } else {
+            Vec::new()
+        };
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+        }
+    }
+
+    fn parse_stmt_block(&mut self) -> Vec<Stmt> {
+        let mut stmts = Vec::new();
+        if self.eat_if(TokenKind::LBrace) {
+            while let Some(pk) = self.peek() {
+                if pk == TokenKind::RBrace {
+                    break;
+                }
+                if pk == TokenKind::Semi {
+                    self.bump();
+                    continue;
+                }
+                stmts.push(self.parse_stmt());
+                self.eat_if(TokenKind::Semi);
+            }
+            self.expect(TokenKind::RBrace, "expected '}' closing statement block");
+        } else {
+            stmts.push(self.parse_stmt());
+            self.eat_if(TokenKind::Semi);
+        }
+        stmts
     }
 
     fn parse_for(&mut self) -> ChildItem {
@@ -634,6 +794,13 @@ impl Parser {
         };
         self.expect(TokenKind::KwIn, "expected 'in' in for loop");
         let iterable = self.parse_expr();
+        let key = if self.peek_text() == Some("key") && self.peek_nth(1) == Some(TokenKind::Colon) {
+            self.bump(); // key
+            self.bump(); // :
+            Some(self.parse_expr())
+        } else {
+            None
+        };
         self.expect(TokenKind::Colon, "expected ':' before for-loop element");
         let body = Box::new(self.parse_element());
         let end = self.current_offset();
@@ -642,6 +809,7 @@ impl Parser {
             item_var,
             index_var,
             iterable,
+            key,
             body,
             span: Span::new(start, end),
         }
@@ -661,6 +829,7 @@ impl Parser {
                     kind: "Container".into(),
                     props: Vec::new(),
                     handlers: Vec::new(),
+                    animations: Vec::new(),
                     children: vec![nested_if],
                     span: Span::new(start, self.current_offset()),
                 }))
@@ -683,9 +852,25 @@ impl Parser {
 
     fn parse_expr(&mut self) -> Expr {
         self.builder.start_node(SyntaxKind::ExprNode.into());
-        let expr = self.parse_range();
+        let expr = self.parse_ternary();
         self.builder.finish_node();
         expr
+    }
+
+    fn parse_ternary(&mut self) -> Expr {
+        let cond = self.parse_range();
+        if self.eat_if(TokenKind::Question) {
+            let then_expr = self.parse_ternary();
+            self.expect(TokenKind::Colon, "expected ':' in ternary expression");
+            let else_expr = self.parse_ternary();
+            Expr::Ternary {
+                cond: Box::new(cond),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+            }
+        } else {
+            cond
+        }
     }
 
     fn parse_range(&mut self) -> Expr {
@@ -861,6 +1046,10 @@ impl Parser {
                 let t = self.bump().unwrap();
                 parse_dimension(&t.text)
             }
+            Some(TokenKind::Duration) => {
+                let t = self.bump().unwrap();
+                parse_duration(&t.text)
+            }
             Some(TokenKind::Float) => {
                 let t = self.bump().unwrap();
                 Expr::Float(t.text.parse().unwrap_or(0.0))
@@ -960,5 +1149,15 @@ fn parse_dimension(s: &str) -> Expr {
         Expr::Length(num.parse().unwrap_or(0.0), Unit::Pct)
     } else {
         Expr::Length(0.0, Unit::Dp)
+    }
+}
+
+fn parse_duration(s: &str) -> Expr {
+    if let Some(num) = s.strip_suffix("ms") {
+        Expr::DurationSec(num.parse::<f32>().unwrap_or(0.0) / 1000.0)
+    } else if let Some(num) = s.strip_suffix('s') {
+        Expr::DurationSec(num.parse::<f32>().unwrap_or(0.0))
+    } else {
+        Expr::DurationSec(0.0)
     }
 }

@@ -11,7 +11,7 @@ pub use anim::{AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, Tra
 pub use gesture::{GestureArena, RecognizedGesture, ScrollPhysics, VelocityTracker};
 pub use inspector::InspectorState;
 pub use router::{Router, RouterTransition};
-pub use tree::{VirtualItemFactory, WidgetNode, WidgetTree};
+pub use tree::{TreeUiSnapshot, VirtualItemFactory, WidgetNode, WidgetTree};
 pub use widgets::{
     BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CustomWidget, FloatCallback,
     HoverCallback, IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, TextCallback,
@@ -1059,5 +1059,217 @@ mod tests {
             &mut tree.text_engine,
         );
         assert_eq!(rgba.len(), 400 * 300 * 4);
+    }
+
+    #[test]
+    fn reactive_for_preserves_unique_keys_and_disambiguates_duplicates() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let list = cx.signal(vec!["A".to_string(), "B".to_string(), "A".to_string()]);
+        let built_count = Rc::new(Cell::new(0usize));
+        let built_c = built_count.clone();
+
+        let host = tree.reactive_for(
+            cx,
+            LayoutStyle::column(),
+            move || list.get(),
+            |_idx, it| it.clone(),
+            move |scope, item, _idx, t| {
+                built_c.set(built_c.get() + 1);
+                t.text(scope, item, TextStyle::default())
+            },
+        );
+        tree.set_root(host);
+        let metrics = WindowMetrics {
+            logical_size: Size::new(400.0, 300.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        let initial_children = tree.nodes.get(host).unwrap().children.clone();
+        assert_eq!(initial_children.len(), 3);
+        assert_ne!(
+            initial_children[0], initial_children[2],
+            "duplicate keys must produce distinct NodeIds"
+        );
+        let b_node = initial_children[1];
+        assert_eq!(built_count.get(), 3);
+
+        // Delete the first "A": remaining items ["B", "A"] -> "B" keeps its exact NodeId!
+        list.set(vec!["B".to_string(), "A".to_string()]);
+        tree.layout(metrics);
+        let after_children = tree.nodes.get(host).unwrap().children.clone();
+        assert_eq!(after_children.len(), 2);
+        assert_eq!(after_children[0], b_node, "B node must be preserved");
+        assert_ne!(after_children[0], after_children[1]);
+    }
+
+    #[test]
+    fn bind_dynamic_prop_and_ui_snapshot_restore() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let op = cx.signal(0.25f32);
+        let txt_sig = cx.signal("hello world".to_string());
+
+        let col = tree.column(cx);
+        let card = tree.container(
+            cx,
+            LayoutStyle::column().with_size(Length::Dp(120.0), Length::Dp(60.0)),
+            BoxStyle::new(),
+        );
+        tree.bind_dynamic_prop(
+            card,
+            craftui_core::DirtyFlags::PAINT,
+            move || {
+                let _ = op.get();
+            },
+            move |id, t| {
+                t.set_opacity(id, op.get_untracked());
+            },
+        );
+        tree.set_transition(
+            card,
+            AnimatableProp::Opacity,
+            TransitionCurve::tween(0.15, Easing::EaseOut),
+        );
+        let input = tree.text_input(cx, "", "Type...", Some(txt_sig));
+        tree.append_child(col, card);
+        tree.append_child(col, input);
+        tree.set_root(col);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(400.0, 300.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+        assert!((tree.nodes.get(card).unwrap().box_style.opacity - 0.25).abs() < 1e-4);
+
+        // Update signal -> layout() applies new target -> opacity transitions smoothly
+        op.set(0.9);
+        tree.layout(metrics);
+        assert!((tree.nodes.get(card).unwrap().box_style.opacity - 0.9).abs() < 1e-4);
+
+        // Move cursor and focus input, capture snapshot, restore onto same topology
+        tree.focused = Some(input);
+        if let Some(n) = tree.nodes.get_mut(input)
+            && let WidgetKind::TextInput { editor, .. } = &mut n.kind
+        {
+            editor.cursor = 5;
+            editor.anchor = 2;
+        }
+        let snap = tree.capture_ui_state();
+        tree.focused = None;
+        if let Some(n) = tree.nodes.get_mut(input)
+            && let WidgetKind::TextInput { editor, .. } = &mut n.kind
+        {
+            editor.cursor = 0;
+            editor.anchor = 0;
+        }
+        tree.restore_ui_state(&snap);
+        assert_eq!(tree.focused, Some(input));
+        if let Some(n) = tree.nodes.get(input)
+            && let WidgetKind::TextInput { editor, .. } = &n.kind
+        {
+            assert_eq!(editor.cursor, 5);
+            assert_eq!(editor.anchor, 2);
+        }
+    }
+
+    #[test]
+    fn reactive_for_keyed_reuses_nodes_and_updates_signals_in_place() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        #[derive(Clone, PartialEq)]
+        struct Item {
+            id: u32,
+            label: String,
+        }
+        let items = cx.signal(vec![
+            Item {
+                id: 1,
+                label: "Alpha".into(),
+            },
+            Item {
+                id: 2,
+                label: "Beta".into(),
+            },
+        ]);
+        let build_count = Rc::new(Cell::new(0usize));
+        let build_c = build_count.clone();
+
+        let host = tree.reactive_for_keyed(
+            cx,
+            LayoutStyle::column(),
+            move || items.get(),
+            |_, it| it.id,
+            move |scope, it_sig, idx_sig, t| {
+                build_c.set(build_c.get() + 1);
+                t.text(
+                    scope,
+                    ReactiveValue::Dynamic(Rc::new(move || {
+                        format!("{}:{}", idx_sig.get(), it_sig.get().label)
+                    })),
+                    TextStyle::default(),
+                )
+            },
+        );
+        tree.set_root(host);
+        let metrics = WindowMetrics {
+            logical_size: Size::new(400.0, 300.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        let text_of = |t: &WidgetTree, id: craftui_core::NodeId| -> String {
+            match &t.nodes.get(id).unwrap().kind {
+                WidgetKind::Text { content, .. } => content.get(),
+                _ => unreachable!(),
+            }
+        };
+
+        let children0 = tree.nodes.get(host).unwrap().children.clone();
+        assert_eq!(children0.len(), 2);
+        assert_eq!(build_count.get(), 2);
+        assert_eq!(text_of(&tree, children0[0]), "0:Alpha");
+        assert_eq!(text_of(&tree, children0[1]), "1:Beta");
+        let n_alpha = children0[0];
+        let n_beta = children0[1];
+
+        // Reorder and mutate Beta's payload without changing key! Zero rebuilds!
+        items.set(vec![
+            Item {
+                id: 2,
+                label: "Beta-Edited".into(),
+            },
+            Item {
+                id: 1,
+                label: "Alpha".into(),
+            },
+        ]);
+        tree.layout(metrics);
+
+        let children1 = tree.nodes.get(host).unwrap().children.clone();
+        assert_eq!(children1, vec![n_beta, n_alpha]);
+        assert_eq!(build_count.get(), 2, "keyed items must NOT rebuild");
+        assert_eq!(text_of(&tree, n_beta), "0:Beta-Edited");
+        assert_eq!(text_of(&tree, n_alpha), "1:Alpha");
+
+        // Same key order, update Alpha payload -> still zero rebuilds and live text update
+        items.set(vec![
+            Item {
+                id: 2,
+                label: "Beta-Edited".into(),
+            },
+            Item {
+                id: 1,
+                label: "Alpha-2".into(),
+            },
+        ]);
+        tree.layout(metrics);
+        assert_eq!(build_count.get(), 2);
+        assert_eq!(text_of(&tree, n_alpha), "1:Alpha-2");
     }
 }
