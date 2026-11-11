@@ -46,9 +46,21 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "Modal",
     "BottomSheet",
     "PlatformView",
+    "HtmlView",
+    "div",
+    "span",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "button",
+    "input",
+    "nav",
+    "section",
 ];
 
 pub const COMMON_PROPS: &[&str] = &[
+    "class",
     "width",
     "height",
     "min_width",
@@ -230,6 +242,11 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "SplitPane"
             | "Accordion"
             | "Button"
+            | "div"
+            | "section"
+            | "nav"
+            | "span"
+            | "button"
     )
 }
 
@@ -389,6 +406,21 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "PlatformView" => {
             out.push("view_id");
         }
+        "HtmlView" => {
+            out.extend_from_slice(&["src", "html", "url"]);
+        }
+        "div" | "section" | "nav" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+        }
+        "span" | "p" | "h1" | "h2" | "h3" => {
+            out.extend_from_slice(&["text", "content", "color", "font_size", "font_weight"]);
+        }
+        "button" => {
+            out.extend_from_slice(&["text", "label", "disabled", "foreground", "color"]);
+        }
+        "input" => {
+            out.extend_from_slice(&["text", "value", "placeholder"]);
+        }
         _ => {}
     }
     out
@@ -398,7 +430,7 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
     let mut out = COMMON_EVENTS.to_vec();
     match kind {
         "Slider" | "Checkbox" | "Switch" | "SplitPane" => out.push("on_change"),
-        "TextInput" | "TextArea" => out.extend_from_slice(&["on_change", "on_submit"]),
+        "TextInput" | "TextArea" | "input" => out.extend_from_slice(&["on_change", "on_submit"]),
         "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" | "Select" | "Dropdown" | "RadioGroup" => {
             out.extend_from_slice(&["on_change", "on_select"]);
         }
@@ -414,7 +446,7 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
 
 fn widget_supports_two_way(kind: &str, prop: &str) -> bool {
     match kind {
-        "TextInput" | "TextArea" => matches!(prop, "value" | "text"),
+        "TextInput" | "TextArea" | "input" => matches!(prop, "value" | "text"),
         "Slider" => prop == "value",
         "SplitPane" => prop == "ratio",
         "Checkbox" | "Switch" => matches!(prop, "checked" | "value"),

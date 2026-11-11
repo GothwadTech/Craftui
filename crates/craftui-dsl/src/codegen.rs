@@ -1215,6 +1215,78 @@ fn emit_element(
                 "{indent}let {var} = {tr}.platform_view({cx}, {vid}, LayoutStyle::column());"
             );
         }
+        "HtmlView" => {
+            let src_rv = find_prop(el, &["src", "url"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let html_rv = find_prop(el, &["html"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.html_view({cx}, {src_rv}, {html_rv}, None);"
+            );
+        }
+        "div" | "section" | "nav" => {
+            let class_str = find_prop(el, &["class"])
+                .and_then(|p| match &p.value {
+                    Expr::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            if class_str.contains("flex-row") {
+                let _ = writeln!(out, "{indent}let {var} = {tr}.row({cx});");
+            } else {
+                let _ = writeln!(out, "{indent}let {var} = {tr}.column({cx});");
+            }
+        }
+        "span" | "p" | "h1" | "h2" | "h3" => {
+            let (default_size, default_weight) = match el.kind.as_str() {
+                "h1" => (28.0f32, 700.0f32),
+                "h2" => (24.0f32, 700.0f32),
+                "h3" => (20.0f32, 600.0f32),
+                _ => (15.0f32, 400.0f32),
+            };
+            let content_expr = find_prop(el, &["text", "content"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {{ let __st = TextStyle::default().with_size({default_size}).with_weight({default_weight}); {tr}.text({cx}, {content_expr}, __st) }};"
+            );
+        }
+        "button" => {
+            let text_expr = find_prop(el, &["text", "title", "label"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(\"Button\".to_string())".into());
+            let _ = writeln!(out, "{indent}let {var} = {tr}.button({cx}, {text_expr}, || {{}});");
+        }
+        "input" => {
+            let ph = find_prop(el, &["placeholder"])
+                .map(|p| expr_to_typed_rust(&p.value, "String", ctx))
+                .unwrap_or_else(|| "String::new()".into());
+            let val_prop = find_prop(el, &["value", "text"]);
+            let (init_str, sig_opt) = match val_prop {
+                Some(p)
+                    if p.two_way
+                        && matches!(&p.value, Expr::Ident(id) if ctx.signal_type(id.as_str()) == Some("String")) =>
+                {
+                    let Expr::Ident(id) = &p.value else {
+                        unreachable!()
+                    };
+                    (
+                        "String::new()".to_string(),
+                        format!("Some({})", ctx.prop_access(id)),
+                    )
+                }
+                Some(p) => (expr_to_typed_rust(&p.value, "String", ctx), "None".to_string()),
+                None => ("String::new()".to_string(), "None".to_string()),
+            };
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.text_input({cx}, {init_str}, {ph}, {sig_opt});"
+            );
+        }
         "ScrollView" => {
             let (axis, base_layout) = match find_prop(el, &["direction"]).map(|p| &p.value) {
                 Some(Expr::Ident(s)) if s == "Horizontal" => {
@@ -1456,6 +1528,59 @@ fn emit_common_props_and_events(
     let mut layout_init_stmts = Vec::new();
     let mut layout_dyn_stmts = Vec::new();
     let mut layout_dyn_tracks = Vec::new();
+    let mut box_stmts = Vec::new();
+    let mut box_dyn_stmts = Vec::new();
+    let mut box_dyn_tracks = Vec::new();
+
+    // Parse Tailwind utility class tokens if class="..." attribute is provided
+    if let Some(class_prop) = find_prop(el, &["class"]) {
+        if let Expr::String(s) = &class_prop.value {
+            let tw = craftui_core::TailwindTokens::parse(s);
+            if tw.is_column {
+                layout_init_stmts.push("ls.mode = LayoutMode::Column;".into());
+            } else if tw.is_row {
+                layout_init_stmts.push("ls.mode = LayoutMode::Row;".into());
+            }
+            if let Some(pad) = tw.padding {
+                layout_init_stmts.push(format!(
+                    "ls.padding = Insets::new({}f32, {}f32, {}f32, {}f32);",
+                    pad.top, pad.right, pad.bottom, pad.left
+                ));
+            }
+            if let Some(gap) = tw.gap {
+                layout_init_stmts.push(format!("ls.gap_x = {gap}f32; ls.gap_y = {gap}f32;"));
+            }
+            if let Some(w) = tw.width {
+                if let craftui_core::Length::Pct(pct) = w {
+                    layout_init_stmts.push(format!("ls.width = Length::Pct({pct}f32);"));
+                }
+            }
+            if let Some(h) = tw.height {
+                if let craftui_core::Length::Pct(pct) = h {
+                    layout_init_stmts.push(format!("ls.height = Length::Pct({pct}f32);"));
+                }
+            }
+            if let Some(bg) = tw.background {
+                let (r, g, b, a) = (bg.r, bg.g, bg.b, bg.a);
+                box_stmts.push(format!(
+                    "bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::rgba({r}, {g}, {b}, {a}))));"
+                ));
+            }
+            if let Some(rad) = tw.radius {
+                box_stmts.push(format!(
+                    "bs.radius = CornerRadii::new({}f32, {}f32, {}f32, {}f32);",
+                    rad.top_left, rad.top_right, rad.bottom_right, rad.bottom_left
+                ));
+            }
+            if let Some(sh) = tw.shadow {
+                let (r, g, b, a) = (sh.color.r, sh.color.g, sh.color.b, sh.color.a);
+                box_stmts.push(format!(
+                    "bs.shadow = Some(BoxShadow::drop({}f32, {}f32, {}f32, {}f32, Color::rgba({r}, {g}, {b}, {a})));",
+                    sh.offset_x, sh.offset_y, sh.blur_radius, sh.spread
+                ));
+            }
+        }
+    }
 
     for p in &el.props {
         if let Some(init_stmt) = layout_stmt_for_prop(p, ctx, false) {
@@ -1488,9 +1613,6 @@ fn emit_common_props_and_events(
     }
 
     // 2. BoxStyle properties (background, border, opacity, clip, shadow)
-    let mut box_stmts = Vec::new();
-    let mut box_dyn_stmts = Vec::new();
-    let mut box_dyn_tracks = Vec::new();
     let mut reactive_opacity_expr: Option<&Expr> = None;
     let mut static_opacity_expr: Option<&Expr> = None;
 

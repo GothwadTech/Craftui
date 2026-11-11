@@ -1104,6 +1104,55 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
                 .unwrap_or_default();
             tree.platform_view(scope, vid, LayoutStyle::column())
         }
+        "HtmlView" => {
+            let src_rv = find_prop(el, &["src", "url"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            let html_rv = find_prop(el, &["html"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            tree.html_view(scope, src_rv, html_rv, None)
+        }
+        "div" | "section" | "nav" => {
+            let class_str = find_prop(el, &["class"])
+                .map(|p| match eval_expr(&p.value, env) {
+                    DynValue::String(s) => s,
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            if class_str.contains("flex-row") {
+                tree.row(scope)
+            } else {
+                tree.column(scope)
+            }
+        }
+        "span" | "p" | "h1" | "h2" | "h3" => {
+            let (sz, wt) = match el.kind.as_str() {
+                "h1" => (28.0f32, 700.0f32),
+                "h2" => (24.0f32, 700.0f32),
+                "h3" => (20.0f32, 600.0f32),
+                _ => (15.0f32, 400.0f32),
+            };
+            let content_rv = find_prop(el, &["text", "content"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            let st = TextStyle::default().with_size(sz).with_weight(wt);
+            tree.text(scope, content_rv, st)
+        }
+        "button" => {
+            let text_rv = find_prop(el, &["text", "title", "label"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static("Button".into()));
+            tree.button(scope, text_rv, || {})
+        }
+        "input" => {
+            let text_prop = find_prop(el, &["text", "value"]);
+            let (init_s, sig_opt) = bind_string_signal(scope, text_prop, env);
+            let ph = eval_prop("placeholder")
+                .map(|v| v.as_str())
+                .unwrap_or_default();
+            tree.text_input(scope, init_s, ph, sig_opt)
+        }
         _ => tree.column(scope),
     };
 
@@ -1124,6 +1173,33 @@ fn apply_node_layout_props(
             .find(|p| p.name == name)
             .map(|p| eval_expr(&p.value, env))
     };
+    if let Some(v) = eval_p("class") {
+        let tw = craftui_core::TailwindTokens::parse(&v.as_str());
+        if tw.is_column {
+            layout.mode = craftui_layout::LayoutMode::Column;
+            dirty = true;
+        } else if tw.is_row {
+            layout.mode = craftui_layout::LayoutMode::Row;
+            dirty = true;
+        }
+        if let Some(p) = tw.padding {
+            layout.padding = p;
+            dirty = true;
+        }
+        if let Some(g) = tw.gap {
+            layout.gap_x = g;
+            layout.gap_y = g;
+            dirty = true;
+        }
+        if let Some(w) = tw.width {
+            layout.width = w;
+            dirty = true;
+        }
+        if let Some(h) = tw.height {
+            layout.height = h;
+            dirty = true;
+        }
+    }
     if let Some(v) = eval_p("width") {
         layout.width = v.as_length();
         dirty = true;
@@ -1453,6 +1529,32 @@ fn apply_common_props_and_events(
         .map(|n| n.box_style.clone())
         .unwrap_or_default();
     let mut box_dirty = false;
+
+    if let Some(cls_prop) = find_prop(el, &["class"]) {
+        let tw = craftui_core::TailwindTokens::parse(&eval_expr(&cls_prop.value, env).as_str());
+        if let Some(bg) = tw.background {
+            if box_style.background.is_none() {
+                box_style.background = Some(ReactiveValue::Static(Brush::Solid(bg)));
+                box_dirty = true;
+            }
+        }
+        if let Some(r) = tw.radius {
+            if box_style.radius == CornerRadii::ZERO {
+                box_style.radius = r;
+                if let Some(ref mut br) = box_style.border {
+                    br.radius = r;
+                }
+                tree.set_image_radius(node, r);
+                box_dirty = true;
+            }
+        }
+        if let Some(sh) = tw.shadow {
+            if box_style.shadow.is_none() {
+                box_style.shadow = Some(sh);
+                box_dirty = true;
+            }
+        }
+    }
 
     if el.kind != "Badge"
         && let Some(bg_prop) = find_prop(el, &["background"])
@@ -3759,6 +3861,75 @@ export component ShowcasePhase3 {
                 assert!((*row_height - 36.0).abs() < 0.01);
             }
             _ => panic!("expected DataTable widget"),
+        }
+    }
+
+    #[test]
+    fn hybrid_html_and_tailwind_elements_in_cui() {
+        let mut session = HotReloadSession::new(Scope::root());
+        let mut tree = WidgetTree::new(session.state_scope);
+        let src = r#"export component HybridApp {
+    in-out property <string> username: "alice";
+    div {
+        id: "main_card";
+        class: "flex flex-col p-4 gap-4 bg-slate-900 rounded-xl shadow-md w-full";
+        h1 {
+            id: "title";
+            text: "Welcome to Hybrid CraftUI";
+            class: "text-2xl font-bold text-white";
+        }
+        p {
+            id: "desc";
+            text: "Fast like Rust, easy like HTML";
+            class: "text-sm text-slate-400";
+        }
+        input {
+            id: "user_input";
+            value <=> username;
+            placeholder: "Enter username";
+        }
+        HtmlView {
+            id: "embedded_web";
+            src: "https://tauri.app";
+        }
+    }
+}
+"#;
+        session.reload(src, Some("HybridApp"), &mut tree).unwrap();
+        let metrics = WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Verify div element has Tailwind padding, background, radius, shadow
+        let card_id = tree.node_by_id("main_card").unwrap();
+        let card_node = tree.nodes.get(card_id).unwrap();
+        assert_eq!(card_node.layout.padding, Insets::all(16.0));
+        assert_eq!(card_node.layout.gap_x, 16.0);
+        assert_eq!(card_node.layout.gap_y, 16.0);
+        assert_eq!(card_node.box_style.radius, CornerRadii::all(16.0));
+        assert!(card_node.box_style.background.is_some());
+        assert!(card_node.box_style.shadow.is_some());
+
+        // Verify h1 and p text widgets exist
+        let title_id = tree.node_by_id("title").unwrap();
+        let title_node = tree.nodes.get(title_id).unwrap();
+        assert!(matches!(title_node.kind, WidgetKind::Text { .. }));
+
+        // Verify input widget exists and is bound to username
+        let input_id = tree.node_by_id("user_input").unwrap();
+        let input_node = tree.nodes.get(input_id).unwrap();
+        assert!(matches!(input_node.kind, WidgetKind::TextInput { .. }));
+
+        // Verify HtmlView widget exists with src
+        let web_id = tree.node_by_id("embedded_web").unwrap();
+        let web_node = tree.nodes.get(web_id).unwrap();
+        match &web_node.kind {
+            WidgetKind::HtmlView { src, .. } => {
+                assert_eq!(src.get(), "https://tauri.app");
+            }
+            _ => panic!("expected HtmlView widget"),
         }
     }
 }

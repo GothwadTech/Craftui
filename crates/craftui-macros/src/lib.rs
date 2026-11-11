@@ -566,7 +566,7 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
 
     let init_stmt = match kind_str.as_str() {
         "Row" => quote! { let #var = __tree.row(__cx); },
-        "Column" | "View" | "Container" => quote! { let #var = __tree.column(__cx); },
+        "Column" | "View" | "Container" | "div" | "section" | "nav" => quote! { let #var = __tree.column(__cx); },
         "Grid" => {
             let cols = find_arg(&["columns", "cols"])
                 .map(|e| quote!(#e as u16))
@@ -612,7 +612,7 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
             };
             quote! { let #var = __tree.icon(__cx, #svg_expr, #size_expr, #col_opt); }
         }
-        "Text" => {
+        "Text" | "p" | "h1" | "h2" | "h3" | "span" => {
             let text_expr = find_arg(&["text", "label", "content"])
                 .map(|e| quote!(#e))
                 .unwrap_or_else(|| quote!(""));
@@ -668,7 +668,7 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
             };
             quote! { let #var = __tree.text(__cx, #text_expr, #style_rv); }
         }
-        "Button" => {
+        "Button" | "button" => {
             let label = find_arg(&["label", "text", "title"])
                 .map(|e| quote!(#e))
                 .unwrap_or_else(|| {
@@ -789,7 +789,7 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 #chg
             }
         }
-        "TextInput" | "TextArea" => {
+        "TextInput" | "TextArea" | "input" => {
             let is_multiline = kind_str == "TextArea"
                 || matches!(
                     find_arg(&["multiline"]),
@@ -1396,6 +1396,17 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 let #var = __tree.platform_view(__cx, #view_id, ::craftui::layout::LayoutStyle::column());
             }
         }
+        "HtmlView" => {
+            let src = find_arg(&["src", "url"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(""));
+            let html = find_arg(&["html"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(""));
+            quote! {
+                let #var = __tree.html_view(__cx, #src, #html, None);
+            }
+        }
         "Custom" => {
             let widget = find_arg(&["widget", "impl", "custom"])
                 .expect("Custom requires `widget: MyCustomWidget::new(...)`");
@@ -1494,6 +1505,37 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
         }
 
         match name.as_str() {
+            "class" => {
+                layout_static.extend(quote! {
+                    let __tw = ::craftui::core::TailwindTokens::parse(&#val.to_string());
+                    if __tw.is_row { __ls.mode = ::craftui::layout::LayoutMode::Row; }
+                    else if __tw.is_column { __ls.mode = ::craftui::layout::LayoutMode::Column; }
+                    if let Some(__p) = __tw.padding { __ls.padding = __p; }
+                    if let Some(__g) = __tw.gap { __ls.gap_x = __g; __ls.gap_y = __g; }
+                    if let Some(__w) = __tw.width { __ls.width = __w; }
+                    if let Some(__h) = __tw.height { __ls.height = __h; }
+                });
+                box_static.extend(quote! {
+                    let __tw = ::craftui::core::TailwindTokens::parse(&#val.to_string());
+                    if let Some(__bg) = __tw.background {
+                        if __bs.background.is_none() {
+                            __bs.background = Some(::craftui::widgets::ReactiveValue::Static(
+                                ::craftui::core::Brush::Solid(__bg)
+                            ));
+                        }
+                    }
+                    if let Some(__r) = __tw.radius {
+                        if __bs.radius == ::craftui::core::CornerRadii::ZERO {
+                            __bs.radius = __r;
+                        }
+                    }
+                    if let Some(__sh) = __tw.shadow {
+                        if __bs.shadow.is_none() {
+                            __bs.shadow = Some(__sh);
+                        }
+                    }
+                });
+            }
             "width" => {
                 push_layout_prop!(
                     quote! { __ls.width = #val; },

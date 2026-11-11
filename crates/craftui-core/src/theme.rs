@@ -256,6 +256,135 @@ impl ThemeTokens {
             spacing_unit: self.spacing_unit + (target.spacing_unit - self.spacing_unit) * t,
         }
     }
+
+    /// Create Material 3 dynamic tokens from a seed color.
+    pub fn material3(seed: Color, mode: ThemeMode) -> Self {
+        let is_dark = matches!(mode, ThemeMode::Dark | ThemeMode::Amoled);
+        Material3Tokens::from_seed(seed, is_dark).to_theme_tokens()
+    }
+}
+
+/// Material 3 standard elevation levels and dynamic drop shadows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum M3Elevation {
+    #[default]
+    Level0,
+    Level1,
+    Level2,
+    Level3,
+    Level4,
+    Level5,
+}
+
+impl M3Elevation {
+    /// Return the standard Material 3 elevation drop shadow.
+    pub fn to_shadow(self, ambient_tint: Color) -> crate::BoxShadow {
+        match self {
+            Self::Level0 => crate::BoxShadow::drop(0.0, 0.0, 0.0, 0.0, Color::TRANSPARENT),
+            Self::Level1 => crate::BoxShadow::drop(0.0, 1.0, 3.0, 0.0, ambient_tint.with_alpha(0.14)),
+            Self::Level2 => crate::BoxShadow::drop(0.0, 2.0, 6.0, 0.0, ambient_tint.with_alpha(0.18)),
+            Self::Level3 => crate::BoxShadow::drop(0.0, 4.0, 10.0, 0.0, ambient_tint.with_alpha(0.22)),
+            Self::Level4 => crate::BoxShadow::drop(0.0, 6.0, 14.0, 0.0, ambient_tint.with_alpha(0.26)),
+            Self::Level5 => crate::BoxShadow::drop(0.0, 8.0, 20.0, 0.0, ambient_tint.with_alpha(0.30)),
+        }
+    }
+}
+
+/// Material 3 complete Color Roles generated dynamically via Material You seed algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Material3Tokens {
+    pub primary: Color,
+    pub on_primary: Color,
+    pub primary_container: Color,
+    pub on_primary_container: Color,
+    pub secondary: Color,
+    pub on_secondary: Color,
+    pub secondary_container: Color,
+    pub on_secondary_container: Color,
+    pub tertiary: Color,
+    pub on_tertiary: Color,
+    pub surface: Color,
+    pub on_surface: Color,
+    pub surface_variant: Color,
+    pub on_surface_variant: Color,
+    pub surface_container: Color,
+    pub outline: Color,
+    pub outline_variant: Color,
+    pub error: Color,
+    pub on_error: Color,
+    pub is_dark: bool,
+}
+
+impl Material3Tokens {
+    /// Generate a complete Material 3 dynamic color scheme from a single seed color.
+    pub fn from_seed(seed: Color, dark: bool) -> Self {
+        let (r, g, b) = (seed.r, seed.g, seed.b);
+        if dark {
+            Self {
+                primary: seed.lerp(Color::WHITE, 0.45),
+                on_primary: seed.lerp(Color::BLACK, 0.85),
+                primary_container: seed.lerp(Color::BLACK, 0.55),
+                on_primary_container: seed.lerp(Color::WHITE, 0.8),
+                secondary: Color::rgb(r.saturating_add(20), g.saturating_add(20), b.saturating_add(30)).lerp(Color::WHITE, 0.35),
+                on_secondary: Color::BLACK,
+                secondary_container: seed.lerp(Color::rgb(20, 25, 35), 0.6),
+                on_secondary_container: Color::rgb(220, 230, 245),
+                tertiary: Color::rgb(b, r, g).lerp(Color::WHITE, 0.4),
+                on_tertiary: Color::BLACK,
+                surface: Color::rgb(15, 20, 30),
+                on_surface: Color::rgb(235, 240, 250),
+                surface_variant: Color::rgb(35, 45, 60),
+                on_surface_variant: Color::rgb(180, 195, 215),
+                surface_container: Color::rgb(25, 32, 45),
+                outline: Color::rgb(90, 105, 125),
+                outline_variant: Color::rgb(55, 65, 80),
+                error: Color::rgb(255, 180, 171),
+                on_error: Color::rgb(105, 0, 5),
+                is_dark: true,
+            }
+        } else {
+            Self {
+                primary: seed,
+                on_primary: Color::WHITE,
+                primary_container: seed.lerp(Color::WHITE, 0.75),
+                on_primary_container: seed.lerp(Color::BLACK, 0.7),
+                secondary: Color::rgb(r.saturating_add(15), g.saturating_add(15), b.saturating_add(20)),
+                on_secondary: Color::WHITE,
+                secondary_container: seed.lerp(Color::WHITE, 0.82),
+                on_secondary_container: Color::rgb(20, 30, 50),
+                tertiary: Color::rgb(b, r, g),
+                on_tertiary: Color::WHITE,
+                surface: Color::rgb(250, 252, 255),
+                on_surface: Color::rgb(25, 28, 32),
+                surface_variant: Color::rgb(225, 230, 240),
+                on_surface_variant: Color::rgb(70, 75, 85),
+                surface_container: Color::rgb(240, 244, 250),
+                outline: Color::rgb(120, 125, 135),
+                outline_variant: Color::rgb(195, 200, 210),
+                error: Color::rgb(186, 26, 26),
+                on_error: Color::WHITE,
+                is_dark: false,
+            }
+        }
+    }
+
+    /// Convert this Material 3 palette to standard CraftUI ThemeTokens.
+    pub fn to_theme_tokens(&self) -> ThemeTokens {
+        ThemeTokens {
+            mode: if self.is_dark { ThemeMode::Dark } else { ThemeMode::Light },
+            background: self.surface,
+            surface: self.surface_container,
+            surface_variant: self.surface_variant,
+            border: self.outline_variant,
+            primary: self.primary,
+            on_primary: self.on_primary,
+            text_primary: self.on_surface,
+            text_secondary: self.on_surface_variant,
+            danger: self.error,
+            radius_md: 16.0,
+            spacing_unit: 8.0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,5 +402,50 @@ mod tests {
         assert_eq!(ov.color("warning"), Some(Color::rgb(245, 158, 11)));
         assert_eq!(ov.float("card_elevation"), Some(6.0));
         assert_eq!(themed.token_color("primary"), Some(themed.primary));
+    }
+
+    #[test]
+    fn material3_seed_palette_generation() {
+        let seed = Color::rgb(103, 80, 164); // Standard Material 3 purple seed
+
+        let light = Material3Tokens::from_seed(seed, false);
+        let dark = Material3Tokens::from_seed(seed, true);
+
+        // Dark mode primary should be lighter (tone 80) than light mode primary (tone 40)
+        let light_brightness = (light.primary.r as u32 + light.primary.g as u32 + light.primary.b as u32) / 3;
+        let dark_brightness = (dark.primary.r as u32 + dark.primary.g as u32 + dark.primary.b as u32) / 3;
+        assert!(dark_brightness > light_brightness, "M3 dark mode primary is higher tone than light mode");
+
+        // Surface tones
+        assert_eq!(dark.surface, Color::rgb(15, 20, 30));
+        assert_eq!(light.surface, Color::rgb(250, 252, 255));
+
+        // High contrast on_primary
+        assert_eq!(light.on_primary, Color::WHITE);
+        assert_eq!(dark.on_primary, seed.lerp(Color::BLACK, 0.85));
+    }
+
+    #[test]
+    fn material3_elevations_produce_correct_shadows() {
+        let tint = Color::rgba(0, 0, 0, 40);
+        let s0 = M3Elevation::Level0.to_shadow(tint);
+        assert_eq!(s0.blur_radius, 0.0);
+        assert_eq!(s0.offset_y, 0.0);
+
+        let s1 = M3Elevation::Level1.to_shadow(tint);
+        let s5 = M3Elevation::Level5.to_shadow(tint);
+
+        assert!(s5.blur_radius > s1.blur_radius);
+        assert!(s5.offset_y > s1.offset_y);
+    }
+
+    #[test]
+    fn material3_theme_tokens_generation() {
+        let seed = Color::rgb(0, 128, 255);
+        let tokens = ThemeTokens::material3(seed, ThemeMode::Dark);
+
+        assert_eq!(tokens.background, Color::rgb(15, 20, 30));
+        assert_eq!(tokens.radius_md, 16.0);
+        assert_eq!(tokens.spacing_unit, 8.0);
     }
 }

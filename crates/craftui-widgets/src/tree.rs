@@ -403,6 +403,11 @@ impl WidgetTree {
         self.theme_signal.set(base.applied(&override_spec));
     }
 
+    /// Directly set the active theme tokens (e.g. dynamic Material 3 palette).
+    pub fn set_theme(&mut self, theme: ThemeTokens) {
+        self.theme_signal.set(theme);
+    }
+
     /// Animate smoothly between theme palettes (Light, Dark, AMOLED, HighContrast), preserving custom overrides.
     pub fn set_theme_mode(&mut self, mode: ThemeMode) {
         let from = self.theme_signal.get();
@@ -935,6 +940,17 @@ impl WidgetTree {
                             let _ = b.get();
                         }
                         mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::A11Y);
+                    });
+                }
+            }
+            WidgetKind::HtmlView { src, html, .. } => {
+                let src = src.clone();
+                let html = html.clone();
+                if src.is_dynamic() || html.is_dynamic() {
+                    scope.effect(move || {
+                        let _ = src.get();
+                        let _ = html.get();
+                        mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::LAYOUT);
                     });
                 }
             }
@@ -2325,6 +2341,29 @@ impl WidgetTree {
             layout,
             scope,
         )
+    }
+
+    pub fn html_view(
+        &mut self,
+        scope: Scope,
+        src: impl Into<ReactiveValue<String>>,
+        html: impl Into<ReactiveValue<String>>,
+        router: Option<Rc<RefCell<craftui_core::IpcRouter>>>,
+    ) -> NodeId {
+        let id = self.spawn_node(
+            "HtmlView",
+            WidgetKind::HtmlView {
+                src: src.into(),
+                html: html.into(),
+                router,
+            },
+            LayoutStyle::column().with_size(Length::Pct(100.0), Length::Pct(100.0)),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::Container;
+        }
+        id
     }
 
     /// Mount any custom user-defined widget implementing [`CustomWidget`].
@@ -4068,6 +4107,19 @@ impl WidgetTree {
                         } else {
                             Size::new(56.0, 56.0)
                         }
+                    }
+                    WidgetKind::HtmlView { .. } => {
+                        let w = if constraints.max_width.is_finite() {
+                            constraints.max_width
+                        } else {
+                            400.0
+                        };
+                        let h = if constraints.max_height.is_finite() {
+                            constraints.max_height
+                        } else {
+                            300.0
+                        };
+                        Size::new(w, h)
                     }
                     WidgetKind::Accordion {
                         title, expanded, ..
@@ -6320,6 +6372,15 @@ impl WidgetTree {
             }
             WidgetKind::PlatformView { id: pv_id } => {
                 scene.push(PaintCommand::PlatformViewHole { id: pv_id, rect });
+            }
+            WidgetKind::HtmlView { .. } => {
+                if box_style.background.is_none() {
+                    scene.fill_rect(rect, theme.surface, box_style.radius);
+                }
+                scene.push(PaintCommand::PlatformViewHole {
+                    id: PlatformViewId::from_raw(rect.x as u64 ^ rect.y as u64),
+                    rect,
+                });
             }
             WidgetKind::Custom(cw) => {
                 if let Ok(mut guard) = cw.try_borrow_mut() {
