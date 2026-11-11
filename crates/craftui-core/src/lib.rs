@@ -18,7 +18,7 @@ pub use events::{
     ScrollDelta, UiEvent,
 };
 pub use geometry::{
-    Breakpoint, Constraints, CornerRadii, Insets, Point, Rect, Size, WindowMetrics,
+    Breakpoint, Constraints, CornerRadii, Insets, Point, Rect, Size, Transform2D, WindowMetrics,
 };
 pub use ids::{DirtyFlags, NodeId, PlatformViewId, ScopeId, TextureId};
 pub use platform::{
@@ -26,7 +26,7 @@ pub use platform::{
     MockFileDialog, NoopFileDialog, PlatformServices,
 };
 pub use style::{
-    Alignment, Axis, Border, BoxShadow, Brush, ColorStop, Direction, Fit, Justify, Length, auto,
-    dp, pct, px,
+    Alignment, Axis, BlendMode, Border, BoxShadow, Brush, ColorStop, CursorIcon, Direction, Fit,
+    Justify, Length, auto, dp, pct, px,
 };
 pub use theme::{ThemeMode, ThemeOverride, ThemeTokens};

@@ -5,15 +5,55 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-[lints]
-workspace = true
-
 [features]
-default = ["desktop"]
+default = [
+    "desktop",
+    "dsl",
+    "hot-reload",
+    "embedded-fallback-font",
+    "gpu-sdf",
+    "gpu-vello",
+    "cpu-vello",
+    "cpu-tiny-skia",
+]
 desktop = ["dep:craftui-platform-desktop"]
 android = ["dep:craftui-platform-android"]
 ios = ["dep:craftui-platform-ios"]
 web = ["dep:craftui-platform-web"]
+dsl = ["dep:craftui-dsl"]
+hot-reload = ["dsl", "dep:craftui-runtime", "craftui-platform-desktop?/hot-reload"]
+embedded-fallback-font = ["craftui-text/embedded-fallback-font"]
+gpu-sdf = [
+    "craftui-render/gpu-sdf",
+    "craftui-platform-desktop?/gpu-sdf",
+    "craftui-platform-android?/gpu-sdf",
+    "craftui-platform-ios?/gpu-sdf",
+    "craftui-platform-web?/gpu-sdf",
+]
+gpu-vello = [
+    "craftui-render/gpu-vello",
+    "craftui-platform-desktop?/gpu-vello",
+    "craftui-platform-android?/gpu-vello",
+    "craftui-platform-ios?/gpu-vello",
+    "craftui-platform-web?/gpu-vello",
+]
+cpu-vello = [
+    "craftui-render/cpu-vello",
+    "craftui-platform-desktop?/cpu-vello",
+    "craftui-platform-android?/cpu-vello",
+    "craftui-platform-ios?/cpu-vello",
+    "craftui-platform-web?/cpu-vello",
+]
+cpu-tiny-skia = [
+    "craftui-render/cpu-tiny-skia",
+    "craftui-platform-desktop?/cpu-tiny-skia",
+    "craftui-platform-android?/cpu-tiny-skia",
+    "craftui-platform-ios?/cpu-tiny-skia",
+    "craftui-platform-web?/cpu-tiny-skia",
+]
+
+[lints]
+workspace = true
 
 [dependencies]
 craftui-core.workspace = true
@@ -23,10 +63,10 @@ craftui-text.workspace = true
 craftui-render.workspace = true
 craftui-a11y.workspace = true
 craftui-widgets.workspace = true
-craftui-dsl.workspace = true
-craftui-runtime.workspace = true
 craftui-macros.workspace = true
 
+craftui-dsl = { workspace = true, optional = true }
+craftui-runtime = { workspace = true, optional = true }
 craftui-platform-desktop = { workspace = true, optional = true }
 craftui-platform-android = { workspace = true, optional = true }
 craftui-platform-ios = { workspace = true, optional = true }

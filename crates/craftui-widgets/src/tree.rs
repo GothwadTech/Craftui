@@ -1,15 +1,19 @@
-use crate::anim::Spring;
+use crate::anim::{
+    AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, TransitionCurve,
+};
 use crate::gesture::{GestureArena, RecognizedGesture, ScrollPhysics};
 use crate::inspector::InspectorState;
+use crate::router::{Router, RouterTransition};
 use crate::widgets::{
     BoolCallback, BoxStyle, CanvasPointerFn, CustomWidget, FloatCallback, HoverCallback,
     IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, WidgetKind,
 };
 use craftui_a11y::{A11yAction, A11yBridge, A11yMetadata, A11yRole, A11ySnapshotNode};
 use craftui_core::{
-    Alignment, Axis, Brush, Color, CornerRadii, Direction, DirtyFlags, Fit, Insets, KeyCode,
-    KeyEvent, Length, NodeId, PlatformServices, PlatformViewId, Point, PointerEvent, PointerPhase,
-    Rect, Size, TextureId, ThemeMode, ThemeOverride, ThemeTokens, UiEvent, WindowMetrics,
+    Alignment, Axis, BlendMode, BoxShadow, Brush, Color, CornerRadii, CursorIcon, Direction,
+    DirtyFlags, Fit, Insets, KeyCode, KeyEvent, Length, NodeId, PlatformServices, PlatformViewId,
+    Point, PointerEvent, PointerPhase, Rect, Size, TextureId, ThemeMode, ThemeOverride,
+    ThemeTokens, Transform2D, UiEvent, WindowMetrics,
 };
 use craftui_layout::{LayoutEngine, LayoutStyle};
 use craftui_reactive::{Scope, Signal, drain_dirty_nodes, mark_node_dirty};
@@ -100,6 +104,147 @@ struct PropEffectScopes {
     visible_when: Option<Scope>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct NodeAnimState {
+    curves: HashMap<AnimatableProp, TransitionCurve>,
+    opacity: Option<AnimatedFloat>,
+    translate_x: Option<AnimatedFloat>,
+    translate_y: Option<AnimatedFloat>,
+    scale_x: Option<AnimatedFloat>,
+    scale_y: Option<AnimatedFloat>,
+    rotation: Option<AnimatedFloat>,
+    bg_color: Option<AnimatedColor>,
+    border_color: Option<AnimatedColor>,
+}
+
+impl NodeAnimState {
+    fn is_animating(&self) -> bool {
+        self.opacity.as_ref().is_some_and(AnimatedFloat::is_animating)
+            || self
+                .translate_x
+                .as_ref()
+                .is_some_and(AnimatedFloat::is_animating)
+            || self
+                .translate_y
+                .as_ref()
+                .is_some_and(AnimatedFloat::is_animating)
+            || self.scale_x.as_ref().is_some_and(AnimatedFloat::is_animating)
+            || self.scale_y.as_ref().is_some_and(AnimatedFloat::is_animating)
+            || self
+                .rotation
+                .as_ref()
+                .is_some_and(AnimatedFloat::is_animating)
+            || self
+                .bg_color
+                .as_ref()
+                .is_some_and(AnimatedColor::is_animating)
+            || self
+                .border_color
+                .as_ref()
+                .is_some_and(AnimatedColor::is_animating)
+    }
+
+    fn step(&mut self, dt_sec: f32) -> (bool, bool) {
+        let mut changed = false;
+        for opt in [
+            &mut self.opacity,
+            &mut self.translate_x,
+            &mut self.translate_y,
+            &mut self.scale_x,
+            &mut self.scale_y,
+            &mut self.rotation,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if opt.step(dt_sec) {
+                changed = true;
+            }
+        }
+        if let Some(bg) = self.bg_color.as_mut()
+            && bg.step(dt_sec)
+        {
+            changed = true;
+        }
+        if let Some(bc) = self.border_color.as_mut()
+            && bc.step(dt_sec)
+        {
+            changed = true;
+        }
+        (changed, self.is_animating())
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ControlVisualAnim {
+    Button {
+        hover_t: AnimatedFloat,
+        press_t: AnimatedFloat,
+    },
+    Switch {
+        knob_t: AnimatedFloat,
+    },
+    Checkbox {
+        check_t: AnimatedFloat,
+    },
+    Tabs {
+        active_t: AnimatedFloat,
+    },
+    Slider {
+        frac_t: AnimatedFloat,
+        hover_t: AnimatedFloat,
+        drag_t: AnimatedFloat,
+        dragging: bool,
+    },
+    Overlay {
+        was_open: bool,
+        reveal: AnimatedFloat,
+    },
+}
+
+impl ControlVisualAnim {
+    fn is_animating(&self) -> bool {
+        match self {
+            Self::Button { hover_t, press_t } => hover_t.is_animating() || press_t.is_animating(),
+            Self::Switch { knob_t } => knob_t.is_animating(),
+            Self::Checkbox { check_t } => check_t.is_animating(),
+            Self::Tabs { active_t } => active_t.is_animating(),
+            Self::Slider {
+                frac_t,
+                hover_t,
+                drag_t,
+                ..
+            } => frac_t.is_animating() || hover_t.is_animating() || drag_t.is_animating(),
+            Self::Overlay { reveal, .. } => reveal.is_animating(),
+        }
+    }
+
+    fn step(&mut self, dt_sec: f32) -> bool {
+        match self {
+            Self::Button { hover_t, press_t } => {
+                let a = hover_t.step(dt_sec);
+                let b = press_t.step(dt_sec);
+                a || b
+            }
+            Self::Switch { knob_t } => knob_t.step(dt_sec),
+            Self::Checkbox { check_t } => check_t.step(dt_sec),
+            Self::Tabs { active_t } => active_t.step(dt_sec),
+            Self::Slider {
+                frac_t,
+                hover_t,
+                drag_t,
+                ..
+            } => {
+                let a = frac_t.step(dt_sec);
+                let b = hover_t.step(dt_sec);
+                let c = drag_t.step(dt_sec);
+                a || b || c
+            }
+            Self::Overlay { reveal, .. } => reveal.step(dt_sec),
+        }
+    }
+}
+
 struct VirtualListHost {
     factory: VirtualItemFactory,
     active_items: HashMap<usize, (NodeId, Scope)>,
@@ -128,6 +273,8 @@ pub struct WidgetTree {
     virtual_hosts: SecondaryMap<NodeId, VirtualListHost>,
     dynamic_hosts: SecondaryMap<NodeId, DynamicSlotSync>,
     prop_scopes: SecondaryMap<NodeId, PropEffectScopes>,
+    node_anims: SecondaryMap<NodeId, NodeAnimState>,
+    control_anims: SecondaryMap<NodeId, ControlVisualAnim>,
     theme_spring: Option<(ThemeTokens, ThemeTokens, Spring)>,
     caret_visible: bool,
     caret_next_toggle_ms: Option<u64>,
@@ -166,6 +313,8 @@ impl WidgetTree {
             virtual_hosts: SecondaryMap::new(),
             dynamic_hosts: SecondaryMap::new(),
             prop_scopes: SecondaryMap::new(),
+            node_anims: SecondaryMap::new(),
+            control_anims: SecondaryMap::new(),
             theme_spring: None,
             caret_visible: true,
             caret_next_toggle_ms: None,
@@ -227,8 +376,138 @@ impl WidgetTree {
             .nodes
             .insert_with_key(|id| WidgetNode::new(id, debug_name, kind, layout.clone(), scope));
         self.layout_engine.upsert_node(id, layout);
+        self.init_control_anim(id);
         self.setup_reactive_bindings(id);
         id
+    }
+
+    fn init_control_anim(&mut self, id: NodeId) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let anim = match &node.kind {
+            WidgetKind::Button { .. } => Some(ControlVisualAnim::Button {
+                hover_t: AnimatedFloat::new(0.0, TransitionCurve::tween(0.14, Easing::EaseOut)),
+                press_t: AnimatedFloat::new(0.0, TransitionCurve::tween(0.08, Easing::EaseOut)),
+            }),
+            WidgetKind::Switch { checked, .. } => Some(ControlVisualAnim::Switch {
+                knob_t: AnimatedFloat::new(
+                    if checked.get_untracked() { 1.0 } else { 0.0 },
+                    TransitionCurve::spring(420.0, 30.0),
+                ),
+            }),
+            WidgetKind::Checkbox { checked, .. } => Some(ControlVisualAnim::Checkbox {
+                check_t: AnimatedFloat::new(
+                    if checked.get_untracked() { 1.0 } else { 0.0 },
+                    TransitionCurve::spring(420.0, 26.0),
+                ),
+            }),
+            WidgetKind::Tabs { active, .. } => Some(ControlVisualAnim::Tabs {
+                active_t: AnimatedFloat::new(
+                    active.get_untracked() as f32,
+                    TransitionCurve::spring(360.0, 30.0),
+                ),
+            }),
+            WidgetKind::Slider {
+                value, min, max, ..
+            } => {
+                let frac = if (max - min).abs() > 1e-6 {
+                    ((value.get_untracked() - *min) / (*max - *min)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                Some(ControlVisualAnim::Slider {
+                    frac_t: AnimatedFloat::new(frac, TransitionCurve::spring(480.0, 34.0)),
+                    hover_t: AnimatedFloat::new(0.0, TransitionCurve::tween(0.12, Easing::EaseOut)),
+                    drag_t: AnimatedFloat::new(0.0, TransitionCurve::tween(0.12, Easing::EaseOut)),
+                    dragging: false,
+                })
+            }
+            WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. } => {
+                let is_open = open.get();
+                Some(ControlVisualAnim::Overlay {
+                    was_open: is_open,
+                    reveal: AnimatedFloat::new(
+                        if is_open { 1.0 } else { 0.0 },
+                        TransitionCurve::spring(320.0, 26.0),
+                    ),
+                })
+            }
+            _ => None,
+        };
+        if let Some(a) = anim {
+            self.control_anims.insert(id, a);
+        }
+    }
+
+    fn sync_control_anim_target(&mut self, id: NodeId) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let Some(anim) = self.control_anims.get_mut(id) else {
+            return;
+        };
+        match (&node.kind, anim) {
+            (
+                WidgetKind::Button {
+                    hovered,
+                    pressed,
+                    disabled,
+                    ..
+                },
+                ControlVisualAnim::Button { hover_t, press_t },
+            ) => {
+                let dis = node.is_disabled() || disabled.get();
+                hover_t.set_target(if *hovered && !dis { 1.0 } else { 0.0 });
+                press_t.set_target(if *pressed && !dis { 1.0 } else { 0.0 });
+            }
+            (WidgetKind::Switch { checked, .. }, ControlVisualAnim::Switch { knob_t }) => {
+                knob_t.set_target(if checked.get_untracked() { 1.0 } else { 0.0 });
+            }
+            (WidgetKind::Checkbox { checked, .. }, ControlVisualAnim::Checkbox { check_t }) => {
+                check_t.set_target(if checked.get_untracked() { 1.0 } else { 0.0 });
+            }
+            (WidgetKind::Tabs { tabs, active, .. }, ControlVisualAnim::Tabs { active_t }) => {
+                let count = tabs.get().len();
+                if count > 0 {
+                    active_t.set_target(active.get_untracked().min(count - 1) as f32);
+                }
+            }
+            (
+                WidgetKind::Slider {
+                    value, min, max, ..
+                },
+                ControlVisualAnim::Slider {
+                    frac_t, dragging, ..
+                },
+            ) => {
+                let frac = if (max - min).abs() > 1e-6 {
+                    ((value.get_untracked() - *min) / (*max - *min)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                if *dragging {
+                    frac_t.snap(frac);
+                } else {
+                    frac_t.set_target(frac);
+                }
+            }
+            (
+                WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. },
+                ControlVisualAnim::Overlay { was_open, reveal },
+            ) => {
+                let now_open = open.get();
+                if now_open && !*was_open {
+                    *was_open = true;
+                    reveal.snap(0.08);
+                    reveal.set_target(1.0);
+                } else if !now_open && *was_open {
+                    *was_open = false;
+                    reveal.snap(0.0);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn setup_reactive_bindings(&mut self, id: NodeId) {
@@ -475,6 +754,8 @@ impl WidgetTree {
         }
         self.virtual_hosts.remove(node_id);
         self.dynamic_hosts.remove(node_id);
+        self.node_anims.remove(node_id);
+        self.control_anims.remove(node_id);
         if let Some(mut scopes) = self.prop_scopes.remove(node_id) {
             for s in [
                 scopes.box_bg.take(),
@@ -1334,6 +1615,404 @@ impl WidgetTree {
             n.box_style = box_style;
             n.dirty |= DirtyFlags::PAINT;
         }
+        self.sync_node_anim_targets(node);
+    }
+
+    pub fn set_transform(&mut self, node: NodeId, transform: Transform2D) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.box_style.transform = transform;
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_backdrop_blur(&mut self, node: NodeId, blur_radius: f32, tint: Color) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.box_style.backdrop_blur = blur_radius.max(0.0);
+            n.box_style.backdrop_tint = tint;
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_shadows(&mut self, node: NodeId, shadows: Vec<BoxShadow>) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.box_style.shadows = shadows;
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_blend_mode(&mut self, node: NodeId, blend_mode: BlendMode) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.box_style.blend_mode = blend_mode;
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_cursor(&mut self, node: NodeId, cursor: Option<CursorIcon>) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.box_style.cursor = cursor;
+        }
+    }
+
+    /// Configure a smooth transition curve for a specific property on `node`.
+    pub fn set_transition(&mut self, node: NodeId, prop: AnimatableProp, curve: TransitionCurve) {
+        let Some(n) = self.nodes.get(node) else {
+            return;
+        };
+        let initial_opacity = n.box_style.opacity;
+        let initial_bg = n.box_style.background.as_ref().and_then(|rv| match rv.get() {
+            Brush::Solid(c) => Some(c),
+            _ => None,
+        });
+        let initial_bc = n
+            .box_style
+            .border_color
+            .as_ref()
+            .map(ReactiveValue::get)
+            .or_else(|| n.box_style.border.map(|b| b.color));
+
+        if !self.node_anims.contains_key(node) {
+            self.node_anims.insert(node, NodeAnimState::default());
+        }
+        let Some(anim) = self.node_anims.get_mut(node) else {
+            return;
+        };
+        anim.curves.insert(prop, curve);
+        match prop {
+            AnimatableProp::Opacity => {
+                if let Some(a) = anim.opacity.as_mut() {
+                    a.set_curve(curve);
+                } else {
+                    anim.opacity = Some(AnimatedFloat::new(initial_opacity, curve));
+                }
+            }
+            AnimatableProp::TranslateX => {
+                if let Some(a) = anim.translate_x.as_mut() {
+                    a.set_curve(curve);
+                } else {
+                    anim.translate_x = Some(AnimatedFloat::new(0.0, curve));
+                }
+            }
+            AnimatableProp::TranslateY => {
+                if let Some(a) = anim.translate_y.as_mut() {
+                    a.set_curve(curve);
+                } else {
+                    anim.translate_y = Some(AnimatedFloat::new(0.0, curve));
+                }
+            }
+            AnimatableProp::ScaleX => {
+                if let Some(a) = anim.scale_x.as_mut() {
+                    a.set_curve(curve);
+                } else {
+                    anim.scale_x = Some(AnimatedFloat::new(1.0, curve));
+                }
+            }
+            AnimatableProp::ScaleY => {
+                if let Some(a) = anim.scale_y.as_mut() {
+                    a.set_curve(curve);
+                } else {
+                    anim.scale_y = Some(AnimatedFloat::new(1.0, curve));
+                }
+            }
+            AnimatableProp::Rotation => {
+                if let Some(a) = anim.rotation.as_mut() {
+                    a.set_curve(curve);
+                } else {
+                    anim.rotation = Some(AnimatedFloat::new(0.0, curve));
+                }
+            }
+            AnimatableProp::BackgroundColor => {
+                if let Some(ac) = anim.bg_color.as_mut() {
+                    ac.set_curve(curve);
+                } else if let Some(c) = initial_bg {
+                    anim.bg_color = Some(AnimatedColor::new(c, curve));
+                }
+            }
+            AnimatableProp::BorderColor => {
+                if let Some(ac) = anim.border_color.as_mut() {
+                    ac.set_curve(curve);
+                } else if let Some(c) = initial_bc {
+                    anim.border_color = Some(AnimatedColor::new(c, curve));
+                }
+            }
+        }
+    }
+
+    pub fn set_opacity(&mut self, node: NodeId, opacity: f32) {
+        let clamped = opacity.clamp(0.0, 1.0);
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.box_style.opacity = clamped;
+            n.dirty |= DirtyFlags::PAINT;
+        }
+        if let Some(anim) = self.node_anims.get_mut(node)
+            && let Some(&curve) = anim.curves.get(&AnimatableProp::Opacity)
+        {
+            if let Some(a) = anim.opacity.as_mut() {
+                a.set_curve(curve);
+                a.set_target(clamped);
+            } else {
+                let mut a = AnimatedFloat::new(clamped, curve);
+                a.set_target(clamped);
+                anim.opacity = Some(a);
+            }
+        }
+    }
+
+    pub fn set_translate(&mut self, node: NodeId, dx: f32, dy: f32) {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        if !self.node_anims.contains_key(node) {
+            if dx == 0.0 && dy == 0.0 {
+                return;
+            }
+            self.node_anims.insert(node, NodeAnimState::default());
+        }
+        if let Some(anim) = self.node_anims.get_mut(node) {
+            if let Some(&cx) = anim.curves.get(&AnimatableProp::TranslateX) {
+                let slot = anim
+                    .translate_x
+                    .get_or_insert_with(|| AnimatedFloat::new(0.0, cx));
+                slot.set_curve(cx);
+                slot.set_target(dx);
+            } else {
+                let slot = anim
+                    .translate_x
+                    .get_or_insert_with(|| AnimatedFloat::new(dx, TransitionCurve::instant()));
+                slot.snap(dx);
+            }
+            if let Some(&cy) = anim.curves.get(&AnimatableProp::TranslateY) {
+                let slot = anim
+                    .translate_y
+                    .get_or_insert_with(|| AnimatedFloat::new(0.0, cy));
+                slot.set_curve(cy);
+                slot.set_target(dy);
+            } else {
+                let slot = anim
+                    .translate_y
+                    .get_or_insert_with(|| AnimatedFloat::new(dy, TransitionCurve::instant()));
+                slot.snap(dy);
+            }
+        }
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_scale(&mut self, node: NodeId, sx: f32, sy: f32) {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        if !self.node_anims.contains_key(node) {
+            if (sx - 1.0).abs() < 1e-6 && (sy - 1.0).abs() < 1e-6 {
+                return;
+            }
+            self.node_anims.insert(node, NodeAnimState::default());
+        }
+        if let Some(anim) = self.node_anims.get_mut(node) {
+            if let Some(&cx) = anim.curves.get(&AnimatableProp::ScaleX) {
+                let slot = anim
+                    .scale_x
+                    .get_or_insert_with(|| AnimatedFloat::new(1.0, cx));
+                slot.set_curve(cx);
+                slot.set_target(sx);
+            } else {
+                let slot = anim
+                    .scale_x
+                    .get_or_insert_with(|| AnimatedFloat::new(sx, TransitionCurve::instant()));
+                slot.snap(sx);
+            }
+            if let Some(&cy) = anim.curves.get(&AnimatableProp::ScaleY) {
+                let slot = anim
+                    .scale_y
+                    .get_or_insert_with(|| AnimatedFloat::new(1.0, cy));
+                slot.set_curve(cy);
+                slot.set_target(sy);
+            } else {
+                let slot = anim
+                    .scale_y
+                    .get_or_insert_with(|| AnimatedFloat::new(sy, TransitionCurve::instant()));
+                slot.snap(sy);
+            }
+        }
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    pub fn set_rotation(&mut self, node: NodeId, radians: f32) {
+        if !self.nodes.contains_key(node) {
+            return;
+        }
+        if !self.node_anims.contains_key(node) {
+            if radians == 0.0 {
+                return;
+            }
+            self.node_anims.insert(node, NodeAnimState::default());
+        }
+        if let Some(anim) = self.node_anims.get_mut(node) {
+            if let Some(&cr) = anim.curves.get(&AnimatableProp::Rotation) {
+                let slot = anim
+                    .rotation
+                    .get_or_insert_with(|| AnimatedFloat::new(0.0, cr));
+                slot.set_curve(cr);
+                slot.set_target(radians);
+            } else {
+                let slot = anim
+                    .rotation
+                    .get_or_insert_with(|| AnimatedFloat::new(radians, TransitionCurve::instant()));
+                slot.snap(radians);
+            }
+        }
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.dirty |= DirtyFlags::PAINT;
+        }
+    }
+
+    fn sync_node_anim_targets(&mut self, node: NodeId) {
+        let Some(n) = self.nodes.get(node) else {
+            return;
+        };
+        let Some(anim) = self.node_anims.get_mut(node) else {
+            return;
+        };
+        if let Some(&curve) = anim.curves.get(&AnimatableProp::Opacity) {
+            let slot = anim
+                .opacity
+                .get_or_insert_with(|| AnimatedFloat::new(n.box_style.opacity, curve));
+            slot.set_target(n.box_style.opacity.clamp(0.0, 1.0));
+        }
+        if let Some(&curve) = anim.curves.get(&AnimatableProp::BackgroundColor)
+            && let Some(ref bg) = n.box_style.background
+            && let Brush::Solid(target_c) = bg.get()
+        {
+            if let Some(ac) = anim.bg_color.as_mut() {
+                ac.set_target(target_c);
+            } else {
+                anim.bg_color = Some(AnimatedColor::new(target_c, curve));
+            }
+        }
+        if let Some(&curve) = anim.curves.get(&AnimatableProp::BorderColor) {
+            let target_bc = n
+                .box_style
+                .border_color
+                .as_ref()
+                .map(ReactiveValue::get)
+                .or_else(|| n.box_style.border.map(|b| b.color));
+            if let Some(target_c) = target_bc {
+                if let Some(ac) = anim.border_color.as_mut() {
+                    ac.set_target(target_c);
+                } else {
+                    anim.border_color = Some(AnimatedColor::new(target_c, curve));
+                }
+            }
+        }
+    }
+
+    fn node_effective_transform(&self, id: NodeId, pivot: Point) -> Transform2D {
+        let base = self
+            .nodes
+            .get(id)
+            .map(|n| n.box_style.transform)
+            .unwrap_or(Transform2D::IDENTITY);
+        let anim = self.node_anims.get(id);
+        let sx = anim.and_then(|a| a.scale_x.as_ref()).map_or(1.0, |v| v.value);
+        let sy = anim.and_then(|a| a.scale_y.as_ref()).map_or(1.0, |v| v.value);
+        let rot = anim.and_then(|a| a.rotation.as_ref()).map_or(0.0, |v| v.value);
+        let tx = anim
+            .and_then(|a| a.translate_x.as_ref())
+            .map_or(0.0, |v| v.value);
+        let ty = anim
+            .and_then(|a| a.translate_y.as_ref())
+            .map_or(0.0, |v| v.value);
+
+        let has_scale = (sx - 1.0).abs() > 1e-5 || (sy - 1.0).abs() > 1e-5;
+        let has_rot = rot.abs() > 1e-5;
+        let has_trans = tx.abs() > 1e-5 || ty.abs() > 1e-5;
+        if base.is_identity() && !has_scale && !has_rot && !has_trans {
+            return Transform2D::IDENTITY;
+        }
+        let mut inner = base;
+        if has_scale {
+            inner = inner.then(Transform2D::scale(sx, sy));
+        }
+        if has_rot {
+            inner = inner.then(Transform2D::rotation(rot));
+        }
+        let mut xf = if inner.is_identity() {
+            Transform2D::IDENTITY
+        } else {
+            Transform2D::around_pivot(pivot, inner)
+        };
+        if has_trans {
+            xf = xf.then(Transform2D::translation(tx, ty));
+        }
+        xf
+    }
+
+    fn default_cursor_for_node(node: &WidgetNode) -> CursorIcon {
+        if node.is_disabled() {
+            return CursorIcon::NotAllowed;
+        }
+        match &node.kind {
+            WidgetKind::Button { .. }
+            | WidgetKind::Checkbox { .. }
+            | WidgetKind::Switch { .. }
+            | WidgetKind::Tabs { .. }
+            | WidgetKind::Select { .. }
+            | WidgetKind::RadioGroup { .. } => CursorIcon::Pointer,
+            WidgetKind::TextInput { .. } => CursorIcon::Text,
+            WidgetKind::Slider { .. } => CursorIcon::Grab,
+            _ if node.on_tap.is_some()
+                || node.on_double_tap.is_some()
+                || node.on_long_press.is_some() =>
+            {
+                CursorIcon::Pointer
+            }
+            _ => CursorIcon::Default,
+        }
+    }
+
+    /// Resolve cursor shape hint for a hovered node, checking ancestor overrides first.
+    pub fn hovered_cursor(&self) -> CursorIcon {
+        self.cursor_for_node(self.hovered)
+    }
+
+    /// Hit-test `point` and return the effective [`CursorIcon`] under the pointer.
+    pub fn cursor_at(&self, point: Point) -> CursorIcon {
+        let hit = self.hit_test(point);
+        self.cursor_for_node(hit)
+    }
+
+    fn cursor_for_node(&self, start: Option<NodeId>) -> CursorIcon {
+        if let Some(id) = start {
+            if let Some(ControlVisualAnim::Slider { dragging: true, .. }) =
+                self.control_anims.get(id)
+            {
+                return CursorIcon::Grabbing;
+            }
+            let mut cur = Some(id);
+            while let Some(nid) = cur {
+                if let Some(n) = self.nodes.get(nid) {
+                    if let Some(c) = n.box_style.cursor {
+                        return if n.is_disabled() {
+                            CursorIcon::NotAllowed
+                        } else {
+                            c
+                        };
+                    }
+                    if nid == id {
+                        let sem = Self::default_cursor_for_node(n);
+                        if sem != CursorIcon::Default {
+                            return sem;
+                        }
+                    }
+                    cur = n.parent;
+                } else {
+                    break;
+                }
+            }
+        }
+        CursorIcon::Default
     }
 
     pub fn set_text_input_style(&mut self, node: NodeId, style: TextStyle) {
@@ -1575,6 +2254,106 @@ impl WidgetTree {
         host
     }
 
+    /// Mount a [`Router`]-driven view container playing [`RouterTransition`] whenever routes switch.
+    pub fn animated_route_slot<R: Clone + PartialEq + 'static>(
+        &mut self,
+        scope: Scope,
+        layout: LayoutStyle,
+        router: Router<R>,
+        transition: RouterTransition,
+        builder: impl Fn(Scope, &R, &mut WidgetTree) -> NodeId + 'static,
+    ) -> NodeId {
+        let host = self.container(scope, layout, BoxStyle::new());
+        scope.effect(move || {
+            let _ = router.current();
+            let _ = router.depth();
+            mark_node_dirty(host, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+        });
+
+        let mut last_route: Option<R> = None;
+        let mut last_depth: usize = router.depth();
+        let mut child_scope_opt: Option<Scope> = None;
+        let sync_fn: DynamicSlotSync = Box::new(move |host_id, tree| {
+            let next_route = router.current();
+            let next_depth = router.depth();
+            if last_route.as_ref() == Some(&next_route) {
+                return false;
+            }
+            let is_initial = last_route.is_none();
+            let is_pop = next_depth < last_depth;
+            last_route = Some(next_route.clone());
+            last_depth = next_depth;
+
+            let old_children = tree
+                .nodes
+                .get(host_id)
+                .map(|n| n.children.clone())
+                .unwrap_or_default();
+            for oc in old_children {
+                tree.remove_subtree(oc);
+            }
+            if let Some(old_sc) = child_scope_opt.take() {
+                old_sc.dispose();
+            }
+
+            let new_scope = scope.child_scope();
+            child_scope_opt = Some(new_scope);
+            let child = builder(new_scope, &next_route, tree);
+            tree.set_children(host_id, vec![child]);
+
+            if !is_initial && transition != RouterTransition::None {
+                let fade_curve = TransitionCurve::tween(0.18, Easing::EaseOut);
+                let move_curve = TransitionCurve::spring(340.0, 30.0);
+                let mut anim = NodeAnimState::default();
+                match transition {
+                    RouterTransition::None => {}
+                    RouterTransition::Fade => {
+                        anim.curves.insert(AnimatableProp::Opacity, fade_curve);
+                        let mut op = AnimatedFloat::new(0.08, fade_curve);
+                        op.set_target(1.0);
+                        anim.opacity = Some(op);
+                    }
+                    RouterTransition::SlideLeft | RouterTransition::SlideRight => {
+                        let base_offset = if matches!(transition, RouterTransition::SlideLeft) {
+                            36.0
+                        } else {
+                            -36.0
+                        };
+                        let start_x = if is_pop { -base_offset } else { base_offset };
+                        anim.curves.insert(AnimatableProp::Opacity, fade_curve);
+                        anim.curves.insert(AnimatableProp::TranslateX, move_curve);
+                        let mut op = AnimatedFloat::new(0.12, fade_curve);
+                        op.set_target(1.0);
+                        let mut tx = AnimatedFloat::new(start_x, move_curve);
+                        tx.set_target(0.0);
+                        anim.opacity = Some(op);
+                        anim.translate_x = Some(tx);
+                    }
+                    RouterTransition::ScaleFade => {
+                        anim.curves.insert(AnimatableProp::Opacity, fade_curve);
+                        anim.curves.insert(AnimatableProp::ScaleX, move_curve);
+                        anim.curves.insert(AnimatableProp::ScaleY, move_curve);
+                        let mut op = AnimatedFloat::new(0.12, fade_curve);
+                        op.set_target(1.0);
+                        let mut sx = AnimatedFloat::new(0.94, move_curve);
+                        sx.set_target(1.0);
+                        let mut sy = AnimatedFloat::new(0.94, move_curve);
+                        sy.set_target(1.0);
+                        anim.opacity = Some(op);
+                        anim.scale_x = Some(sx);
+                        anim.scale_y = Some(sy);
+                    }
+                }
+                tree.node_anims.insert(child, anim);
+            }
+            true
+        });
+
+        self.dynamic_hosts.insert(host, sync_fn);
+        self.sync_dynamic_slots();
+        host
+    }
+
     /// Mount a keyed reactive list container reconciling items when `model` changes.
     /// Items whose key persists retain their existing subtree `NodeId` and [`Scope`].
     pub fn reactive_for<T, K, M, KF, B>(
@@ -1690,6 +2469,32 @@ impl WidgetTree {
             }
         }
 
+        let anim_ids: Vec<NodeId> = self.node_anims.keys().collect();
+        for id in anim_ids {
+            if let Some(anim) = self.node_anims.get_mut(id) {
+                let (changed, still_running) = anim.step(dt_sec);
+                if changed && let Some(n) = self.nodes.get_mut(id) {
+                    n.dirty |= DirtyFlags::PAINT;
+                }
+                if still_running {
+                    active = true;
+                }
+            }
+        }
+
+        let ctrl_ids: Vec<NodeId> = self.control_anims.keys().collect();
+        for id in ctrl_ids {
+            if let Some(anim) = self.control_anims.get_mut(id) {
+                let changed = anim.step(dt_sec);
+                if changed && let Some(n) = self.nodes.get_mut(id) {
+                    n.dirty |= DirtyFlags::PAINT;
+                }
+                if anim.is_animating() {
+                    active = true;
+                }
+            }
+        }
+
         let ids: Vec<NodeId> = self.nodes.keys().collect();
         for id in ids {
             let rect = self.layout_engine.rect(id);
@@ -1756,6 +2561,30 @@ impl WidgetTree {
         }
 
         active
+    }
+
+    /// Returns `true` if any transition, control spring, theme transition, fling, or spinner is currently running.
+    pub fn has_active_animations(&self) -> bool {
+        if self.theme_spring.is_some() {
+            return true;
+        }
+        if self.node_anims.values().any(NodeAnimState::is_animating) {
+            return true;
+        }
+        if self
+            .control_anims
+            .values()
+            .any(ControlVisualAnim::is_animating)
+        {
+            return true;
+        }
+        self.nodes.values().any(|node| match &node.kind {
+            WidgetKind::ScrollView { velocity, .. } | WidgetKind::VirtualList { velocity, .. } => {
+                velocity.abs() > 0.0
+            }
+            WidgetKind::ProgressIndicator { progress, .. } => progress.get().is_none(),
+            _ => false,
+        })
     }
 
     /// Pull dirty flags from `craftui-reactive` and update layout + virtualized windows.
@@ -1863,6 +2692,8 @@ impl WidgetTree {
                     self.layout_engine.mark_dirty(id);
                 }
             }
+            self.sync_control_anim_target(id);
+            self.sync_node_anim_targets(id);
         }
 
         let Some(root) = self.root else {
@@ -2211,6 +3042,7 @@ impl WidgetTree {
         self.paint_node_recursive(
             root,
             Point::ZERO,
+            Transform2D::IDENTITY,
             &theme,
             scene,
             &mut floating_selects,
@@ -2219,14 +3051,11 @@ impl WidgetTree {
 
         // Paint floating Select dropdown popups on top of main UI
         for (drop_rect, opts, sel_idx, dropdown_scroll) in floating_selects {
-            scene.push(PaintCommand::DropShadow {
-                rect: drop_rect,
-                radius: 8.0,
-                std_dev: 8.0,
-                offset_x: 0.0,
-                offset_y: 4.0,
-                color: Color::rgba(0, 0, 0, 110),
-            });
+            scene.drop_shadow(
+                drop_rect,
+                CornerRadii::all(8.0),
+                BoxShadow::drop(0.0, 4.0, 12.0, 0.0, Color::rgba(0, 0, 0, 110)),
+            );
             scene.fill_rect(drop_rect, theme.surface, CornerRadii::all(8.0));
             scene.stroke_rect(drop_rect, theme.border, 1.0, CornerRadii::all(8.0));
             let total_h = opts.len() as f32 * 34.0 + 8.0;
@@ -2297,6 +3126,11 @@ impl WidgetTree {
                 target_rect.max_y() + 6.0
             };
             let tip_rect = Rect::new(tx, ty, w, h);
+            scene.drop_shadow(
+                tip_rect,
+                CornerRadii::all(6.0),
+                BoxShadow::drop(0.0, 3.0, 8.0, 0.0, Color::rgba(0, 0, 0, 90)),
+            );
             scene.fill_rect(
                 tip_rect,
                 Color::rgba(15, 23, 42, 240),
@@ -2311,12 +3145,115 @@ impl WidgetTree {
             for (id, node) in &self.nodes {
                 let r = self.layout_engine.rect(id);
                 if !r.size().is_empty() {
-                    boxes.push((r, node.debug_name));
+                    let xr = self
+                        .node_world_transform(id)
+                        .transform_rect_bounds(self.node_visual_rect(id));
+                    boxes.push((xr, node.debug_name));
                 }
             }
             self.inspector
                 .paint_overlay(scene, &boxes, self.metrics.logical_size.width);
         }
+    }
+
+    #[inline]
+    fn union_rects(a: Rect, b: Rect) -> Rect {
+        let min_x = a.x.min(b.x);
+        let min_y = a.y.min(b.y);
+        let max_x = a.max_x().max(b.max_x());
+        let max_y = a.max_y().max(b.max_y());
+        Rect::new(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+    }
+
+    #[inline]
+    fn expand_rect_for_shadow(rect: Rect, s: BoxShadow) -> Rect {
+        if s.inset {
+            return rect;
+        }
+        let pad = s.blur_radius.max(0.0) * 2.5 + s.spread.max(0.0) + 4.0;
+        let sr = rect.translate(s.offset_x, s.offset_y).inflate(pad, pad);
+        Self::union_rects(rect, sr)
+    }
+
+    fn accumulate_subtree_bounds(
+        &self,
+        id: NodeId,
+        scroll_offset: Point,
+        to_layer_local: Transform2D,
+        bounds: &mut Rect,
+    ) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if node.layout.hidden {
+            return;
+        }
+        match &node.kind {
+            WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. }
+                if !open.get() =>
+            {
+                return;
+            }
+            _ => {}
+        }
+
+        let rect = self
+            .layout_engine
+            .rect(id)
+            .translate(scroll_offset.x, scroll_offset.y);
+        let local_xf = self.node_effective_transform(id, rect.center());
+        let xform = to_layer_local * local_xf;
+
+        let mut local_r = rect.inflate(4.0, 4.0);
+        if let Some(s) = node.box_style.shadow {
+            local_r = Self::expand_rect_for_shadow(local_r, s);
+        }
+        for &s in &node.box_style.shadows {
+            local_r = Self::expand_rect_for_shadow(local_r, s);
+        }
+        let mapped = if xform.is_identity() {
+            local_r
+        } else {
+            xform.transform_rect_bounds(local_r)
+        };
+        *bounds = Self::union_rects(*bounds, mapped);
+
+        if node.box_style.clip {
+            return;
+        }
+        let mut child_scroll = scroll_offset;
+        if let WidgetKind::ScrollView { axis, offset, .. } = &node.kind {
+            match axis {
+                Axis::Vertical => child_scroll.y -= *offset,
+                Axis::Horizontal => child_scroll.x -= *offset,
+            }
+        }
+        for &child in &node.children {
+            self.accumulate_subtree_bounds(child, child_scroll, xform, bounds);
+        }
+    }
+
+    fn compute_subtree_layer_bounds(
+        &self,
+        _id: NodeId,
+        rect: Rect,
+        child_offset: Point,
+        box_style: &BoxStyle,
+        children: &[NodeId],
+    ) -> Rect {
+        let mut bounds = rect.inflate(4.0, 4.0);
+        if let Some(s) = box_style.shadow {
+            bounds = Self::expand_rect_for_shadow(bounds, s);
+        }
+        for &s in &box_style.shadows {
+            bounds = Self::expand_rect_for_shadow(bounds, s);
+        }
+        if !box_style.clip {
+            for &child in children {
+                self.accumulate_subtree_bounds(child, child_offset, Transform2D::IDENTITY, &mut bounds);
+            }
+        }
+        bounds
     }
 
     fn hovered_has_ancestor(&self, ancestor: NodeId) -> bool {
@@ -2335,6 +3272,7 @@ impl WidgetTree {
         &mut self,
         id: NodeId,
         scroll_offset: Point,
+        current_xform: Transform2D,
         theme: &ThemeTokens,
         scene: &mut PaintScene,
         floating_selects: &mut Vec<(Rect, Vec<String>, usize, f32)>,
@@ -2365,38 +3303,108 @@ impl WidgetTree {
             _ => {}
         }
 
-        if box_style.opacity < 0.999 {
-            scene.push(PaintCommand::PushLayer {
-                opacity: box_style.opacity,
-            });
+        let node_anim = self.node_anims.get(id);
+        let eff_opacity = node_anim
+            .and_then(|a| a.opacity.as_ref())
+            .map_or(box_style.opacity, |v| v.value)
+            .clamp(0.0, 1.0);
+        let anim_bg = node_anim.and_then(|a| a.bg_color.as_ref()).map(|c| c.value);
+        let anim_border = node_anim
+            .and_then(|a| a.border_color.as_ref())
+            .map(|c| c.value);
+        let ctrl_anim = self.control_anims.get(id).cloned();
+
+        if eff_opacity <= 0.001 {
+            if let Some(n) = self.nodes.get_mut(id) {
+                n.dirty = DirtyFlags::NONE;
+            }
+            return;
         }
 
-        if let Some(shadow) = box_style.shadow {
-            scene.push(PaintCommand::DropShadow {
-                rect,
-                radius: box_style.radius.top_left,
-                std_dev: shadow.blur_radius,
-                offset_x: shadow.offset_x,
-                offset_y: shadow.offset_y,
-                color: shadow.color,
-            });
+        let base_xf = self.node_effective_transform(id, rect.center());
+        let button_press_xf = if let Some(ControlVisualAnim::Button { press_t, .. }) = &ctrl_anim
+            && press_t.value > 0.001
+        {
+            let s = 1.0 - 0.025 * press_t.value.clamp(0.0, 1.0);
+            Transform2D::around_pivot(rect.center(), Transform2D::scale(s, s))
+        } else {
+            Transform2D::IDENTITY
+        };
+        let local_xf = base_xf * button_press_xf;
+        let has_xform = !local_xf.is_identity();
+        let node_xform = if has_xform {
+            current_xform * local_xf
+        } else {
+            current_xform
+        };
+        if has_xform {
+            scene.push_transform(local_xf);
         }
 
-        if let Some(ref bg) = box_style.background {
-            scene.fill_rect(rect, bg.get(), box_style.radius);
+        // Backdrop blur must execute BEFORE PushLayer because pooled offscreen layers start clear.
+        if box_style.backdrop_blur > 0.2 {
+            let mut tint = box_style.backdrop_tint;
+            tint.a = ((tint.a as f32) * eff_opacity).round().clamp(0.0, 255.0) as u8;
+            scene.backdrop_blur(rect, box_style.radius, box_style.backdrop_blur, tint);
         }
 
         let mut child_offset = scroll_offset;
+        if let WidgetKind::ScrollView { axis, offset, .. } = &kind {
+            match axis {
+                Axis::Vertical => child_offset.y -= *offset,
+                Axis::Horizontal => child_offset.x -= *offset,
+            }
+        }
+
+        let needs_layer = eff_opacity < 0.999 || box_style.blend_mode != BlendMode::Normal;
+        if needs_layer {
+            let layer_bounds =
+                self.compute_subtree_layer_bounds(id, rect, child_offset, &box_style, &children);
+            scene.push_layer(layer_bounds, eff_opacity, box_style.blend_mode);
+        }
+
+        // Outer drop shadows
+        for s in box_style
+            .shadow
+            .into_iter()
+            .chain(box_style.shadows.iter().copied())
+            .filter(|s| !s.inset)
+        {
+            scene.drop_shadow(rect, box_style.radius, s);
+        }
+
+        // Background fill (Button paints its own interactive hover/press fill once)
+        if !matches!(kind, WidgetKind::Button { .. }) {
+            let effective_bg = match (anim_bg, &box_style.background) {
+                (Some(c), Some(rv)) if matches!(rv.get(), Brush::Solid(_)) => Some(Brush::Solid(c)),
+                (_, Some(rv)) => Some(rv.get()),
+                (Some(c), None) => Some(Brush::Solid(c)),
+                (None, None) => None,
+            };
+            if let Some(bg) = effective_bg {
+                scene.fill_rect(rect, bg, box_style.radius);
+            }
+        }
+
+        // Inset inner shadows on top of background fill
+        for s in box_style
+            .shadow
+            .into_iter()
+            .chain(box_style.shadows.iter().copied())
+            .filter(|s| s.inset)
+        {
+            scene.drop_shadow(rect, box_style.radius, s);
+        }
+
+        let mut paint_children = true;
+        let mut extra_overlay_anim: Option<(Transform2D, f32)> = None;
 
         match kind {
             WidgetKind::Container | WidgetKind::Spacer | WidgetKind::SafeArea => {}
             WidgetKind::Divider { axis, color, .. } => {
                 let c = color.map(|cv| cv.get()).unwrap_or(theme.border);
                 let draw_r = match axis {
-                    Axis::Horizontal => {
-                        Rect::new(rect.x, rect.y, rect.width.max(1.0), rect.height.max(1.0))
-                    }
-                    Axis::Vertical => {
+                    Axis::Horizontal | Axis::Vertical => {
                         Rect::new(rect.x, rect.y, rect.width.max(1.0), rect.height.max(1.0))
                     }
                 };
@@ -2423,21 +3431,52 @@ impl WidgetTree {
                 ..
             } => {
                 let disabled_eff = is_disabled || disabled.get();
-                let mut bg = match box_style.background {
-                    Some(ref b) => match b.get() {
-                        Brush::Solid(c) => c,
-                        _ => theme.primary,
-                    },
-                    None => theme.primary,
+                let (hover_t, press_t) = match &ctrl_anim {
+                    Some(ControlVisualAnim::Button { hover_t, press_t }) => {
+                        (hover_t.value.clamp(0.0, 1.0), press_t.value.clamp(0.0, 1.0))
+                    }
+                    _ => (if hovered { 1.0 } else { 0.0 }, if pressed { 1.0 } else { 0.0 }),
                 };
-                if disabled_eff {
-                    bg = theme.surface_variant;
-                } else if pressed {
-                    bg = bg.lerp(Color::BLACK, 0.22);
-                } else if hovered {
-                    bg = bg.lerp(Color::WHITE, 0.12);
+                let bg_brush = if disabled_eff {
+                    Brush::Solid(theme.surface_variant)
+                } else {
+                    match (anim_bg, &box_style.background) {
+                        (Some(c), Some(rv)) if matches!(rv.get(), Brush::Solid(_)) => {
+                            Brush::Solid(c)
+                        }
+                        (_, Some(rv)) => rv.get(),
+                        (Some(c), None) => Brush::Solid(c),
+                        (None, None) => Brush::Solid(theme.primary),
+                    }
+                };
+                match bg_brush {
+                    Brush::Solid(c) => {
+                        let modulated = if disabled_eff {
+                            c
+                        } else {
+                            c.lerp(Color::WHITE, 0.12 * hover_t)
+                                .lerp(Color::BLACK, 0.22 * press_t)
+                        };
+                        scene.fill_rect(rect, modulated, box_style.radius);
+                    }
+                    other_brush => {
+                        scene.fill_rect(rect, other_brush, box_style.radius);
+                        if !disabled_eff && hover_t > 0.01 {
+                            scene.fill_rect(
+                                rect,
+                                Color::WHITE.with_alpha(0.12 * hover_t),
+                                box_style.radius,
+                            );
+                        }
+                        if !disabled_eff && press_t > 0.01 {
+                            scene.fill_rect(
+                                rect,
+                                Color::BLACK.with_alpha(0.20 * press_t),
+                                box_style.radius,
+                            );
+                        }
+                    }
                 }
-                scene.fill_rect(rect, bg, box_style.radius);
                 if is_focused {
                     scene.stroke_rect(
                         rect.inflate(1.5, 1.5),
@@ -2505,10 +3544,7 @@ impl WidgetTree {
                 content_extent,
                 ..
             } => {
-                match axis {
-                    Axis::Vertical => child_offset.y -= offset,
-                    Axis::Horizontal => child_offset.x -= offset,
-                }
+                paint_children = false;
                 scene.push(PaintCommand::PushClip {
                     rect,
                     radius: box_style.radius,
@@ -2517,6 +3553,7 @@ impl WidgetTree {
                     self.paint_node_recursive(
                         child,
                         child_offset,
+                        node_xform,
                         theme,
                         scene,
                         floating_selects,
@@ -2552,12 +3589,9 @@ impl WidgetTree {
                     }
                 }
                 scene.push(PaintCommand::PopClip);
-                if box_style.opacity < 0.999 {
-                    scene.push(PaintCommand::PopLayer);
-                }
-                return;
             }
             WidgetKind::VirtualList { .. } => {
+                paint_children = false;
                 scene.push(PaintCommand::PushClip {
                     rect,
                     radius: box_style.radius,
@@ -2566,6 +3600,7 @@ impl WidgetTree {
                     self.paint_node_recursive(
                         child,
                         scroll_offset,
+                        node_xform,
                         theme,
                         scene,
                         floating_selects,
@@ -2573,10 +3608,6 @@ impl WidgetTree {
                     );
                 }
                 scene.push(PaintCommand::PopClip);
-                if box_style.opacity < 0.999 {
-                    scene.push(PaintCommand::PopLayer);
-                }
-                return;
             }
             WidgetKind::TextInput {
                 editor,
@@ -2654,21 +3685,28 @@ impl WidgetTree {
             }
             WidgetKind::Checkbox { checked, label, .. } => {
                 let is_on = checked.get_untracked();
+                let check_t = match &ctrl_anim {
+                    Some(ControlVisualAnim::Checkbox { check_t }) => check_t.value.clamp(0.0, 1.0),
+                    _ => if is_on { 1.0 } else { 0.0 },
+                };
                 let box_rect = Rect::new(rect.x, rect.y + (rect.height - 20.0) * 0.5, 20.0, 20.0);
-                let fill = if is_on { theme.primary } else { theme.surface };
+                let fill = theme.surface.lerp(theme.primary, check_t);
+                let bcol = theme.border.lerp(theme.primary, check_t);
                 scene.fill_rect(box_rect, fill, CornerRadii::all(5.0));
-                scene.stroke_rect(
-                    box_rect,
-                    if is_on { theme.primary } else { theme.border },
-                    1.5,
-                    CornerRadii::all(5.0),
-                );
-                if is_on {
+                scene.stroke_rect(box_rect, bcol, 1.5, CornerRadii::all(5.0));
+                if check_t > 0.02 {
+                    let p0 = (box_rect.x as f64 + 4.5, box_rect.y as f64 + 10.5);
+                    let p1 = (box_rect.x as f64 + 8.5, box_rect.y as f64 + 14.5);
+                    let p2 = (box_rect.x as f64 + 15.5, box_rect.y as f64 + 5.5);
+                    let f1 = (check_t as f64 / 0.45).clamp(0.0, 1.0);
                     let mut path = kurbo::BezPath::new();
-                    path.move_to((box_rect.x as f64 + 4.5, box_rect.y as f64 + 10.5));
-                    path.line_to((box_rect.x as f64 + 8.5, box_rect.y as f64 + 14.5));
-                    path.line_to((box_rect.x as f64 + 15.5, box_rect.y as f64 + 5.5));
-                    scene.stroke_path(path, theme.on_primary, 2.2);
+                    path.move_to(p0);
+                    path.line_to((p0.0 + (p1.0 - p0.0) * f1, p0.1 + (p1.1 - p0.1) * f1));
+                    if check_t > 0.45 {
+                        let f2 = ((check_t as f64 - 0.45) / 0.55).clamp(0.0, 1.0);
+                        path.line_to((p1.0 + (p2.0 - p1.0) * f2, p1.1 + (p2.1 - p1.1) * f2));
+                    }
+                    scene.stroke_path(path, theme.on_primary.with_alpha(check_t), 2.2);
                 }
                 if is_focused {
                     scene.stroke_rect(
@@ -2689,22 +3727,23 @@ impl WidgetTree {
             }
             WidgetKind::Switch { checked, label, .. } => {
                 let is_on = checked.get_untracked();
+                let knob_t = match &ctrl_anim {
+                    Some(ControlVisualAnim::Switch { knob_t }) => knob_t.value,
+                    _ => if is_on { 1.0 } else { 0.0 },
+                };
                 let track = Rect::new(rect.x, rect.y + (rect.height - 24.0) * 0.5, 44.0, 24.0);
-                scene.fill_rect(
-                    track,
-                    if is_on {
-                        theme.primary
-                    } else {
-                        theme.surface_variant
-                    },
-                    CornerRadii::all(12.0),
-                );
-                let knob_x = if is_on { track.x + 22.0 } else { track.x + 3.0 };
-                scene.fill_rect(
-                    Rect::new(knob_x, track.y + 3.0, 18.0, 18.0),
-                    Color::WHITE,
+                let track_col = theme
+                    .surface_variant
+                    .lerp(theme.primary, knob_t.clamp(0.0, 1.0));
+                scene.fill_rect(track, track_col, CornerRadii::all(12.0));
+                let knob_x = track.x + 3.0 + knob_t * 19.0;
+                let knob_r = Rect::new(knob_x, track.y + 3.0, 18.0, 18.0);
+                scene.drop_shadow(
+                    knob_r,
                     CornerRadii::all(9.0),
+                    BoxShadow::drop(0.0, 1.0, 3.0, 0.0, Color::rgba(0, 0, 0, 55)),
                 );
+                scene.fill_rect(knob_r, Color::WHITE, CornerRadii::all(9.0));
                 if is_focused {
                     scene.stroke_rect(
                         rect.inflate(2.0, 2.0),
@@ -2732,10 +3771,23 @@ impl WidgetTree {
                 ..
             } => {
                 let v = value.get_untracked();
-                let frac = if (max - min).abs() > 1e-6 {
+                let raw_frac = if (max - min).abs() > 1e-6 {
                     ((v - min) / (max - min)).clamp(0.0, 1.0)
                 } else {
                     0.0
+                };
+                let (frac, hover_t, drag_t) = match &ctrl_anim {
+                    Some(ControlVisualAnim::Slider {
+                        frac_t,
+                        hover_t,
+                        drag_t,
+                        ..
+                    }) => (
+                        frac_t.value.clamp(0.0, 1.0),
+                        hover_t.value.clamp(0.0, 1.0),
+                        drag_t.value.clamp(0.0, 1.0),
+                    ),
+                    _ => (raw_frac, 0.0, 0.0),
                 };
                 let cy = if !label.is_empty() && rect.height >= 40.0 {
                     let lbl_style = TextStyle::default()
@@ -2776,17 +3828,39 @@ impl WidgetTree {
                     theme.primary,
                     CornerRadii::all(3.0),
                 );
-                let kx = track.x + active_w - 9.0;
-                scene.fill_rect(
-                    Rect::new(kx, cy - 9.0, 18.0, 18.0),
-                    Color::WHITE,
-                    CornerRadii::all(9.0),
+                let kx_center = track.x + active_w;
+                if hover_t > 0.01 || drag_t > 0.01 {
+                    let halo_r = 9.0 + 4.0 * hover_t.max(drag_t) + 2.0 * drag_t;
+                    let halo_alpha = (0.14 * hover_t + 0.18 * drag_t).clamp(0.0, 0.28);
+                    scene.fill_rect(
+                        Rect::new(
+                            kx_center - halo_r,
+                            cy - halo_r,
+                            halo_r * 2.0,
+                            halo_r * 2.0,
+                        ),
+                        theme.primary.with_alpha(halo_alpha),
+                        CornerRadii::all(halo_r),
+                    );
+                }
+                let thumb_r = 9.0 + 1.5 * drag_t;
+                let thumb_rect = Rect::new(
+                    kx_center - thumb_r,
+                    cy - thumb_r,
+                    thumb_r * 2.0,
+                    thumb_r * 2.0,
                 );
+                scene.drop_shadow(
+                    thumb_rect,
+                    CornerRadii::all(thumb_r),
+                    BoxShadow::drop(0.0, 1.5, 4.0, 0.0, Color::rgba(0, 0, 0, 70)),
+                );
+                scene.fill_rect(thumb_rect, Color::WHITE, CornerRadii::all(thumb_r));
                 scene.stroke_rect(
-                    Rect::new(kx, cy - 9.0, 18.0, 18.0),
+                    thumb_rect,
                     theme.primary,
-                    2.0,
-                    CornerRadii::all(9.0),
+                    2.0 + 0.5 * drag_t,
+                    CornerRadii::all(thumb_r),
                 );
                 if is_focused {
                     scene.stroke_rect(
@@ -2801,8 +3875,32 @@ impl WidgetTree {
                 let list = tabs.get();
                 let count = list.len().max(1);
                 let active_idx = active.get_untracked().min(count - 1);
+                let anim_idx = match &ctrl_anim {
+                    Some(ControlVisualAnim::Tabs { active_t }) => {
+                        active_t.value.clamp(0.0, (count - 1) as f32)
+                    }
+                    _ => active_idx as f32,
+                };
                 scene.fill_rect(rect, theme.surface_variant, CornerRadii::all(8.0));
                 let tab_w = rect.width / count as f32;
+                let pill_x = rect.x + anim_idx * tab_w;
+                let pill_r = Rect::new(
+                    pill_x + 3.0,
+                    rect.y + 3.0,
+                    (tab_w - 6.0).max(4.0),
+                    (rect.height - 6.0).max(4.0),
+                );
+                scene.fill_rect(pill_r, theme.surface, CornerRadii::all(6.0));
+                scene.fill_rect(
+                    Rect::new(
+                        pill_r.x + 8.0,
+                        rect.max_y() - 3.0,
+                        (pill_r.width - 16.0).max(4.0),
+                        2.5,
+                    ),
+                    theme.primary,
+                    CornerRadii::all(1.25),
+                );
                 for (i, title) in list.iter().enumerate() {
                     let tx = rect.x + i as f32 * tab_w;
                     let tr = Rect::new(
@@ -2811,28 +3909,11 @@ impl WidgetTree {
                         (tab_w - 6.0).max(4.0),
                         rect.height - 6.0,
                     );
-                    let is_act = i == active_idx;
-                    if is_act {
-                        scene.fill_rect(tr, theme.surface, CornerRadii::all(6.0));
-                        scene.fill_rect(
-                            Rect::new(
-                                tr.x + 8.0,
-                                rect.max_y() - 3.0,
-                                (tr.width - 16.0).max(4.0),
-                                2.5,
-                            ),
-                            theme.primary,
-                            CornerRadii::all(1.25),
-                        );
-                    }
+                    let act_weight = (1.0 - (anim_idx - i as f32).abs()).clamp(0.0, 1.0);
                     let tst = TextStyle::default()
                         .with_size(14.0)
-                        .with_weight(if is_act { 600.0 } else { 400.0 })
-                        .with_color(if is_act {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        });
+                        .with_weight(if act_weight > 0.5 { 600.0 } else { 400.0 })
+                        .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
                     let measured = self.text_engine.measure(title, &tst, None);
                     scene.draw_text(
                         Point::new(
@@ -2896,7 +3977,8 @@ impl WidgetTree {
                     theme.text_secondary,
                 );
                 if open {
-                    let drop_rect = self.select_dropdown_rect(rect, opts.len());
+                    let screen_trigger = node_xform.transform_rect_bounds(rect);
+                    let drop_rect = self.select_dropdown_rect(screen_trigger, opts.len());
                     floating_selects.push((drop_rect, opts, sel_idx, dropdown_scroll));
                 }
             }
@@ -2956,17 +4038,32 @@ impl WidgetTree {
                 }
             }
             WidgetKind::PopupMenu { items, anchor, .. } => {
+                let reveal = match &ctrl_anim {
+                    Some(ControlVisualAnim::Overlay { reveal, .. }) => reveal.value.clamp(0.0, 1.2),
+                    _ => 1.0,
+                };
+                let reveal_op = reveal.clamp(0.0, 1.0);
                 let list = items.get();
                 let menu_r = self.popup_menu_rect(anchor, list.len(), rect);
-                scene.fill_rect(rect, Color::rgba(0, 0, 0, 60), CornerRadii::ZERO);
-                scene.push(PaintCommand::DropShadow {
-                    rect: menu_r,
-                    radius: 8.0,
-                    std_dev: 10.0,
-                    offset_x: 0.0,
-                    offset_y: 6.0,
-                    color: Color::rgba(0, 0, 0, 120),
-                });
+                scene.fill_rect(
+                    rect,
+                    Color::rgba(0, 0, 0, (60.0 * reveal_op).round() as u8),
+                    CornerRadii::ZERO,
+                );
+                let animate_menu = reveal_op < 0.999;
+                if animate_menu {
+                    let s = (0.94 + 0.06 * reveal).clamp(0.85, 1.04);
+                    scene.push_transform(Transform2D::around_pivot(
+                        menu_r.center(),
+                        Transform2D::scale(s, s),
+                    ));
+                    scene.push_layer(menu_r.inflate(28.0, 28.0), reveal_op, BlendMode::Normal);
+                }
+                scene.drop_shadow(
+                    menu_r,
+                    CornerRadii::all(8.0),
+                    BoxShadow::drop(0.0, 6.0, 14.0, 0.0, Color::rgba(0, 0, 0, 120)),
+                );
                 scene.fill_rect(menu_r, theme.surface, CornerRadii::all(8.0));
                 scene.stroke_rect(menu_r, theme.border, 1.0, CornerRadii::all(8.0));
                 for (i, label) in list.iter().enumerate() {
@@ -2983,10 +4080,15 @@ impl WidgetTree {
                         Some((menu_r.width - 28.0).max(20.0)),
                     );
                 }
+                if animate_menu {
+                    scene.pop_layer();
+                    scene.pop_transform();
+                }
             }
             WidgetKind::Tooltip { text } => {
                 if self.hovered_has_ancestor(id) {
-                    active_tooltips.push((rect, text.get()));
+                    let screen_r = node_xform.transform_rect_bounds(rect);
+                    active_tooltips.push((screen_r, text.get()));
                 }
             }
             WidgetKind::ProgressIndicator { progress, phase } => {
@@ -3015,8 +4117,28 @@ impl WidgetTree {
                     }
                 }
             }
-            WidgetKind::Overlay { .. } => {
-                scene.fill_rect(rect, Color::rgba(0, 0, 0, 145), CornerRadii::ZERO);
+            WidgetKind::Overlay {
+                is_bottom_sheet, ..
+            } => {
+                let reveal = match &ctrl_anim {
+                    Some(ControlVisualAnim::Overlay { reveal, .. }) => reveal.value.clamp(0.0, 1.2),
+                    _ => 1.0,
+                };
+                let reveal_op = reveal.clamp(0.0, 1.0);
+                scene.fill_rect(
+                    rect,
+                    Color::rgba(0, 0, 0, (145.0 * reveal_op).round() as u8),
+                    CornerRadii::ZERO,
+                );
+                if reveal_op < 0.999 {
+                    let overlay_xf = if is_bottom_sheet {
+                        Transform2D::translation(0.0, (1.0 - reveal) * 44.0)
+                    } else {
+                        let s = (0.94 + 0.06 * reveal).clamp(0.85, 1.04);
+                        Transform2D::around_pivot(rect.center(), Transform2D::scale(s, s))
+                    };
+                    extra_overlay_anim = Some((overlay_xf, reveal_op));
+                }
             }
             WidgetKind::PlatformView { id: pv_id } => {
                 scene.push(PaintCommand::PlatformViewHole { id: pv_id, rect });
@@ -3028,38 +4150,57 @@ impl WidgetTree {
             }
         }
 
+        let eff_border_col = anim_border.or_else(|| box_style.border_color.as_ref().map(ReactiveValue::get));
         if let Some(border) = box_style.border
             && border.width > 0.0
         {
-            let bcol = box_style
-                .border_color
-                .as_ref()
-                .map(ReactiveValue::get)
-                .unwrap_or(border.color);
+            let bcol = eff_border_col.unwrap_or(border.color);
             scene.stroke_rect(rect, bcol, border.width, border.radius);
         }
 
-        if box_style.clip {
-            scene.push(PaintCommand::PushClip {
-                rect,
-                radius: box_style.radius,
-            });
+        if paint_children {
+            if box_style.clip {
+                scene.push(PaintCommand::PushClip {
+                    rect,
+                    radius: box_style.radius,
+                });
+            }
+            let (child_xf_for_sub, pushed_overlay_anim) = if let Some((ov_xf, ov_op)) = extra_overlay_anim {
+                let mut child_bounds = rect;
+                for &child in &children {
+                    self.accumulate_subtree_bounds(child, child_offset, Transform2D::IDENTITY, &mut child_bounds);
+                }
+                scene.push_transform(ov_xf);
+                scene.push_layer(child_bounds, ov_op, BlendMode::Normal);
+                (node_xform * ov_xf, true)
+            } else {
+                (node_xform, false)
+            };
+            for child in children {
+                self.paint_node_recursive(
+                    child,
+                    child_offset,
+                    child_xf_for_sub,
+                    theme,
+                    scene,
+                    floating_selects,
+                    active_tooltips,
+                );
+            }
+            if pushed_overlay_anim {
+                scene.pop_layer();
+                scene.pop_transform();
+            }
+            if box_style.clip {
+                scene.push(PaintCommand::PopClip);
+            }
         }
-        for child in children {
-            self.paint_node_recursive(
-                child,
-                child_offset,
-                theme,
-                scene,
-                floating_selects,
-                active_tooltips,
-            );
+
+        if needs_layer {
+            scene.pop_layer();
         }
-        if box_style.clip {
-            scene.push(PaintCommand::PopClip);
-        }
-        if box_style.opacity < 0.999 {
-            scene.push(PaintCommand::PopLayer);
+        if has_xform {
+            scene.pop_transform();
         }
 
         if let Some(n) = self.nodes.get_mut(id) {
@@ -3069,7 +4210,37 @@ impl WidgetTree {
 
     // === Event Routing & Hit-Testing ===
 
-    /// Hit-test the deepest interactive/visible node under `point`, respecting open dropdowns, scroll offsets, and `hit_slop`.
+    fn node_world_transform(&self, id: NodeId) -> Transform2D {
+        let mut chain = Vec::new();
+        let mut cur = Some(id);
+        while let Some(cid) = cur {
+            chain.push(cid);
+            cur = self.nodes.get(cid).and_then(|n| n.parent);
+        }
+        let mut world = Transform2D::IDENTITY;
+        for aid in chain.into_iter().rev() {
+            let r = self.node_visual_rect(aid);
+            let local_xf = self.node_effective_transform(aid, r.center());
+            if !local_xf.is_identity() {
+                world = world * local_xf;
+            }
+        }
+        world
+    }
+
+    fn screen_to_node_local_point(&self, id: NodeId, point: Point) -> Point {
+        let world = self.node_world_transform(id);
+        if world.is_identity() {
+            point
+        } else {
+            world
+                .inverse()
+                .map_or(point, |inv| inv.transform_point(point))
+        }
+    }
+
+    /// Hit-test the deepest interactive/visible node under `point`, respecting open dropdowns,
+    /// active transforms, scroll offsets, and `hit_slop`.
     pub fn hit_test(&self, point: Point) -> Option<NodeId> {
         let root = self.root?;
 
@@ -3086,7 +4257,8 @@ impl WidgetTree {
                 } = &node.kind
             {
                 let tr = self.node_visual_rect(id);
-                let dr = self.select_dropdown_rect(tr, options.get().len());
+                let screen_tr = self.node_world_transform(id).transform_rect_bounds(tr);
+                let dr = self.select_dropdown_rect(screen_tr, options.get().len());
                 if dr.contains(point) {
                     return Some(id);
                 }
@@ -3110,13 +4282,20 @@ impl WidgetTree {
             _ => {}
         }
 
-        let rect = self
+        let base_rect = self
             .layout_engine
             .rect(id)
-            .translate(scroll_offset.x, scroll_offset.y)
-            .inflate(node.box_style.hit_slop, node.box_style.hit_slop);
+            .translate(scroll_offset.x, scroll_offset.y);
+        let local_xf = self.node_effective_transform(id, base_rect.center());
+        let local_point = if local_xf.is_identity() {
+            point
+        } else {
+            let inv = local_xf.inverse()?;
+            inv.transform_point(point)
+        };
+        let rect = base_rect.inflate(node.box_style.hit_slop, node.box_style.hit_slop);
 
-        if node.box_style.clip && !rect.contains(point) {
+        if node.box_style.clip && !rect.contains(local_point) {
             return None;
         }
 
@@ -3130,12 +4309,12 @@ impl WidgetTree {
 
         // Topmost Z-order children first
         for &child in node.children.iter().rev() {
-            if let Some(hit) = self.hit_test_recursive(child, point, child_offset) {
+            if let Some(hit) = self.hit_test_recursive(child, local_point, child_offset) {
                 return Some(hit);
             }
         }
 
-        if rect.contains(point) && self.is_interactive(node) {
+        if rect.contains(local_point) && self.is_interactive(node) {
             Some(id)
         } else {
             None
@@ -3241,16 +4420,27 @@ impl WidgetTree {
             }
         }
 
-        // Update hovered state and fire on_hover callbacks
+        // Update hovered state, hover control animations, and fire on_hover callbacks
         if hit != self.hovered {
             if let Some(prev) = self.hovered {
-                if let Some(WidgetKind::Button { hovered, .. }) =
-                    self.nodes.get_mut(prev).map(|n| &mut n.kind)
+                if let Some(n) = self.nodes.get_mut(prev)
+                    && let WidgetKind::Button { hovered, .. } = &mut n.kind
                     && *hovered
                 {
                     *hovered = false;
+                    n.dirty |= DirtyFlags::PAINT;
                     changed = true;
                 }
+                if let Some(ControlVisualAnim::Slider { hover_t, .. }) =
+                    self.control_anims.get_mut(prev)
+                {
+                    hover_t.set_target(0.0);
+                    if let Some(n) = self.nodes.get_mut(prev) {
+                        n.dirty |= DirtyFlags::PAINT;
+                    }
+                    changed = true;
+                }
+                self.sync_control_anim_target(prev);
                 if let Some(cb) = self.nodes.get(prev).and_then(|n| n.on_hover.clone())
                     && let Ok(mut f) = cb.try_borrow_mut()
                 {
@@ -3260,13 +4450,26 @@ impl WidgetTree {
             }
             self.hovered = hit;
             if let Some(curr) = hit {
-                if let Some(WidgetKind::Button { hovered, .. }) =
-                    self.nodes.get_mut(curr).map(|n| &mut n.kind)
+                let dis = self.nodes.get(curr).is_some_and(WidgetNode::is_disabled);
+                if let Some(n) = self.nodes.get_mut(curr)
+                    && let WidgetKind::Button { hovered, .. } = &mut n.kind
                     && !*hovered
                 {
                     *hovered = true;
+                    n.dirty |= DirtyFlags::PAINT;
                     changed = true;
                 }
+                if !dis
+                    && let Some(ControlVisualAnim::Slider { hover_t, .. }) =
+                        self.control_anims.get_mut(curr)
+                {
+                    hover_t.set_target(1.0);
+                    if let Some(n) = self.nodes.get_mut(curr) {
+                        n.dirty |= DirtyFlags::PAINT;
+                    }
+                    changed = true;
+                }
+                self.sync_control_anim_target(curr);
                 if let Some(cb) = self.nodes.get(curr).and_then(|n| n.on_hover.clone())
                     && let Ok(mut f) = cb.try_borrow_mut()
                 {
@@ -3277,7 +4480,10 @@ impl WidgetTree {
             if self.inspector.enabled {
                 self.inspector.hovered_node = hit.map(|h| {
                     let name = self.nodes.get(h).map(|n| n.debug_name).unwrap_or("Node");
-                    (name.to_string(), self.layout_engine.rect(h))
+                    let xr = self
+                        .node_world_transform(h)
+                        .transform_rect_bounds(self.node_visual_rect(h));
+                    (name.to_string(), xr)
                 });
                 changed = true;
             } else if self
@@ -3289,10 +4495,12 @@ impl WidgetTree {
             }
         }
 
-        // Route raw pointer directly to captured Canvas or CustomWidget if applicable
+        // Route raw pointer (mapped into local widget coords) to captured Canvas or CustomWidget
         let target = self.gesture_arena.active_capture(pe.id).or(hit);
         if let Some(t) = target {
-            let rect = self.layout_engine.rect(t);
+            let rect = self.node_visual_rect(t);
+            let mut local_pe = *pe;
+            local_pe.position = self.screen_to_node_local_point(t, pe.position);
             let kind = self.nodes.get(t).map(|n| n.kind.clone());
             match kind {
                 Some(WidgetKind::Canvas {
@@ -3300,13 +4508,13 @@ impl WidgetTree {
                     ..
                 }) => {
                     if let Ok(mut func) = cb.try_borrow_mut() {
-                        func(rect, pe);
+                        func(rect, &local_pe);
                         changed = true;
                     }
                 }
                 Some(WidgetKind::Custom(cw)) => {
                     if let Ok(mut guard) = cw.try_borrow_mut()
-                        && guard.handle_event(rect, &UiEvent::Pointer(*pe))
+                        && guard.handle_event(rect, &UiEvent::Pointer(local_pe))
                     {
                         changed = true;
                     }
@@ -3315,21 +4523,58 @@ impl WidgetTree {
             }
         }
 
-        // Button pressed feedback
+        // Button / Slider press feedback
         if matches!(pe.phase, PointerPhase::Down)
             && let Some(h) = hit
-            && let Some(WidgetKind::Button { pressed, .. }) =
-                self.nodes.get_mut(h).map(|n| &mut n.kind)
+            && !self.nodes.get(h).is_some_and(WidgetNode::is_disabled)
         {
-            *pressed = true;
-            changed = true;
+            if let Some(n) = self.nodes.get_mut(h)
+                && let WidgetKind::Button { pressed, .. } = &mut n.kind
+            {
+                *pressed = true;
+                n.dirty |= DirtyFlags::PAINT;
+                changed = true;
+            }
+            if let Some(ControlVisualAnim::Slider {
+                dragging, drag_t, ..
+            }) = self.control_anims.get_mut(h)
+            {
+                *dragging = true;
+                drag_t.set_target(1.0);
+                if let Some(n) = self.nodes.get_mut(h) {
+                    n.dirty |= DirtyFlags::PAINT;
+                }
+                changed = true;
+            }
+            self.sync_control_anim_target(h);
         }
         if matches!(pe.phase, PointerPhase::Up | PointerPhase::Cancel) {
-            for (_, node) in &mut self.nodes {
+            let mut released = Vec::new();
+            for (nid, node) in &mut self.nodes {
                 if let WidgetKind::Button { pressed, .. } = &mut node.kind
                     && *pressed
                 {
                     *pressed = false;
+                    node.dirty |= DirtyFlags::PAINT;
+                    released.push(nid);
+                    changed = true;
+                }
+            }
+            for nid in released {
+                self.sync_control_anim_target(nid);
+            }
+            let slider_ids: Vec<NodeId> = self.control_anims.keys().collect();
+            for sid in slider_ids {
+                if let Some(ControlVisualAnim::Slider {
+                    dragging, drag_t, ..
+                }) = self.control_anims.get_mut(sid)
+                    && *dragging
+                {
+                    *dragging = false;
+                    drag_t.set_target(0.0);
+                    if let Some(n) = self.nodes.get_mut(sid) {
+                        n.dirty |= DirtyFlags::PAINT;
+                    }
                     changed = true;
                 }
             }
@@ -3341,7 +4586,7 @@ impl WidgetTree {
                 RecognizedGesture::Tap { node, position } => {
                     if !self.nodes.get(node).is_some_and(WidgetNode::is_disabled) {
                         self.focused = Some(node);
-                        self.activate_tap(node, position);
+                        self.activate_tap(node, position, true);
                         changed = true;
                     }
                 }
@@ -3394,12 +4639,18 @@ impl WidgetTree {
         changed
     }
 
-    fn activate_tap(&mut self, node_id: NodeId, pos: Point) {
+    fn activate_tap(&mut self, node_id: NodeId, pos: Point, is_screen_pos: bool) {
         let rect = self.node_visual_rect(node_id);
 
         if self.nodes.get(node_id).is_some_and(WidgetNode::is_disabled) {
             return;
         }
+
+        let (local_pos, screen_pos) = if is_screen_pos {
+            (self.screen_to_node_local_point(node_id, pos), pos)
+        } else {
+            (pos, self.node_world_transform(node_id).transform_point(pos))
+        };
 
         // Generic node on_tap handler
         let extra_tap = self.nodes.get(node_id).and_then(|n| n.on_tap.clone());
@@ -3424,7 +4675,10 @@ impl WidgetTree {
         };
         let select_drop_rect_opt = match self.nodes.get(node_id).map(|n| &n.kind) {
             Some(WidgetKind::Select { options, .. }) => {
-                Some(self.select_dropdown_rect(rect, options.get().len()))
+                let screen_tr = self
+                    .node_world_transform(node_id)
+                    .transform_rect_bounds(rect);
+                Some(self.select_dropdown_rect(screen_tr, options.get().len()))
             }
             _ => None,
         };
@@ -3446,6 +4700,7 @@ impl WidgetTree {
                 } => {
                     let next = !checked.get_untracked();
                     checked.set(next);
+                    node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                     if let Some(cb) = on_change.clone() {
                         bool_cb = Some((cb, next));
                     }
@@ -3459,9 +4714,10 @@ impl WidgetTree {
                 } => {
                     let track_x = rect.x + 8.0;
                     let track_w = (rect.width - 16.0).max(1.0);
-                    let t = ((pos.x - track_x) / track_w).clamp(0.0, 1.0);
+                    let t = ((local_pos.x - track_x) / track_w).clamp(0.0, 1.0);
                     let next = *min + (*max - *min) * t;
                     value.set(next);
+                    node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                     if let Some(cb) = on_change.clone() {
                         float_cb = Some((cb, next));
                     }
@@ -3475,8 +4731,8 @@ impl WidgetTree {
                     let pad_top = if *multiline { 10.0 } else { 8.0 };
                     let inner_w = (rect.width - 24.0).max(40.0);
                     let wrap = if *multiline { Some(inner_w) } else { None };
-                    let inner_x = pos.x - (rect.x + 12.0);
-                    let inner_y = pos.y - (rect.y + pad_top);
+                    let inner_x = local_pos.x - (rect.x + 12.0);
+                    let inner_y = local_pos.y - (rect.y + pad_top);
                     let layout =
                         self.text_engine
                             .build_layout_cached(&editor.display_text(), style, wrap);
@@ -3491,7 +4747,8 @@ impl WidgetTree {
                 } => {
                     let count = tabs.get().len();
                     if count > 0 && rect.width > 0.0 {
-                        let idx = (((pos.x - rect.x) / rect.width) * count as f32).floor() as isize;
+                        let idx =
+                            (((local_pos.x - rect.x) / rect.width) * count as f32).floor() as isize;
                         let next = (idx.clamp(0, (count - 1) as isize)) as usize;
                         active.set(next);
                         node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
@@ -3511,11 +4768,11 @@ impl WidgetTree {
                     let opts = options.get();
                     if *open {
                         if let Some(dr) = select_drop_rect_opt
-                            && dr.contains(pos)
+                            && dr.contains(screen_pos)
                             && !opts.is_empty()
                         {
-                            let row =
-                                ((pos.y - dr.y - 4.0 + *dropdown_scroll) / 34.0).floor() as isize;
+                            let row = ((screen_pos.y - dr.y - 4.0 + *dropdown_scroll) / 34.0)
+                                .floor() as isize;
                             let next = row.clamp(0, (opts.len() - 1) as isize) as usize;
                             selected.set(next);
                             *open = false;
@@ -3558,10 +4815,10 @@ impl WidgetTree {
                     let count = options.get().len();
                     if count > 0 {
                         let next = match axis {
-                            Axis::Vertical => (((pos.y - rect.y) / 30.0).floor() as isize)
+                            Axis::Vertical => (((local_pos.y - rect.y) / 30.0).floor() as isize)
                                 .clamp(0, (count - 1) as isize)
                                 as usize,
-                            Axis::Horizontal => (((pos.x - rect.x)
+                            Axis::Horizontal => (((local_pos.x - rect.x)
                                 / (rect.width.max(1.0) / count as f32))
                                 .floor() as isize)
                                 .clamp(0, (count - 1) as isize)
@@ -3582,10 +4839,10 @@ impl WidgetTree {
                 } => {
                     let count = items.get().len();
                     if let Some(mr) = popup_rect_opt
-                        && mr.contains(pos)
+                        && mr.contains(local_pos)
                         && count > 0
                     {
-                        let idx = (((pos.y - mr.y - 4.0) / 36.0).floor() as isize)
+                        let idx = (((local_pos.y - mr.y - 4.0) / 36.0).floor() as isize)
                             .clamp(0, (count - 1) as isize)
                             as usize;
                         if let Some(cb) = on_select.clone() {
@@ -3600,6 +4857,8 @@ impl WidgetTree {
                 _ => {}
             }
         }
+
+        self.sync_control_anim_target(node_id);
 
         if reset_caret {
             self.reset_caret_blink(craftui_core::monotonic_ms());
@@ -3632,6 +4891,18 @@ impl WidgetTree {
             let parent = self.nodes.get(nid).and_then(|n| n.parent);
             let r = self.node_visual_rect(nid);
             let layout_r = self.layout_engine.rect(nid);
+            let local_pos = self.screen_to_node_local_point(nid, pos);
+            let world_xf = self.node_world_transform(nid);
+            let local_delta = if world_xf.is_identity() {
+                delta
+            } else if let Some(inv) = world_xf.inverse() {
+                let [a, b, c, d, _, _] = inv.matrix;
+                Point::new(a * delta.x + c * delta.y, b * delta.x + d * delta.y)
+            } else {
+                delta
+            };
+            let mut slider_cb: Option<(FloatCallback, f32, f32)> = None;
+            let mut matched = false;
             if let Some(node) = self.nodes.get_mut(nid) {
                 match &mut node.kind {
                     WidgetKind::Slider {
@@ -3643,15 +4914,18 @@ impl WidgetTree {
                     } => {
                         let track_x = r.x + 8.0;
                         let track_w = (r.width - 16.0).max(1.0);
-                        let t = ((pos.x - track_x) / track_w).clamp(0.0, 1.0);
+                        let t = ((local_pos.x - track_x) / track_w).clamp(0.0, 1.0);
                         let next = *min + (*max - *min) * t;
                         value.set(next);
-                        if let Some(cb) = on_change.clone()
-                            && let Ok(mut f) = cb.try_borrow_mut()
-                        {
-                            f(next);
-                        }
-                        return;
+                        node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                        slider_cb = Some((
+                            on_change.clone().unwrap_or_else(|| {
+                                std::rc::Rc::new(std::cell::RefCell::new(|_| {}))
+                            }),
+                            t,
+                            next,
+                        ));
+                        matched = true;
                     }
                     WidgetKind::ScrollView {
                         axis,
@@ -3666,8 +4940,8 @@ impl WidgetTree {
                         };
                         let max_off = (*content_extent - view).max(0.0);
                         let d = match axis {
-                            Axis::Vertical => -delta.y,
-                            Axis::Horizontal => -delta.x,
+                            Axis::Vertical => -local_delta.y,
+                            Axis::Horizontal => -local_delta.x,
                         };
                         *offset = (*offset + d).clamp(0.0, max_off);
                         node.dirty |= DirtyFlags::PAINT;
@@ -3689,8 +4963,8 @@ impl WidgetTree {
                         let total_rows = item_count.get().div_ceil((*columns).max(1));
                         let max_off = (total_rows as f32 * *item_extent - view).max(0.0);
                         let d = match axis {
-                            Axis::Vertical => -delta.y,
-                            Axis::Horizontal => -delta.x,
+                            Axis::Vertical => -local_delta.y,
+                            Axis::Horizontal => -local_delta.x,
                         };
                         *offset = (*offset + d).clamp(0.0, max_off);
                         node.dirty |= DirtyFlags::LAYOUT | DirtyFlags::PAINT;
@@ -3699,11 +4973,40 @@ impl WidgetTree {
                     _ => {}
                 }
             }
+            if matched {
+                if let Some((cb, frac, next)) = slider_cb {
+                    if let Some(ControlVisualAnim::Slider {
+                        frac_t,
+                        dragging,
+                        drag_t,
+                        ..
+                    }) = self.control_anims.get_mut(nid)
+                    {
+                        *dragging = true;
+                        drag_t.set_target(1.0);
+                        frac_t.snap(frac);
+                    }
+                    if let Ok(mut f) = cb.try_borrow_mut() {
+                        f(next);
+                    }
+                }
+                return;
+            }
             cursor = parent;
         }
     }
 
     fn handle_drag_end(&mut self, node_id: NodeId, velocity: (f32, f32)) {
+        if let Some(ControlVisualAnim::Slider {
+            dragging, drag_t, ..
+        }) = self.control_anims.get_mut(node_id)
+        {
+            *dragging = false;
+            drag_t.set_target(0.0);
+            if let Some(n) = self.nodes.get_mut(node_id) {
+                n.dirty |= DirtyFlags::PAINT;
+            }
+        }
         let mut cursor = Some(node_id);
         while let Some(nid) = cursor {
             let parent = self.nodes.get(nid).and_then(|n| n.parent);
@@ -3747,7 +5050,8 @@ impl WidgetTree {
                     {
                         let count = options.get().len();
                         let tr = self.node_visual_rect(id);
-                        let dr = self.select_dropdown_rect(tr, count);
+                        let screen_tr = self.node_world_transform(id).transform_rect_bounds(tr);
+                        let dr = self.select_dropdown_rect(screen_tr, count);
                         if dr.contains(pos) {
                             return Some((dr, count));
                         }
@@ -4267,6 +5571,7 @@ impl WidgetTree {
                         KeyCode::ArrowRight | KeyCode::ArrowUp => {
                             let next = (value.get_untracked() + step).clamp(*min, *max);
                             value.set(next);
+                            node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                             if let Some(cb) = on_change.clone() {
                                 float_cb = Some((cb, next));
                             }
@@ -4274,6 +5579,7 @@ impl WidgetTree {
                         KeyCode::ArrowLeft | KeyCode::ArrowDown => {
                             let next = (value.get_untracked() - step).clamp(*min, *max);
                             value.set(next);
+                            node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                             if let Some(cb) = on_change.clone() {
                                 float_cb = Some((cb, next));
                             }
@@ -4284,6 +5590,8 @@ impl WidgetTree {
                 _ => {}
             }
         }
+
+        self.sync_control_anim_target(focused);
 
         if reset_caret {
             self.reset_caret_blink(craftui_core::monotonic_ms());
@@ -4296,7 +5604,7 @@ impl WidgetTree {
 
         if activated {
             let center = self.node_visual_rect(focused).center();
-            self.activate_tap(focused, center);
+            self.activate_tap(focused, center, false);
         }
 
         if let Some((cb, i)) = idx_cb
@@ -4437,7 +5745,7 @@ impl WidgetTree {
         match action {
             A11yAction::Click(id) => {
                 let c = self.node_visual_rect(id).center();
-                self.activate_tap(id, c);
+                self.activate_tap(id, c, false);
                 true
             }
             A11yAction::Focus(id) => {
@@ -4465,39 +5773,57 @@ impl WidgetTree {
                 false
             }
             A11yAction::SetNumericValue(id, v) => {
-                if let Some(n) = self.nodes.get_mut(id)
+                let ok = if let Some(n) = self.nodes.get_mut(id)
                     && let WidgetKind::Slider {
                         value, min, max, ..
                     } = &mut n.kind
                 {
                     value.set((v as f32).clamp(*min, *max));
-                    return true;
+                    n.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                    true
+                } else {
+                    false
+                };
+                if ok {
+                    self.sync_control_anim_target(id);
                 }
-                false
+                ok
             }
             A11yAction::Increment(id) => {
-                if let Some(n) = self.nodes.get_mut(id)
+                let ok = if let Some(n) = self.nodes.get_mut(id)
                     && let WidgetKind::Slider {
                         value, min, max, ..
                     } = &mut n.kind
                 {
                     let step = (*max - *min) * 0.05;
                     value.update(|v| *v = (*v + step).clamp(*min, *max));
-                    return true;
+                    n.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                    true
+                } else {
+                    false
+                };
+                if ok {
+                    self.sync_control_anim_target(id);
                 }
-                false
+                ok
             }
             A11yAction::Decrement(id) => {
-                if let Some(n) = self.nodes.get_mut(id)
+                let ok = if let Some(n) = self.nodes.get_mut(id)
                     && let WidgetKind::Slider {
                         value, min, max, ..
                     } = &mut n.kind
                 {
                     let step = (*max - *min) * 0.05;
                     value.update(|v| *v = (*v - step).clamp(*min, *max));
-                    return true;
+                    n.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                    true
+                } else {
+                    false
+                };
+                if ok {
+                    self.sync_control_anim_target(id);
                 }
-                false
+                ok
             }
             A11yAction::ScrollIntoView(_) => false,
         }

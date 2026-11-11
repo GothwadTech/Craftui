@@ -14,16 +14,16 @@
 - [x] **PERF-04 (Critical): Always-on 60fps idle spin loops** — Replaced with 530ms demand-driven caret blink timers, `ControlFlow::Wait`/`WaitUntil` on Desktop, dynamic `poll_events` timeouts on Android, on-demand `requestAnimationFrame` + `setTimeout` on Web, and `needs_redraw` + deduplicated `SyncText` on iOS.
 
 ### 2. "Lightweight" & Footprint Contradictions
-- [ ] **BLOAT-01 (Critical): Unconditional triple renderer bundling** — `craftui-render/Cargo.toml` pulls `vello` (+ `vello_shaders`), `vello_cpu`, `wgpu`, and `tiny-skia` unconditionally with zero feature flags.
-- [ ] **BLOAT-02 (High): `TinySkiaBackend` incomplete** — Silently drops `DrawText`, `DropShadow`, `PushClip`, `PushLayer`, and multi-stop gradients (`_ => {}`).
-- [ ] **BLOAT-03 (High): Compiler & AST interpreter shipped in every app** — `craftui/Cargo.toml` unconditionally depends on `craftui-dsl` (`logos` + `rowan`) and `craftui-runtime`, inflating release and WASM binaries.
+- [x] **BLOAT-01 (Critical): Unconditional triple renderer bundling** — Added strict Cargo feature flags in `craftui-render` (`gpu-sdf`, `gpu-vello`, `cpu-vello`, `cpu-tiny-skia`) and built the pure-WGSL instanced SDF + glyph-atlas + Kawase backdrop-blur renderer (`gpu_sdf_backend.rs` + `sdf_quad.wgsl`).
+- [x] **BLOAT-02 (High): `TinySkiaBackend` incomplete** — Completed `TinySkiaBackend` with glyph rasterization (`glyph_raster.rs`), `DrawText`, rounded/spread/inset `DropShadow`, `PushClip`, `PushLayer`, `BackdropBlur`, `Transform2D`, and multi-stop gradients.
+- [x] **BLOAT-03 (High): Compiler & AST interpreter shipped in every app** — Gated `craftui-dsl`, `craftui-runtime`, and `notify` behind `dsl` and `hot-reload` features across `craftui` and `craftui-platform-desktop`; verified `--no-default-features --features desktop,gpu-sdf` excludes `vello`, `craftui-dsl`, `craftui-runtime`, and `notify`.
 - [x] **BLOAT-04 (Critical): Zero bundled fallback font** — Embedded permissive 65 KB Bitstream `Vera.ttf` behind default `embedded-fallback-font` feature in `craftui-text` so WASM and minimal Linux always render text out of the box.
 
 ### 3. Visual Quality & "Beautiful UI" Gaps
-- [ ] **VIS-01 (High): Missing Transform2D stack** — `PaintCommand` lacks `PushTransform`/`PopTransform` (`translate`, `scale`, `rotate`, `skew`).
-- [ ] **VIS-02 (High): Missing Backdrop Blur (Glassmorphism) & Blend Modes** — No frosted-glass backdrop pass or blend modes.
-- [ ] **VIS-03 (Medium): Limited `DropShadow` & huge opacity layer bounds** — Shadow uses scalar radius instead of `CornerRadii`, lacks `spread` & `inset`, and GPU `PushLayer` passes `-1e5..1e5` dummy rect bounds; swapchain lacks explicit sRGB surface discipline.
-- [ ] **VIS-04 (Critical): No declarative widget/property animation system** — `.cui` has no `animate` syntax; hover/press/tabs/switch/modal/router snap instantaneously.
+- [x] **VIS-01 (High): Missing Transform2D stack** — Added `Transform2D` (`translate`, `scale`, `rotate`, `skew`, `around_pivot`) with `PushTransform`/`PopTransform` across `craftui-core`, `PaintScene`, `WidgetTree`, GPU (`gpu-sdf` / `vello`), and CPU backends.
+- [x] **VIS-02 (High): Missing Backdrop Blur (Glassmorphism) & Blend Modes** — Implemented `BackdropBlur` (Kawase dual-filter GPU pass in `gpu-sdf` + separable box blur in software backends) and `BlendMode` compositing across `BoxStyle`, `PaintScene`, GPU, and CPU renderers.
+- [x] **VIS-03 (Medium): Limited `DropShadow` & huge opacity layer bounds** — Upgraded `BoxShadow` with per-corner `CornerRadii`, `spread`, and `inset` shadows, computed tight subtree opacity layer bounds in `WidgetTree`, and configured explicit sRGB/non-sRGB WGSL blending discipline.
+- [ ] **VIS-04 (Critical): No declarative widget/property animation system** — *(Runtime & WidgetTree transition engine complete: `AnimatedFloat`, `AnimatedColor`, `TransitionCurve` spring/tween curves, spring hover/press/tabs/switch/modal/router transitions, and `CursorIcon` resolution; remaining for Phase 3: `.cui` `animate` syntax & `codegen`/`runtime`/`cui!` wiring).*
 - [x] **VIS-05 (Medium): Composable widget & control limits** — `Button` renders child subtrees when provided and draws a high-contrast dual focus ring visible in both dark and light themes.
 
 ### 4. Concrete Widget, DSL & Runtime Bugs

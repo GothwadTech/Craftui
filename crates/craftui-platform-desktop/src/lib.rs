@@ -9,10 +9,14 @@ use craftui_core::{
     PointerPhase, Result, ScrollDelta, Size, UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
 };
 use craftui_reactive::Scope;
-use craftui_render::{GpuSurfacePipeline, PaintScene, TextureRegistry, VelloCpuBackend};
+#[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
+use craftui_render::GpuSurfacePipeline;
+use craftui_render::{PaintScene, SoftwareRenderer, TextureRegistry};
+#[cfg(feature = "hot-reload")]
 use craftui_runtime::HotReloadSession;
 use craftui_text::TextEngine;
 use craftui_widgets::WidgetTree;
+#[cfg(feature = "hot-reload")]
 use notify::{Event as NotifyEvent, RecursiveMode, Watcher};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -362,6 +366,7 @@ pub fn default_desktop_services() -> PlatformServices {
 pub enum DesktopUserEvent {
     WakeUi,
     AccessKit(accesskit_winit::Event),
+    #[cfg(feature = "hot-reload")]
     FileChanged,
     OpenWindow(u64),
 }
@@ -451,12 +456,13 @@ where
         let _ = proxy_wake.send_event(DesktopUserEvent::WakeUi);
     });
 
-    let mut runner = DesktopRunner::new(config, proxy, dispatcher, Some(Box::new(build_ui)), None);
+    let mut runner = DesktopRunner::new(config, proxy, dispatcher, Some(Box::new(build_ui)));
     event_loop
         .run_app(&mut runner)
         .map_err(|e| CraftError::Platform(format!("event loop exited with error: {e}")))
 }
 
+#[cfg(feature = "hot-reload")]
 struct HotReloadSpec {
     path: PathBuf,
     component: Option<String>,
@@ -467,6 +473,7 @@ struct HotReloadSpec {
 /// Determine whether a `notify` filesystem event should trigger `.cui` hot-reload.
 ///
 /// Ignores read/open `Access` events emitted when CraftUI reads `.cui` files on Linux `inotify`.
+#[cfg(feature = "hot-reload")]
 pub fn should_trigger_hot_reload(event: &NotifyEvent) -> bool {
     let is_mutation = matches!(
         event.kind,
@@ -483,6 +490,7 @@ pub fn should_trigger_hot_reload(event: &NotifyEvent) -> bool {
 }
 
 /// Run a live hot-reloading `.cui` preview window using `notify` + `craftui-runtime` (with full multi-file import support).
+#[cfg(feature = "hot-reload")]
 pub fn run_hot_reload_cui(
     config: WindowConfig,
     cui_path: PathBuf,
@@ -536,8 +544,8 @@ pub fn run_hot_reload_cui(
         root_scope,
         tree,
         None,
-        Some(spec),
     );
+    runner.set_primary_hot_reload(spec);
     event_loop
         .run_app(&mut runner)
         .map_err(|e| CraftError::Platform(format!("event loop exited with error: {e}")))
@@ -548,12 +556,13 @@ struct InitialWindowSetup {
     root_scope: Scope,
     tree: WidgetTree,
     builder: Option<BuildUiFn>,
+    #[cfg(feature = "hot-reload")]
     hot_reload: Option<HotReloadSpec>,
 }
 
 struct SoftbufferPresenter {
     surface: softbuffer::Surface<OwnedDisplayHandle, Arc<Window>>,
-    cpu: VelloCpuBackend,
+    cpu: SoftwareRenderer,
     width: u32,
     height: u32,
 }
@@ -576,7 +585,7 @@ impl SoftbufferPresenter {
         }
         Ok(Self {
             surface,
-            cpu: VelloCpuBackend::new(w, h),
+            cpu: SoftwareRenderer::new(w, h),
             width: w,
             height: h,
         })
@@ -636,6 +645,7 @@ pub fn pack_rgba8_to_softbuffer_0rgb(rgba: &[u8], dst: &mut [u32]) {
 }
 
 enum DesktopPresenter {
+    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     Wgpu(Box<GpuSurfacePipeline>),
     Softbuffer(Box<SoftbufferPresenter>),
 }
@@ -643,6 +653,7 @@ enum DesktopPresenter {
 impl DesktopPresenter {
     fn resize(&mut self, width: u32, height: u32) {
         match self {
+            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
             Self::Wgpu(gpu) => gpu.resize(width, height),
             Self::Softbuffer(sb) => sb.resize(width, height),
         }
@@ -657,6 +668,7 @@ impl DesktopPresenter {
         text_engine: &mut TextEngine,
     ) -> Result<()> {
         match self {
+            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
             Self::Wgpu(gpu) => {
                 gpu.render_frame(paint_scene, scale_factor, background, textures, text_engine)
             }
@@ -668,9 +680,9 @@ impl DesktopPresenter {
 
     fn label(&self) -> &'static str {
         match self {
-            Self::Wgpu(gpu) if gpu.is_using_gpu() => "wgpu Vello GPU",
-            Self::Wgpu(_) => "wgpu + vello_cpu upload",
-            Self::Softbuffer(_) => "softbuffer + vello_cpu (pure CPU)",
+            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
+            Self::Wgpu(gpu) => gpu.active_backend_name(),
+            Self::Softbuffer(_) => "softbuffer (CPU)",
         }
     }
 }
@@ -685,6 +697,7 @@ struct DesktopWindowState {
     a11y: Option<AccessKitAdapter>,
     a11y_active: bool,
     presenter: Option<DesktopPresenter>,
+    #[cfg(feature = "hot-reload")]
     hot_reload: Option<HotReloadSpec>,
     cursor_pos: Point,
     modifiers: Modifiers,
@@ -709,15 +722,12 @@ impl DesktopRunner {
         proxy: EventLoopProxy<DesktopUserEvent>,
         dispatcher: UiDispatcher,
         builder: Option<BuildUiFn>,
-        hot_reload: Option<HotReloadSpec>,
     ) -> Self {
         let root_scope = Scope::root();
         let mut tree = WidgetTree::new(root_scope);
         let services = default_desktop_services();
         tree.set_platform_services(services.clone());
-        Self::new_with_tree(
-            config, proxy, dispatcher, root_scope, tree, builder, hot_reload,
-        )
+        Self::new_with_tree(config, proxy, dispatcher, root_scope, tree, builder)
     }
 
     fn new_with_tree(
@@ -727,7 +737,6 @@ impl DesktopRunner {
         root_scope: Scope,
         mut tree: WidgetTree,
         builder: Option<BuildUiFn>,
-        hot_reload: Option<HotReloadSpec>,
     ) -> Self {
         let services = default_desktop_services();
         tree.set_platform_services(services.clone());
@@ -746,11 +755,19 @@ impl DesktopRunner {
                 root_scope,
                 tree,
                 builder,
-                hot_reload,
+                #[cfg(feature = "hot-reload")]
+                hot_reload: None,
             }),
             windows: HashMap::new(),
             start_instant: Instant::now(),
             last_frame_instant: Instant::now(),
+        }
+    }
+
+    #[cfg(feature = "hot-reload")]
+    fn set_primary_hot_reload(&mut self, spec: HotReloadSpec) {
+        if let Some(init) = self.pending_primary.as_mut() {
+            init.hot_reload = Some(spec);
         }
     }
 
@@ -789,6 +806,7 @@ impl DesktopRunner {
             root_scope,
             mut tree,
             builder,
+            #[cfg(feature = "hot-reload")]
             hot_reload,
         } = setup;
         let attrs = WindowAttributes::default()
@@ -835,7 +853,8 @@ impl DesktopRunner {
         let force_cpu = config.force_cpu
             || std::env::var("CRAFTUI_FORCE_CPU")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+                .unwrap_or(false)
+            || !cfg!(any(feature = "gpu-sdf", feature = "gpu-vello"));
 
         let display_handle = event_loop.owned_display_handle();
         let presenter = if force_cpu {
@@ -847,57 +866,75 @@ impl DesktopRunner {
             ) {
                 Ok(sb) => Some(DesktopPresenter::Softbuffer(Box::new(sb))),
                 Err(sb_err) => {
-                    tracing::warn!("Softbuffer init failed ({sb_err}); trying wgpu CPU fallback");
-                    match GpuSurfacePipeline::new_with_display(
-                        || Arc::clone(&window),
-                        || Box::new(display_handle.clone()),
-                        init_w,
-                        init_h,
-                        true,
-                    ) {
-                        Ok(gpu) => Some(DesktopPresenter::Wgpu(Box::new(gpu))),
-                        Err(gpu_err) => {
-                            eprintln!(
-                                "[craftui] window '{}' failed to initialize any CPU presenter (softbuffer: {sb_err}; wgpu: {gpu_err})",
-                                config.title
-                            );
-                            None
+                    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
+                    {
+                        tracing::warn!("Softbuffer init failed ({sb_err}); trying wgpu CPU fallback");
+                        match GpuSurfacePipeline::new_with_display(
+                            || Arc::clone(&window),
+                            || Box::new(display_handle.clone()),
+                            init_w,
+                            init_h,
+                            true,
+                        ) {
+                            Ok(gpu) => Some(DesktopPresenter::Wgpu(Box::new(gpu))),
+                            Err(gpu_err) => {
+                                eprintln!(
+                                    "[craftui] window '{}' failed to initialize any CPU presenter (softbuffer: {sb_err}; wgpu: {gpu_err})",
+                                    config.title
+                                );
+                                None
+                            }
                         }
+                    }
+                    #[cfg(not(any(feature = "gpu-sdf", feature = "gpu-vello")))]
+                    {
+                        eprintln!(
+                            "[craftui] window '{}' failed to initialize softbuffer CPU presenter: {sb_err}",
+                            config.title
+                        );
+                        None
                     }
                 }
             }
         } else {
-            match GpuSurfacePipeline::new_with_display(
-                || Arc::clone(&window),
-                || Box::new(display_handle.clone()),
-                init_w,
-                init_h,
-                false,
-            ) {
-                Ok(gpu) => Some(DesktopPresenter::Wgpu(Box::new(gpu))),
-                Err(gpu_err) => {
-                    tracing::warn!(
-                        "GpuSurfacePipeline initialization failed ({gpu_err}); falling back to softbuffer CPU presenter"
-                    );
-                    eprintln!(
-                        "[craftui] GPU presenter unavailable ({gpu_err}); falling back to CPU softbuffer"
-                    );
-                    match self.create_softbuffer_presenter(
-                        display_handle,
-                        Arc::clone(&window),
-                        init_w,
-                        init_h,
-                    ) {
-                        Ok(sb) => Some(DesktopPresenter::Softbuffer(Box::new(sb))),
-                        Err(sb_err) => {
-                            eprintln!(
-                                "[craftui] window '{}' failed to initialize softbuffer fallback: {sb_err}",
-                                config.title
-                            );
-                            None
+            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
+            {
+                match GpuSurfacePipeline::new_with_display(
+                    || Arc::clone(&window),
+                    || Box::new(display_handle.clone()),
+                    init_w,
+                    init_h,
+                    false,
+                ) {
+                    Ok(gpu) => Some(DesktopPresenter::Wgpu(Box::new(gpu))),
+                    Err(gpu_err) => {
+                        tracing::warn!(
+                            "GpuSurfacePipeline initialization failed ({gpu_err}); falling back to softbuffer CPU presenter"
+                        );
+                        eprintln!(
+                            "[craftui] GPU presenter unavailable ({gpu_err}); falling back to CPU softbuffer"
+                        );
+                        match self.create_softbuffer_presenter(
+                            display_handle,
+                            Arc::clone(&window),
+                            init_w,
+                            init_h,
+                        ) {
+                            Ok(sb) => Some(DesktopPresenter::Softbuffer(Box::new(sb))),
+                            Err(sb_err) => {
+                                eprintln!(
+                                    "[craftui] window '{}' failed to initialize softbuffer fallback: {sb_err}",
+                                    config.title
+                                );
+                                None
+                            }
                         }
                     }
                 }
+            }
+            #[cfg(not(any(feature = "gpu-sdf", feature = "gpu-vello")))]
+            {
+                unreachable!("force_cpu is always true when GPU backends are disabled")
             }
         };
 
@@ -937,6 +974,7 @@ impl DesktopRunner {
                 a11y: Some(a11y),
                 a11y_active: false,
                 presenter,
+                #[cfg(feature = "hot-reload")]
                 hot_reload,
                 cursor_pos: Point::ZERO,
                 modifiers: Modifiers::default(),
@@ -962,11 +1000,12 @@ impl DesktopRunner {
 
         let frame_start = Instant::now();
         let _ = state.tree.tick_blink_timers(monotonic_ms());
-        let animating = state.tree.tick_animations(dt);
+        let anim_tick = state.tree.tick_animations(dt);
 
         let layout_start = Instant::now();
         let dirty_count = state.tree.layout(state.tree.metrics);
         let layout_ms = layout_start.elapsed().as_secs_f32() * 1000.0;
+        let animating = anim_tick || state.tree.has_active_animations();
 
         state.tree.paint(&mut state.scene);
 
@@ -1011,6 +1050,7 @@ impl DesktopRunner {
         }
     }
 
+    #[cfg(feature = "hot-reload")]
     fn reload_cui_from_disk(&mut self) {
         for state in self.windows.values_mut() {
             let Some(spec) = state.hot_reload.as_mut() else {
@@ -1076,6 +1116,7 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
                     }
                 }
             }
+            #[cfg(feature = "hot-reload")]
             DesktopUserEvent::FileChanged => {
                 self.reload_cui_from_disk();
             }
@@ -1091,6 +1132,7 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
                             root_scope: child_scope,
                             tree: child_tree,
                             builder: Some(req.builder),
+                            #[cfg(feature = "hot-reload")]
                             hot_reload: None,
                         },
                         false,
@@ -1395,7 +1437,11 @@ mod tests {
         let mut packed = [0u32; 2];
         pack_rgba8_to_softbuffer_0rgb(&rgba, &mut packed);
         assert_eq!(packed, [0x0012_3456, 0x00AB_CDEF]);
+    }
 
+    #[cfg(feature = "hot-reload")]
+    #[test]
+    fn filters_hot_reload_notify_events_to_cui_mutations() {
         let access_ev = NotifyEvent::new(notify::EventKind::Access(
             notify::event::AccessKind::Open(notify::event::AccessMode::Read),
         ))

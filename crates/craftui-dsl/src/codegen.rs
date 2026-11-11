@@ -1122,14 +1122,14 @@ fn emit_common_props_and_events(
             }
             "shadow" => match &p.value {
                 Expr::Bool(true) => box_stmts.push(
-                    "bs.shadow = Some(BoxShadow { offset_x: 0.0, offset_y: 4.0, blur_radius: 12.0, color: Color::rgba(0, 0, 0, 80) });"
+                    "bs.shadow = Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80)));"
                         .into(),
                 ),
                 Expr::Bool(false) => box_stmts.push("bs.shadow = None;".into()),
                 other => {
                     let blur = expr_to_f32(other, ctx);
                     box_stmts.push(format!(
-                        "bs.shadow = Some(BoxShadow {{ offset_x: 0.0, offset_y: 4.0, blur_radius: {blur}, color: Color::rgba(0, 0, 0, 80) }});"
+                        "bs.shadow = Some(BoxShadow::new(0.0, 4.0, {blur}, Color::rgba(0, 0, 0, 80)));"
                     ));
                 }
             },

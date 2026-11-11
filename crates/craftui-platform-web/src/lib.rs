@@ -297,10 +297,11 @@ impl WebAppHost {
         let timers = craftui_reactive::tick_timers_at(now_ms);
         let jobs = self.dispatcher.drain();
         let blink = self.tree.tick_blink_timers(now_ms);
-        let anim = self.tree.tick_animations(dt_sec);
+        let anim_tick = self.tree.tick_animations(dt_sec);
         let dirty = self.tree.layout(self.tree.metrics);
+        let anim = anim_tick || self.tree.has_active_animations();
         let should_paint =
-            self.needs_redraw || timers > 0 || jobs > 0 || blink || anim || dirty > 0;
+            self.needs_redraw || timers > 0 || jobs > 0 || blink || anim_tick || dirty > 0;
         if should_paint {
             self.tree.paint(&mut self.scene);
             self.needs_redraw = false;
@@ -319,7 +320,7 @@ impl WebAppHost {
         let bg = self.tree.theme().background;
         let sf = self.tree.metrics.scale_factor;
         let rgba = render_scene_to_rgba(
-            BackendKind::VelloCpu,
+            BackendKind::Auto,
             &self.scene,
             pw,
             ph,
@@ -518,6 +519,7 @@ pub fn dom_composition_to_ime(phase_end: bool, data: String) -> UiEvent {
 pub mod wasm_runner {
     use super::*;
     use craftui_core::{NodeId, set_monotonic_ms_provider};
+    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     use craftui_render::GpuSurfacePipeline;
     use std::cell::{Cell, RefCell};
     use std::rc::{Rc, Weak};
@@ -543,6 +545,7 @@ pub mod wasm_runner {
 
     enum WebRenderBackend {
         Pending,
+        #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
         Gpu(GpuSurfacePipeline),
         Canvas2d(CanvasRenderingContext2d),
     }
@@ -741,48 +744,50 @@ pub mod wasm_runner {
 
         let backend_slot: Rc<RefCell<WebRenderBackend>> =
             Rc::new(RefCell::new(WebRenderBackend::Pending));
-        if config.force_2d_fallback {
+        let force_2d = config.force_2d_fallback || !cfg!(any(feature = "gpu-sdf", feature = "gpu-vello"));
+        if force_2d {
             if let Some(c2d) = obtain_2d_context(&canvas_slot, &host_rc, &scheduler) {
                 *backend_slot.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
             }
         } else {
-            let backend_async = backend_slot.clone();
-            let canvas_async = canvas_slot.clone();
-            let host_async = host_rc.clone();
-            let sched_async = scheduler.clone();
-            let canvas_for_wgpu = canvas.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match GpuSurfacePipeline::new_async(
-                    wgpu::SurfaceTarget::Canvas(canvas_for_wgpu),
-                    pw,
-                    ph,
-                    false,
-                )
-                .await
-                {
-                    Ok(gpu) => {
-                        tracing::info!(
-                            "CraftUI Web renderer initialized ({})",
-                            if gpu.is_using_gpu() {
-                                "WebGPU/Vello GPU"
-                            } else {
-                                "WebGL2/CPUFallback"
+            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
+            {
+                let backend_async = backend_slot.clone();
+                let canvas_async = canvas_slot.clone();
+                let host_async = host_rc.clone();
+                let sched_async = scheduler.clone();
+                let canvas_for_wgpu = canvas.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match GpuSurfacePipeline::new_async(
+                        wgpu::SurfaceTarget::Canvas(canvas_for_wgpu),
+                        pw,
+                        ph,
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(gpu) => {
+                            tracing::info!(
+                                "CraftUI Web renderer initialized ({})",
+                                gpu.active_backend_name()
+                            );
+                            *backend_async.borrow_mut() = WebRenderBackend::Gpu(gpu);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "WebGPU/WebGL2 async init failed ({err}); falling back to 2D canvas"
+                            );
+                            if let Some(c2d) =
+                                obtain_2d_context(&canvas_async, &host_async, &sched_async)
+                            {
+                                *backend_async.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
                             }
-                        );
-                        *backend_async.borrow_mut() = WebRenderBackend::Gpu(gpu);
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            "WebGPU/WebGL2 async init failed ({err}); falling back to 2D canvas"
-                        );
-                        if let Some(c2d) = obtain_2d_context(&canvas_async, &host_async, &sched_async) {
-                            *backend_async.borrow_mut() = WebRenderBackend::Canvas2d(c2d);
                         }
                     }
-                }
-                host_async.borrow_mut().request_redraw();
-                sched_async.request_frame();
-            });
+                    host_async.borrow_mut().request_redraw();
+                    sched_async.request_frame();
+                });
+            }
         }
 
         {
@@ -851,6 +856,7 @@ pub mod wasm_runner {
             if did_paint {
                 match &mut *backend_slot.borrow_mut() {
                     WebRenderBackend::Pending => {}
+                    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
                     WebRenderBackend::Gpu(gpu) => {
                         gpu.resize(pw, ph);
                         let bg = h.tree.theme().background;

@@ -4,7 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Hybrid GPU (vello/wgpu) and CPU (vello_cpu/tiny-skia) vector renderer with zero-copy pixel buffers"
+description = "Hybrid GPU (gpu-sdf / vello) and CPU (vello_cpu / tiny-skia) 2D vector renderer with strict feature gating"
+
+[features]
+default = ["gpu-sdf", "gpu-vello", "cpu-vello", "cpu-tiny-skia"]
+gpu-sdf = ["dep:wgpu", "dep:skrifa", "dep:ab_glyph_rasterizer", "dep:guillotiere"]
+gpu-vello = ["dep:vello", "dep:wgpu"]
+cpu-vello = ["dep:vello_cpu", "dep:skrifa", "dep:ab_glyph_rasterizer"]
+cpu-tiny-skia = ["dep:tiny-skia", "dep:skrifa", "dep:ab_glyph_rasterizer"]
 
 [lints]
 workspace = true
@@ -18,11 +25,18 @@ parley.workspace = true
 peniko.workspace = true
 png.workspace = true
 slotmap.workspace = true
-tiny-skia.workspace = true
 tracing.workspace = true
-vello.workspace = true
-vello_cpu.workspace = true
-wgpu.workspace = true
+
+ab_glyph_rasterizer = { workspace = true, optional = true }
+guillotiere = { workspace = true, optional = true }
+skrifa = { workspace = true, optional = true }
+tiny-skia = { workspace = true, optional = true }
+vello = { workspace = true, optional = true }
+vello_cpu = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
+
+[dev-dependencies]
+craftui-text = { path = "../craftui-text", features = ["embedded-fallback-font"] }

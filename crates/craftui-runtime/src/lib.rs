@@ -1015,12 +1015,7 @@ fn apply_common_props_and_events(
     if let Some(v) = eval_prop("shadow") {
         match v {
             DynValue::Bool(true) => {
-                box_style.shadow = Some(BoxShadow {
-                    offset_x: 0.0,
-                    offset_y: 4.0,
-                    blur_radius: 12.0,
-                    color: Color::rgba(0, 0, 0, 80),
-                });
+                box_style.shadow = Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80)));
                 box_dirty = true;
             }
             DynValue::Bool(false) => {
@@ -1030,12 +1025,12 @@ fn apply_common_props_and_events(
             other => {
                 let blur = other.as_f32();
                 if blur > 0.0 {
-                    box_style.shadow = Some(BoxShadow {
-                        offset_x: 0.0,
-                        offset_y: 4.0,
-                        blur_radius: blur,
-                        color: Color::rgba(0, 0, 0, 80),
-                    });
+                    box_style.shadow = Some(BoxShadow::new(
+                        0.0,
+                        4.0,
+                        blur,
+                        Color::rgba(0, 0, 0, 80),
+                    ));
                     box_dirty = true;
                 }
             }

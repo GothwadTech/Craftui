@@ -1,7 +1,7 @@
 use craftui_a11y::A11yMetadata;
 use craftui_core::{
-    Axis, Border, BoxShadow, Brush, Color, CornerRadii, Fit, PlatformViewId, Point, Rect, Size,
-    TextureId, ThemeTokens, UiEvent,
+    Axis, BlendMode, Border, BoxShadow, Brush, Color, CornerRadii, CursorIcon, Fit, PlatformViewId,
+    Point, Rect, Size, TextureId, ThemeTokens, Transform2D, UiEvent,
 };
 use craftui_reactive::{Computed, ReadSignal, Signal};
 use craftui_render::PaintScene;
@@ -75,24 +75,74 @@ where
 }
 
 /// Visual box decoration shared by containers, buttons, cards, and inputs.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct BoxStyle {
     pub background: Option<ReactiveValue<Brush>>,
     pub border: Option<Border>,
     pub border_color: Option<ReactiveValue<Color>>,
     pub shadow: Option<BoxShadow>,
+    pub shadows: Vec<BoxShadow>,
+    pub backdrop_blur: f32,
+    pub backdrop_tint: Color,
+    pub transform: Transform2D,
+    pub blend_mode: BlendMode,
+    pub cursor: Option<CursorIcon>,
     pub radius: CornerRadii,
     pub opacity: f32,
     pub clip: bool,
     pub hit_slop: f32,
 }
 
+impl Default for BoxStyle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BoxStyle {
     pub fn new() -> Self {
         Self {
+            background: None,
+            border: None,
+            border_color: None,
+            shadow: None,
+            shadows: Vec::new(),
+            backdrop_blur: 0.0,
+            backdrop_tint: Color::TRANSPARENT,
+            transform: Transform2D::IDENTITY,
+            blend_mode: BlendMode::Normal,
+            cursor: None,
+            radius: CornerRadii::ZERO,
             opacity: 1.0,
-            ..Default::default()
+            clip: false,
+            hit_slop: 0.0,
         }
+    }
+
+    pub fn with_shadow(mut self, shadow: BoxShadow) -> Self {
+        self.shadows.push(shadow);
+        self
+    }
+
+    pub fn with_backdrop_blur(mut self, blur_radius: f32, tint: Color) -> Self {
+        self.backdrop_blur = blur_radius.max(0.0);
+        self.backdrop_tint = tint;
+        self
+    }
+
+    pub fn with_transform(mut self, transform: Transform2D) -> Self {
+        self.transform = transform;
+        self
+    }
+
+    pub fn with_blend_mode(mut self, blend_mode: BlendMode) -> Self {
+        self.blend_mode = blend_mode;
+        self
+    }
+
+    pub fn with_cursor(mut self, cursor: CursorIcon) -> Self {
+        self.cursor = Some(cursor);
+        self
     }
 }
 

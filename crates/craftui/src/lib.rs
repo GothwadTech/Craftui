@@ -8,11 +8,13 @@ extern crate self as craftui;
 
 pub use craftui_a11y as a11y;
 pub use craftui_core as core;
+#[cfg(feature = "dsl")]
 pub use craftui_dsl as dsl;
 pub use craftui_layout as layout;
 pub use craftui_macros::{component, cui};
 pub use craftui_reactive as reactive;
 pub use craftui_render as render;
+#[cfg(feature = "hot-reload")]
 pub use craftui_runtime as runtime;
 pub use craftui_text as text;
 pub use craftui_widgets as widgets;
@@ -89,12 +91,12 @@ pub mod prelude {
     pub use crate::{auto, dp, pct, px};
     pub use craftui_a11y::{A11yMetadata, A11yRole};
     pub use craftui_core::{
-        Alignment, Axis, Border, BoxShadow, Breakpoint, Brush, ClipboardBackend, Color,
-        Constraints, CornerRadii, Direction, DirtyFlags, FileDialogBackend, FileDialogRequest,
-        FileFilter, Fit, ImeEvent, Insets, Justify, KeyCode, KeyEvent, Length, Modifiers, NodeId,
-        PlatformServices, PlatformViewId, Point, PointerButton, PointerEvent, PointerId,
-        PointerPhase, Rect, ScrollDelta, Size, TextureId, ThemeMode, ThemeOverride, ThemeTokens,
-        UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
+        Alignment, Axis, BlendMode, Border, BoxShadow, Breakpoint, Brush, ClipboardBackend, Color,
+        Constraints, CornerRadii, CursorIcon, Direction, DirtyFlags, FileDialogBackend,
+        FileDialogRequest, FileFilter, Fit, ImeEvent, Insets, Justify, KeyCode, KeyEvent, Length,
+        Modifiers, NodeId, PlatformServices, PlatformViewId, Point, PointerButton, PointerEvent,
+        PointerId, PointerPhase, Rect, ScrollDelta, Size, TextureId, ThemeMode, ThemeOverride,
+        ThemeTokens, Transform2D, UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
     };
     pub use craftui_layout::{LayoutMode, LayoutStyle};
     pub use craftui_macros::{component, cui};
@@ -108,17 +110,19 @@ pub mod prelude {
     };
     pub use craftui_text::{TextAlign, TextEditorState, TextStyle};
     pub use craftui_widgets::{
-        BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CustomWidget, Easing,
-        FloatCallback, GestureArena, HoverCallback, IndexCallback, InspectorState,
-        PinchRotateCallback, ReactiveValue, RecognizedGesture, Router, ScrollPhysics, Spring,
-        TapHandler, TextCallback, Tween, View, ViewFn, VirtualItemFactory, WidgetKind, WidgetTree,
+        AnimatableProp, AnimatedColor, AnimatedFloat, BoolCallback, BoxStyle, CanvasPaintFn,
+        CanvasPointerFn, CustomWidget, Easing, FloatCallback, GestureArena, HoverCallback,
+        IndexCallback, InspectorState, PinchRotateCallback, ReactiveValue, RecognizedGesture,
+        Router, RouterTransition, ScrollPhysics, Spring, TapHandler, TextCallback,
+        TransitionCurve, Tween, View, ViewFn, VirtualItemFactory, WidgetKind, WidgetTree,
     };
 
     #[cfg(feature = "desktop")]
     pub use craftui_platform_desktop::{
         AppContext, DesktopClipboard, DesktopFileDialog, WindowConfig, WindowLauncher, run_app,
-        run_hot_reload_cui,
     };
+    #[cfg(all(feature = "desktop", feature = "hot-reload"))]
+    pub use craftui_platform_desktop::run_hot_reload_cui;
 }
 
 #[cfg(test)]
@@ -199,7 +203,7 @@ mod tests {
 
         let textures = TextureRegistry::new();
         let dark_rgba = render_scene_to_rgba(
-            BackendKind::VelloCpu,
+            BackendKind::Auto,
             &scene,
             480,
             640,
@@ -223,7 +227,7 @@ mod tests {
         let mut light_scene = PaintScene::new();
         tree.paint(&mut light_scene);
         let light_rgba = render_scene_to_rgba(
-            BackendKind::VelloCpu,
+            BackendKind::Auto,
             &light_scene,
             480,
             640,

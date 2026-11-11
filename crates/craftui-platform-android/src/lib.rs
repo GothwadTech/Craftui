@@ -292,10 +292,11 @@ impl AndroidHost {
         let timers = craftui_reactive::tick_timers();
         let jobs = self.dispatcher.drain();
         let blink = self.tree.tick_blink_timers(now_ms);
-        let animating = self.tree.tick_animations(dt_sec);
+        let anim_tick = self.tree.tick_animations(dt_sec);
         let dirty = self.tree.layout(self.tree.metrics);
+        let animating = anim_tick || self.tree.has_active_animations();
         let should_paint =
-            self.needs_redraw || timers > 0 || jobs > 0 || blink || animating || dirty > 0;
+            self.needs_redraw || timers > 0 || jobs > 0 || blink || anim_tick || dirty > 0;
         if should_paint {
             self.tree.paint(&mut self.scene);
             self.needs_redraw = false;
@@ -353,18 +354,23 @@ pub mod android_runtime {
     };
     use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
     use craftui_core::NodeId;
+    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     use craftui_render::GpuSurfacePipeline;
+    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     use raw_window_handle::{
         AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle,
     };
+    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     use std::ptr::NonNull;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
+    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     struct AndroidSurfaceTarget {
         window: RawWindowHandle,
         display: RawDisplayHandle,
     }
 
+    #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     impl AndroidSurfaceTarget {
         fn new(ptr: NonNull<std::ffi::c_void>) -> Self {
             Self {
@@ -454,6 +460,7 @@ pub mod android_runtime {
         let root = build_ui(host.scope, &mut host.tree, &mut host.textures, &dispatcher);
         host.tree.set_root(root);
 
+        #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
         let mut gpu: Option<GpuSurfacePipeline> = None;
         let mut last_tick = Instant::now();
         let start = Instant::now();
@@ -461,7 +468,11 @@ pub mod android_runtime {
         let mut animating = false;
 
         while running {
-            let timeout = host.next_poll_timeout(animating, gpu.is_some());
+            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
+            let has_gpu = gpu.is_some();
+            #[cfg(not(any(feature = "gpu-sdf", feature = "gpu-vello")))]
+            let has_gpu = false;
+            let timeout = host.next_poll_timeout(animating, has_gpu);
             app.poll_events(timeout, |event| match event {
                 PollEvent::Wake | PollEvent::Timeout => {
                     host.request_redraw();
@@ -477,6 +488,7 @@ pub mod android_runtime {
                                 scale_factor: density,
                             });
                             host.request_redraw();
+                            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
                             if let Some(nn) = NonNull::new(nw.ptr().as_ptr().cast()) {
                                 let tgt = AndroidSurfaceTarget::new(nn);
                                 let raw_target = wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -492,12 +504,16 @@ pub mod android_runtime {
                         }
                     }
                     MainEvent::TerminateWindow { .. } => {
-                        gpu = None;
+                        #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
+                        {
+                            gpu = None;
+                        }
                     }
                     MainEvent::WindowResized { .. } | MainEvent::ContentRectChanged { .. } => {
                         if let Some(nw) = app.native_window() {
                             let w = nw.width().max(1) as u32;
                             let h = nw.height().max(1) as u32;
+                            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
                             if let Some(g) = gpu.as_mut() {
                                 g.resize(w, h);
                             }
@@ -609,6 +625,7 @@ pub mod android_runtime {
                     }
                 }
             }
+            #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
             if did_paint && let Some(g) = gpu.as_mut() {
                 let bg = host.tree.theme().background;
                 let _ = g.render_frame(
@@ -757,9 +774,19 @@ mod tests {
         ));
         assert_eq!(tab_idx.get(), 1);
 
-        // Demand-driven idle check: once painted and non-animating, poll timeout blocks (`None`)
-        let (anim_idle, painted_now, _) = host.step_frame_with_redraw(0.016);
-        assert!(!anim_idle && painted_now);
+        // Spring animations run on tab switch & overlay close, then settle to demand-driven idle (`None`)
+        let (anim_active, painted_now, _) = host.step_frame_with_redraw(0.016);
+        assert!(anim_active && painted_now);
+        assert!(host.next_poll_timeout(anim_active, true).is_some());
+
+        for _ in 0..240 {
+            let (still_anim, _, _) = host.step_frame_with_redraw(0.016);
+            if !still_anim {
+                break;
+            }
+        }
+        let (anim_idle, painted_idle, _) = host.step_frame_with_redraw(0.016);
+        assert!(!anim_idle && !painted_idle);
         assert_eq!(host.next_poll_timeout(false, true), None);
 
         // External SurfaceTexture upload + PlatformViewHole emitted in scene

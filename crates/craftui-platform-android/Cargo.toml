@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["gpu-sdf", "gpu-vello", "cpu-vello", "cpu-tiny-skia"]
+gpu-sdf = ["craftui-render/gpu-sdf", "dep:wgpu", "dep:pollster"]
+gpu-vello = ["craftui-render/gpu-vello", "dep:wgpu", "dep:pollster"]
+cpu-vello = ["craftui-render/cpu-vello"]
+cpu-tiny-skia = ["craftui-render/cpu-tiny-skia"]
+
 [lints]
 workspace = true
 
@@ -14,10 +21,14 @@ craftui-layout.workspace = true
 craftui-reactive.workspace = true
 craftui-render.workspace = true
 craftui-widgets.workspace = true
-wgpu.workspace = true
-pollster.workspace = true
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 tracing.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity.workspace = true
 raw-window-handle = "0.6"
+
+[dev-dependencies]
+craftui-render = { path = "../craftui-render", features = ["cpu-vello", "cpu-tiny-skia"] }
+craftui-text = { path = "../craftui-text", features = ["embedded-fallback-font"] }

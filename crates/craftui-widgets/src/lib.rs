@@ -7,10 +7,10 @@ pub mod router;
 pub mod tree;
 pub mod widgets;
 
-pub use anim::{Easing, Spring, Tween};
+pub use anim::{AnimatableProp, AnimatedColor, AnimatedFloat, Easing, Spring, TransitionCurve, Tween};
 pub use gesture::{GestureArena, RecognizedGesture, ScrollPhysics, VelocityTracker};
 pub use inspector::InspectorState;
-pub use router::Router;
+pub use router::{Router, RouterTransition};
 pub use tree::{VirtualItemFactory, WidgetNode, WidgetTree};
 pub use widgets::{
     BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CustomWidget, FloatCallback,
@@ -64,7 +64,9 @@ mod tests {
     };
     use craftui_layout::LayoutStyle;
     use craftui_reactive::{Scope, reset_runtime};
-    use craftui_render::{BackendKind, PaintScene, TextureRegistry, render_scene_to_rgba};
+    use craftui_render::{
+        BackendKind, PaintCommand, PaintScene, TextureRegistry, render_scene_to_rgba,
+    };
     use craftui_text::TextStyle;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -126,7 +128,7 @@ mod tests {
         tree.paint(&mut scene);
         let textures = TextureRegistry::new();
         let rgba = render_scene_to_rgba(
-            BackendKind::VelloCpu,
+            BackendKind::Auto,
             &scene,
             300,
             200,
@@ -434,7 +436,7 @@ mod tests {
         tree.paint(&mut scene);
         let textures = TextureRegistry::new();
         let rgba = render_scene_to_rgba(
-            BackendKind::VelloCpu,
+            BackendKind::Auto,
             &scene,
             500,
             500,
@@ -779,5 +781,283 @@ mod tests {
         sig_new.set(true);
         let dirty_after_new = craftui_reactive::drain_dirty_nodes();
         assert!(dirty_after_new.iter().any(|(id, _)| *id == btn));
+    }
+
+    #[test]
+    fn spring_controls_node_transitions_and_router_transitions_settle_to_idle() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let checked = cx.signal(false);
+        let active_tab = cx.signal(0usize);
+        let modal_open = cx.signal(false);
+        let router = Router::new(cx, "/home".to_string());
+
+        let root = tree.column(cx);
+        let sw = tree.switch(cx, checked, "Dark");
+        let tabs = tree.tabs(cx, vec!["A".into(), "B".into(), "C".into()], active_tab);
+        let card = tree.container(
+            cx,
+            LayoutStyle::column().with_size(Length::Dp(200.0), Length::Dp(100.0)),
+            BoxStyle::new(),
+        );
+        tree.set_transition(
+            card,
+            AnimatableProp::Opacity,
+            TransitionCurve::tween(0.12, Easing::EaseOut),
+        );
+        tree.set_transition(
+            card,
+            AnimatableProp::TranslateX,
+            TransitionCurve::spring(360.0, 28.0),
+        );
+        let modal = tree.overlay(cx, modal_open, false, None);
+        let route_slot = tree.animated_route_slot(
+            cx,
+            LayoutStyle::column(),
+            router,
+            RouterTransition::SlideLeft,
+            |s, path, t| t.text(s, path.clone(), TextStyle::default()),
+        );
+
+        for c in [sw, tabs, card, modal, route_slot] {
+            tree.append_child(root, c);
+        }
+        tree.set_root(root);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(500.0, 400.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+        assert!(!tree.has_active_animations());
+
+        // Trigger programmatic Switch, Tabs, Node opacity/translate, Modal, and Router navigation
+        checked.set(true);
+        active_tab.set(2);
+        modal_open.set(true);
+        tree.set_opacity(card, 0.25);
+        tree.set_translate(card, 48.0, 0.0);
+        router.push("/details".to_string());
+
+        tree.layout(metrics);
+        assert!(tree.has_active_animations());
+
+        // Step animations mid-way and paint
+        assert!(tree.tick_animations(0.016));
+        let mut mid_scene = PaintScene::new();
+        tree.paint(&mut mid_scene);
+        assert!(mid_scene.commands.iter().any(|c| matches!(c, PaintCommand::PushTransform { .. })));
+        assert!(mid_scene.commands.iter().any(|c| matches!(c, PaintCommand::PushLayer { .. })));
+
+        // Step to completion -> 0% idle animations left
+        for _ in 0..240 {
+            if !tree.tick_animations(0.016) {
+                break;
+            }
+        }
+        assert!(!tree.has_active_animations());
+    }
+
+    #[test]
+    fn transform2d_hit_test_local_slider_drag_and_cursors() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+
+        let root = tree.container(
+            cx,
+            LayoutStyle::column()
+                .with_size(Length::Dp(400.0), Length::Dp(400.0))
+                .with_gap(12.0),
+            BoxStyle::new(),
+        );
+        // Translate the container right by +80dp and down by +40dp
+        tree.set_transform(root, craftui_core::Transform2D::translation(80.0, 40.0));
+
+        let val = cx.signal(0.0f32);
+        let slider = tree.slider(cx, val, 0.0, 100.0, "");
+        let clicks = Rc::new(Cell::new(0usize));
+        let clicks_c = clicks.clone();
+        let btn = tree.button(cx, "Hit", move || clicks_c.set(clicks_c.get() + 1));
+        tree.set_cursor(btn, Some(craftui_core::CursorIcon::Crosshair));
+        let input = tree.text_input(cx, "", "Type", None);
+        let dis_btn = tree.button(cx, "Locked", || {});
+        tree.set_disabled(dis_btn, true);
+
+        tree.append_child(root, slider);
+        tree.append_child(root, btn);
+        tree.append_child(root, input);
+        tree.append_child(root, dis_btn);
+        tree.set_root(root);
+
+        let metrics = WindowMetrics {
+            logical_size: Size::new(500.0, 500.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Button un-transformed rect center wouldn't hit without transform; shifted +80, +40 hits!
+        let btn_screen_center = craftui_core::Point::new(
+            tree.rect(btn).center().x + 80.0,
+            tree.rect(btn).center().y + 40.0,
+        );
+        assert_eq!(tree.hit_test(btn_screen_center), Some(btn));
+        assert_eq!(tree.cursor_at(btn_screen_center), craftui_core::CursorIcon::Crosshair);
+
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: btn_screen_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: btn_screen_center,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 30,
+        }));
+        assert_eq!(clicks.get(), 1);
+
+        // Semantic cursors for TextInput, Slider, Disabled Button
+        let input_screen = craftui_core::Point::new(
+            tree.rect(input).center().x + 80.0,
+            tree.rect(input).center().y + 40.0,
+        );
+        assert_eq!(tree.cursor_at(input_screen), craftui_core::CursorIcon::Text);
+
+        let dis_screen = craftui_core::Point::new(
+            tree.rect(dis_btn).center().x + 80.0,
+            tree.rect(dis_btn).center().y + 40.0,
+        );
+        assert_eq!(tree.cursor_at(dis_screen), craftui_core::CursorIcon::NotAllowed);
+
+        // Slider tap near 75% width inside translated root
+        let sr = tree.rect(slider);
+        let slider_target_screen = craftui_core::Point::new(
+            sr.x + 8.0 + (sr.width - 16.0) * 0.75 + 80.0,
+            sr.center().y + 40.0,
+        );
+        assert_eq!(tree.cursor_at(slider_target_screen), craftui_core::CursorIcon::Grab);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Down,
+            position: slider_target_screen,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 50,
+        }));
+        assert_eq!(tree.hovered_cursor(), craftui_core::CursorIcon::Grabbing);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Up,
+            position: slider_target_screen,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: false,
+            timestamp_ms: 70,
+        }));
+        assert!((val.get() - 75.0).abs() < 3.0, "expected ~75, got {}", val.get());
+    }
+
+    #[test]
+    fn backdrop_blur_multi_shadow_inset_and_bounded_push_layer_order() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+
+        let mut glass_style = BoxStyle::new()
+            .with_backdrop_blur(16.0, craftui_core::Color::rgba(255, 255, 255, 32))
+            .with_shadow(craftui_core::BoxShadow::drop(
+                0.0,
+                8.0,
+                20.0,
+                2.0,
+                craftui_core::Color::rgba(0, 0, 0, 120),
+            ))
+            .with_shadow(craftui_core::BoxShadow::inner(
+                0.0,
+                2.0,
+                6.0,
+                0.0,
+                craftui_core::Color::rgba(255, 255, 255, 60),
+            ))
+            .with_blend_mode(craftui_core::BlendMode::Screen);
+        glass_style.opacity = 0.85;
+        glass_style.background = Some(
+            craftui_core::Brush::Solid(craftui_core::Color::rgba(30, 41, 59, 180)).into(),
+        );
+        glass_style.radius = craftui_core::CornerRadii::all(12.0);
+
+        let glass = tree.container(
+            cx,
+            LayoutStyle::column().with_size(Length::Dp(240.0), Length::Dp(120.0)),
+            glass_style,
+        );
+        tree.set_root(glass);
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(400.0, 300.0),
+            ..Default::default()
+        });
+
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+
+        // BackdropBlur MUST be emitted before PushLayer so parent scene content is blurred!
+        let blur_idx = scene
+            .commands
+            .iter()
+            .position(|c| matches!(c, PaintCommand::BackdropBlur { .. }))
+            .expect("BackdropBlur emitted");
+        let layer_idx = scene
+            .commands
+            .iter()
+            .position(|c| {
+                matches!(
+                    c,
+                    PaintCommand::PushLayer {
+                        blend_mode: craftui_core::BlendMode::Screen,
+                        ..
+                    }
+                )
+            })
+            .expect("PushLayer with BlendMode::Screen emitted");
+        assert!(blur_idx < layer_idx);
+
+        // Verify PushLayer has bounded finite bounds, not dummy ±1e5
+        if let PaintCommand::PushLayer { rect, .. } = scene.commands[layer_idx] {
+            assert!(rect.width < 500.0 && rect.height < 400.0);
+        }
+
+        // Verify both outer DropShadow (inset=false) and inner shadow (inset=true) exist
+        let outer_shadow = scene.commands.iter().position(|c| {
+            matches!(c, PaintCommand::DropShadow { inset: false, .. })
+        });
+        let inner_shadow = scene.commands.iter().position(|c| {
+            matches!(c, PaintCommand::DropShadow { inset: true, .. })
+        });
+        assert!(outer_shadow.is_some() && inner_shadow.is_some());
+        assert!(outer_shadow.unwrap() < inner_shadow.unwrap());
+
+        // Renders cleanly through active backend
+        let textures = TextureRegistry::new();
+        let rgba = render_scene_to_rgba(
+            BackendKind::Auto,
+            &scene,
+            400,
+            300,
+            1.0,
+            tree.theme().background,
+            &textures,
+            &mut tree.text_engine,
+        );
+        assert_eq!(rgba.len(), 400 * 300 * 4);
     }
 }

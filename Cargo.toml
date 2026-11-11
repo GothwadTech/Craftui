@@ -45,17 +45,17 @@ all = { level = "warn", priority = -1 }
 craftui-core = { path = "crates/craftui-core", version = "0.1.0" }
 craftui-reactive = { path = "crates/craftui-reactive", version = "0.1.0" }
 craftui-layout = { path = "crates/craftui-layout", version = "0.1.0" }
-craftui-text = { path = "crates/craftui-text", version = "0.1.0" }
-craftui-render = { path = "crates/craftui-render", version = "0.1.0" }
+craftui-text = { path = "crates/craftui-text", version = "0.1.0", default-features = false }
+craftui-render = { path = "crates/craftui-render", version = "0.1.0", default-features = false }
 craftui-a11y = { path = "crates/craftui-a11y", version = "0.1.0" }
 craftui-widgets = { path = "crates/craftui-widgets", version = "0.1.0" }
 craftui-dsl = { path = "crates/craftui-dsl", version = "0.1.0" }
 craftui-runtime = { path = "crates/craftui-runtime", version = "0.1.0" }
 craftui-macros = { path = "crates/craftui-macros", version = "0.1.0" }
-craftui-platform-desktop = { path = "crates/craftui-platform-desktop", version = "0.1.0" }
-craftui-platform-android = { path = "crates/craftui-platform-android", version = "0.1.0" }
-craftui-platform-ios = { path = "crates/craftui-platform-ios", version = "0.1.0" }
-craftui-platform-web = { path = "crates/craftui-platform-web", version = "0.1.0" }
+craftui-platform-desktop = { path = "crates/craftui-platform-desktop", version = "0.1.0", default-features = false }
+craftui-platform-android = { path = "crates/craftui-platform-android", version = "0.1.0", default-features = false }
+craftui-platform-ios = { path = "crates/craftui-platform-ios", version = "0.1.0", default-features = false }
+craftui-platform-web = { path = "crates/craftui-platform-web", version = "0.1.0", default-features = false }
 craftui = { path = "crates/craftui", version = "0.1.0" }
 
 # Core permissive ecosystem crates
@@ -76,6 +76,9 @@ peniko = "0.6.1"
 taffy = "0.15.1"
 parley = "0.12.0"
 fontique = "0.12.0"
+skrifa = "0.44"
+ab_glyph_rasterizer = "0.1.10"
+guillotiere = "0.7.0"
 vello = "0.11.0"
 vello_cpu = { version = "0.3.0", features = ["std", "png", "text", "u8_pipeline"] }
 tiny-skia = "0.12.0"

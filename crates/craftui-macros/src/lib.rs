@@ -625,12 +625,12 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 {
                     if b.value {
                         box_updates.extend(quote! {
-                            __bs.shadow = Some(::craftui::core::BoxShadow {
-                                offset_x: 0.0,
-                                offset_y: 4.0,
-                                blur_radius: 12.0,
-                                color: ::craftui::core::Color::rgba(0, 0, 0, 80),
-                            });
+                            __bs.shadow = Some(::craftui::core::BoxShadow::new(
+                                0.0,
+                                4.0,
+                                12.0,
+                                ::craftui::core::Color::rgba(0, 0, 0, 80),
+                            ));
                         });
                     } else {
                         box_updates.extend(quote! { __bs.shadow = None; });

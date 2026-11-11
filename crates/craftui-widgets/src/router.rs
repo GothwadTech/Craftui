@@ -1,5 +1,16 @@
 use craftui_reactive::{Scope, Signal};
 
+/// Visual transition played when navigating between routes with [`Router`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RouterTransition {
+    None,
+    #[default]
+    Fade,
+    SlideLeft,
+    SlideRight,
+    ScaleFade,
+}
+
 /// Declarative stack-based navigation controller (PRD FR-6.2).
 pub struct Router<R: Clone + PartialEq + 'static> {
     stack: Signal<Vec<R>>,

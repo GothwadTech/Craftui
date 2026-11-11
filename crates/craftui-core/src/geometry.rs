@@ -400,6 +400,155 @@ impl WindowMetrics {
     }
 }
 
+/// Affine 2D transform stored as `[a, b, c, d, tx, ty]` where:
+/// `x' = a * x + c * y + tx`
+/// `y' = b * x + d * y + ty`
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Transform2D {
+    pub matrix: [f32; 6],
+}
+
+impl Default for Transform2D {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Transform2D {
+    pub const IDENTITY: Self = Self {
+        matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    };
+
+    #[inline]
+    pub const fn new(a: f32, b: f32, c: f32, d: f32, tx: f32, ty: f32) -> Self {
+        Self {
+            matrix: [a, b, c, d, tx, ty],
+        }
+    }
+
+    #[inline]
+    pub const fn translation(tx: f32, ty: f32) -> Self {
+        Self::new(1.0, 0.0, 0.0, 1.0, tx, ty)
+    }
+
+    #[inline]
+    pub const fn scale(sx: f32, sy: f32) -> Self {
+        Self::new(sx, 0.0, 0.0, sy, 0.0, 0.0)
+    }
+
+    #[inline]
+    pub fn rotation(radians: f32) -> Self {
+        let (s, c) = radians.sin_cos();
+        Self::new(c, s, -s, c, 0.0, 0.0)
+    }
+
+    #[inline]
+    pub fn skew(kx_rad: f32, ky_rad: f32) -> Self {
+        Self::new(1.0, ky_rad.tan(), kx_rad.tan(), 1.0, 0.0, 0.0)
+    }
+
+    #[inline]
+    pub fn is_identity(self) -> bool {
+        self == Self::IDENTITY
+    }
+
+    /// Compose `self` followed by `next` (`next * self`).
+    #[inline]
+    pub fn then(self, next: Self) -> Self {
+        let [a1, b1, c1, d1, tx1, ty1] = self.matrix;
+        let [a2, b2, c2, d2, tx2, ty2] = next.matrix;
+        Self::new(
+            a2 * a1 + c2 * b1,
+            b2 * a1 + d2 * b1,
+            a2 * c1 + c2 * d1,
+            b2 * c1 + d2 * d1,
+            a2 * tx1 + c2 * ty1 + tx2,
+            b2 * tx1 + d2 * ty1 + ty2,
+        )
+    }
+
+    /// Wrap an inner transform around a pivot point (e.g., node center for rotation/scale).
+    #[inline]
+    pub fn around_pivot(pivot: Point, inner: Self) -> Self {
+        Self::translation(-pivot.x, -pivot.y)
+            .then(inner)
+            .then(Self::translation(pivot.x, pivot.y))
+    }
+
+    #[inline]
+    pub fn transform_point(self, p: Point) -> Point {
+        let [a, b, c, d, tx, ty] = self.matrix;
+        Point::new(a * p.x + c * p.y + tx, b * p.x + d * p.y + ty)
+    }
+
+    pub fn inverse(self) -> Option<Self> {
+        let [a, b, c, d, tx, ty] = self.matrix;
+        let det = a * d - b * c;
+        if det.abs() < 1e-8 {
+            return None;
+        }
+        let inv_det = 1.0 / det;
+        let na = d * inv_det;
+        let nb = -b * inv_det;
+        let nc = -c * inv_det;
+        let nd = a * inv_det;
+        let ntx = -(na * tx + nc * ty);
+        let nty = -(nb * tx + nd * ty);
+        Some(Self::new(na, nb, nc, nd, ntx, nty))
+    }
+
+    pub fn transform_rect_bounds(self, r: Rect) -> Rect {
+        let corners = [
+            self.transform_point(Point::new(r.x, r.y)),
+            self.transform_point(Point::new(r.max_x(), r.y)),
+            self.transform_point(Point::new(r.max_x(), r.max_y())),
+            self.transform_point(Point::new(r.x, r.max_y())),
+        ];
+        let mut min_x = corners[0].x;
+        let mut min_y = corners[0].y;
+        let mut max_x = corners[0].x;
+        let mut max_y = corners[0].y;
+        for c in &corners[1..] {
+            min_x = min_x.min(c.x);
+            min_y = min_y.min(c.y);
+            max_x = max_x.max(c.x);
+            max_y = max_y.max(c.y);
+        }
+        Rect::new(min_x, min_y, (max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
+    }
+
+    #[inline]
+    pub fn to_kurbo(self) -> kurbo::Affine {
+        kurbo::Affine::new([
+            self.matrix[0] as f64,
+            self.matrix[1] as f64,
+            self.matrix[2] as f64,
+            self.matrix[3] as f64,
+            self.matrix[4] as f64,
+            self.matrix[5] as f64,
+        ])
+    }
+
+    #[inline]
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let mut m = [0.0f32; 6];
+        for ((dst, a), b) in m.iter_mut().zip(&self.matrix).zip(&other.matrix) {
+            *dst = a + (b - a) * t;
+        }
+        Self { matrix: m }
+    }
+}
+
+impl std::ops::Mul for Transform2D {
+    type Output = Self;
+
+    /// Matrix multiplication `self * rhs` (applies `rhs` first, then `self`).
+    #[inline]
+    fn mul(self, rhs: Self) -> Self::Output {
+        rhs.then(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +567,20 @@ mod tests {
         assert_eq!(Breakpoint::from_width(390.0), Breakpoint::Compact);
         assert_eq!(Breakpoint::from_width(768.0), Breakpoint::Medium);
         assert_eq!(Breakpoint::from_width(1440.0), Breakpoint::Expanded);
+    }
+
+    #[test]
+    fn transform2d_composition_and_inverse() {
+        let t = Transform2D::translation(10.0, 5.0).then(Transform2D::scale(2.0, 3.0));
+        let p = t.transform_point(Point::new(2.0, 1.0));
+        assert!((p.x - 24.0).abs() < 1e-4 && (p.y - 18.0).abs() < 1e-4);
+
+        let inv = t.inverse().expect("invertible");
+        let back = inv.transform_point(p);
+        assert!((back.x - 2.0).abs() < 1e-4 && (back.y - 1.0).abs() < 1e-4);
+
+        let k_p = t.to_kurbo() * Point::new(2.0, 1.0).to_kurbo();
+        assert!((k_p.x as f32 - p.x).abs() < 1e-4);
+        assert!((k_p.y as f32 - p.y).abs() < 1e-4);
     }
 }

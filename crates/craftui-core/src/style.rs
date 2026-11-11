@@ -78,13 +78,103 @@ impl Default for Border {
     }
 }
 
-/// Drop shadow specification.
+/// Drop or inner shadow specification.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoxShadow {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
+    pub spread: f32,
+    pub inset: bool,
     pub color: Color,
+}
+
+impl Default for BoxShadow {
+    fn default() -> Self {
+        Self {
+            offset_x: 0.0,
+            offset_y: 4.0,
+            blur_radius: 12.0,
+            spread: 0.0,
+            inset: false,
+            color: Color::rgba(0, 0, 0, 80),
+        }
+    }
+}
+
+impl BoxShadow {
+    pub const fn new(offset_x: f32, offset_y: f32, blur_radius: f32, color: Color) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur_radius,
+            spread: 0.0,
+            inset: false,
+            color,
+        }
+    }
+
+    pub const fn drop(
+        offset_x: f32,
+        offset_y: f32,
+        blur_radius: f32,
+        spread: f32,
+        color: Color,
+    ) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur_radius,
+            spread,
+            inset: false,
+            color,
+        }
+    }
+
+    pub const fn inner(
+        offset_x: f32,
+        offset_y: f32,
+        blur_radius: f32,
+        spread: f32,
+        color: Color,
+    ) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur_radius,
+            spread,
+            inset: true,
+            color,
+        }
+    }
+}
+
+/// Layer compositing blend modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    Plus,
+}
+
+/// Mouse / pointer cursor shape hint requested by a widget under hover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum CursorIcon {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+    Grab,
+    Grabbing,
+    ResizeHorizontal,
+    ResizeVertical,
+    NotAllowed,
+    Crosshair,
 }
 
 /// Image / media box-fit behavior.

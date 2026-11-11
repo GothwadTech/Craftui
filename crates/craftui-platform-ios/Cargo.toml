@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["gpu-sdf", "gpu-vello", "cpu-vello", "cpu-tiny-skia"]
+gpu-sdf = ["craftui-render/gpu-sdf", "dep:wgpu"]
+gpu-vello = ["craftui-render/gpu-vello", "dep:wgpu"]
+cpu-vello = ["craftui-render/cpu-vello"]
+cpu-tiny-skia = ["craftui-render/cpu-tiny-skia"]
+
 [lints]
 workspace = true
 
@@ -14,5 +21,9 @@ craftui-layout.workspace = true
 craftui-reactive.workspace = true
 craftui-render.workspace = true
 craftui-widgets.workspace = true
-wgpu.workspace = true
+wgpu = { workspace = true, optional = true }
 tracing.workspace = true
+
+[dev-dependencies]
+craftui-render = { path = "../craftui-render", features = ["cpu-vello", "cpu-tiny-skia"] }
+craftui-text = { path = "../craftui-text", features = ["embedded-fallback-font"] }

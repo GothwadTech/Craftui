@@ -122,7 +122,7 @@ pub struct IosAppHost {
     last_synced_text: Option<String>,
     needs_redraw: bool,
     pub last_ime_commands: Vec<IosImeCommand>,
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
     gpu: Option<craftui_render::GpuSurfacePipeline>,
 }
 
@@ -146,7 +146,7 @@ impl IosAppHost {
             last_synced_text: None,
             needs_redraw: true,
             last_ime_commands: Vec::new(),
-            #[cfg(target_os = "ios")]
+            #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
             gpu: None,
         }
     }
@@ -215,7 +215,7 @@ impl IosAppHost {
             });
             self.needs_redraw = true;
         }
-        #[cfg(target_os = "ios")]
+        #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
         if let Some(gpu) = self.gpu.as_mut() {
             let (pw, ph) = self.tree.metrics.physical_size();
             gpu.resize(pw, ph);
@@ -315,10 +315,11 @@ impl IosAppHost {
         let timers = craftui_reactive::tick_timers_at(now_ms);
         let jobs = self.dispatcher.drain();
         let blink = self.tree.tick_blink_timers(now_ms);
-        let animating = self.tree.tick_animations(dt_sec);
+        let anim_tick = self.tree.tick_animations(dt_sec);
         let dirty = self.tree.layout(self.tree.metrics);
+        let animating = anim_tick || self.tree.has_active_animations();
         let should_paint =
-            self.needs_redraw || timers > 0 || jobs > 0 || blink || animating || dirty > 0;
+            self.needs_redraw || timers > 0 || jobs > 0 || blink || anim_tick || dirty > 0;
         if should_paint {
             self.tree.paint(&mut self.scene);
             self.needs_redraw = false;
@@ -348,7 +349,7 @@ impl IosAppHost {
             cmds.push(IosImeCommand::SyncText(txt));
         }
 
-        #[cfg(target_os = "ios")]
+        #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
         if should_paint && let Some(gpu) = self.gpu.as_mut() {
             let bg = self.tree.theme().background;
             let sf = self.tree.metrics.scale_factor;
@@ -382,7 +383,7 @@ pub struct IosMetalLayerDescriptor {
     pub contents_scale: f32,
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
 pub mod ios_metal {
     use super::*;
 
@@ -449,7 +450,7 @@ pub unsafe extern "C" fn craftui_ios_app_launch(
     if let Some(build_fn) = build {
         build_fn(raw, user_data);
     }
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", any(feature = "gpu-sdf", feature = "gpu-vello")))]
     if !layer.ca_metal_layer.is_null() {
         // SAFETY: `raw` was just allocated by `craftui_ios_app_create` and `layer.ca_metal_layer` invariant is upheld by caller.
         let host = unsafe { &mut *raw };

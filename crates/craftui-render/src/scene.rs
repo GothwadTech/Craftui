@@ -1,4 +1,7 @@
-use craftui_core::{Brush, Color, CornerRadii, Fit, PlatformViewId, Point, Rect, TextureId};
+use craftui_core::{
+    BlendMode, BoxShadow, Brush, Color, CornerRadii, Fit, PlatformViewId, Point, Rect, TextureId,
+    Transform2D,
+};
 use craftui_text::TextStyle;
 use kurbo::{Affine, BezPath};
 
@@ -18,11 +21,19 @@ pub enum PaintCommand {
     },
     DropShadow {
         rect: Rect,
-        radius: f32,
+        radius: CornerRadii,
         std_dev: f32,
+        spread: f32,
+        inset: bool,
         offset_x: f32,
         offset_y: f32,
         color: Color,
+    },
+    BackdropBlur {
+        rect: Rect,
+        radius: CornerRadii,
+        blur_radius: f32,
+        tint: Color,
     },
     FillPath {
         path: BezPath,
@@ -52,9 +63,15 @@ pub enum PaintCommand {
     },
     PopClip,
     PushLayer {
+        rect: Rect,
         opacity: f32,
+        blend_mode: BlendMode,
     },
     PopLayer,
+    PushTransform {
+        transform: Transform2D,
+    },
+    PopTransform,
     PlatformViewHole {
         id: PlatformViewId,
         rect: Rect,
@@ -97,6 +114,54 @@ impl PaintScene {
             width,
             radius,
         });
+    }
+
+    pub fn drop_shadow(&mut self, rect: Rect, radius: CornerRadii, shadow: BoxShadow) {
+        self.commands.push(PaintCommand::DropShadow {
+            rect,
+            radius,
+            std_dev: shadow.blur_radius,
+            spread: shadow.spread,
+            inset: shadow.inset,
+            offset_x: shadow.offset_x,
+            offset_y: shadow.offset_y,
+            color: shadow.color,
+        });
+    }
+
+    pub fn backdrop_blur(
+        &mut self,
+        rect: Rect,
+        radius: CornerRadii,
+        blur_radius: f32,
+        tint: Color,
+    ) {
+        self.commands.push(PaintCommand::BackdropBlur {
+            rect,
+            radius,
+            blur_radius,
+            tint,
+        });
+    }
+
+    pub fn push_transform(&mut self, transform: Transform2D) {
+        self.commands.push(PaintCommand::PushTransform { transform });
+    }
+
+    pub fn pop_transform(&mut self) {
+        self.commands.push(PaintCommand::PopTransform);
+    }
+
+    pub fn push_layer(&mut self, rect: Rect, opacity: f32, blend_mode: BlendMode) {
+        self.commands.push(PaintCommand::PushLayer {
+            rect,
+            opacity,
+            blend_mode,
+        });
+    }
+
+    pub fn pop_layer(&mut self) {
+        self.commands.push(PaintCommand::PopLayer);
     }
 
     pub fn fill_path(&mut self, path: BezPath, brush: impl Into<Brush>) {
