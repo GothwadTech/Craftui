@@ -172,6 +172,9 @@ pub fn mount_scancraft_app_with_services(
         let c_count = capture_count;
         screen.set_on_capture_photo(move || {
             let _ = svc.trigger_haptic(HapticStyle::Medium);
+            #[cfg(target_os = "android")]
+            launch_android_camera();
+
             let next_cnt = c_count.get_untracked() + 1;
             c_count.set(next_cnt);
 
@@ -192,7 +195,7 @@ pub fn mount_scancraft_app_with_services(
             scr.doc_title.set(new_name);
             scr.active_tab.set(1); // Jump to filter tab for immediate editing
             scr.status_message
-                .set("Photo captured with haptics! Now in enhancement studio.".into());
+                .set("Photo captured! Camera session opened, now in enhancement studio.".into());
         });
     }
 
@@ -203,6 +206,10 @@ pub fn mount_scancraft_app_with_services(
         let docs = documents;
         let c_count = capture_count;
         screen.set_on_import_gallery(move || {
+            let _ = svc.trigger_haptic(HapticStyle::Light);
+            #[cfg(target_os = "android")]
+            launch_android_gallery();
+
             let next_cnt = c_count.get_untracked() + 1;
             c_count.set(next_cnt);
 
@@ -223,8 +230,7 @@ pub fn mount_scancraft_app_with_services(
             scr.doc_title.set(new_name);
             scr.active_tab.set(1);
             scr.status_message
-                .set("Imported photo from device gallery into editor.".into());
-            let _ = svc.trigger_haptic(HapticStyle::Light);
+                .set("Opening device photo gallery...".into());
         });
     }
 
@@ -364,7 +370,50 @@ pub fn mount_scancraft_app_with_services(
 }
 
 pub fn mount_scancraft_app(cx: Scope, tree: &mut WidgetTree) -> (NodeId, ScanCraftAppState) {
-    mount_scancraft_app_with_services(cx, tree, PlatformServices::in_memory())
+    mount_scancraft_app_with_services(cx, tree, tree.services.clone())
+}
+
+#[cfg(target_os = "android")]
+fn call_activity_static_method(method: &str) {
+    unsafe {
+        let ctx = ndk_context::android_context();
+        let vm = ctx.vm() as *mut jni::sys::JavaVM;
+        if vm.is_null() {
+            return;
+        }
+        let mut env: *mut jni::sys::JNIEnv = std::ptr::null_mut();
+        let attach_fn = (**vm).v1_4.AttachCurrentThread;
+        if attach_fn(vm, &mut env as *mut _ as *mut *mut std::ffi::c_void, std::ptr::null_mut()) != 0 || env.is_null() {
+            return;
+        }
+        let clear_fn = (**env).v1_4.ExceptionClear;
+        clear_fn(env);
+
+        let Ok(c_class) = std::ffi::CString::new("dev/craftui/app/MainActivity") else { return; };
+        let find_class_fn = (**env).v1_4.FindClass;
+        let class = find_class_fn(env, c_class.as_ptr());
+        if class.is_null() {
+            return;
+        }
+        let Ok(c_method) = std::ffi::CString::new(method) else { return; };
+        let Ok(c_sig) = std::ffi::CString::new("()V") else { return; };
+        let get_method_fn = (**env).v1_4.GetStaticMethodID;
+        let method_id = get_method_fn(env, class, c_method.as_ptr(), c_sig.as_ptr());
+        if !method_id.is_null() {
+            let call_fn = (**env).v1_4.CallStaticVoidMethod;
+            call_fn(env, class, method_id);
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn launch_android_camera() {
+    call_activity_static_method("launchCameraFromNative");
+}
+
+#[cfg(target_os = "android")]
+pub fn launch_android_gallery() {
+    call_activity_static_method("launchGalleryFromNative");
 }
 
 #[cfg(target_os = "android")]

@@ -46,12 +46,12 @@ export component ScanCraftApp {
         Column {
             width: 100%;
             height: 100%;
-            background: Theme.background;
+            background: #000000;
             padding: 12dp;
             gap: 12dp;
 
             // =========================================================================
-            // VIEW 0: MAIN SCREEN (Matches User Screenshot Exactly)
+            // VIEW 0: MAIN SCREEN (Matches User Screenshot 100% Exactly)
             // =========================================================================
             if active_tab == 0 : Column {
                 flex_grow: 1.0;
@@ -67,15 +67,19 @@ export component ScanCraftApp {
                     // User Profile Avatar
                     Button {
                         id: "profile_avatar_btn";
-                        text: "👤";
                         background: #0E2938;
-                        foreground: #00BCD4;
-                        font_size: 18;
                         border_radius: 20dp;
                         width: 40dp;
                         height: 40dp;
+                        align: Center;
+                        justify: Center;
                         on_tap => {
                             status_message = "Profile & Settings opened";
+                        }
+                        Icon {
+                            svg: "user";
+                            size: 20;
+                            color: #00BCD4;
                         }
                     }
 
@@ -105,29 +109,37 @@ export component ScanCraftApp {
 
                         Button {
                             id: "theme_toggle_btn";
-                            text: "☀️";
-                            background: #1E293B;
-                            foreground: #FACC15;
-                            font_size: 16;
+                            background: #00000000;
                             border_radius: 18dp;
                             width: 36dp;
                             height: 36dp;
+                            align: Center;
+                            justify: Center;
                             on_tap => {
                                 on_theme_toggle();
+                            }
+                            Icon {
+                                svg: "sun";
+                                size: 20;
+                                color: #FACC15;
                             }
                         }
 
                         Button {
                             id: "search_toggle_btn";
-                            text: "🔍";
-                            background: #1E293B;
-                            foreground: #FFFFFF;
-                            font_size: 14;
+                            background: #00000000;
                             border_radius: 18dp;
                             width: 36dp;
                             height: 36dp;
+                            align: Center;
+                            justify: Center;
                             on_tap => {
                                 search_open = !search_open;
+                            }
+                            Icon {
+                                svg: "search";
+                                size: 20;
+                                color: #FFFFFF;
                             }
                         }
                     }
@@ -156,7 +168,7 @@ export component ScanCraftApp {
                     }
                 }
 
-                // --- Quick Action Grid (2 Rows x 4 Columns) ---
+                // --- 8-Tool Action Grid (2 Rows x 4 Columns) ---
                 Column {
                     width: 100%;
                     gap: 14dp;
@@ -174,15 +186,19 @@ export component ScanCraftApp {
 
                             Button {
                                 id: "grid_smart_scan";
-                                text: "📷";
-                                background: #083344;
-                                foreground: #06B6D4;
-                                font_size: 20;
+                                background: #0E3B43;
                                 border_radius: 28dp;
                                 width: 56dp;
                                 height: 56dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     on_capture_photo();
+                                }
+                                Icon {
+                                    svg: "camera";
+                                    size: 24;
+                                    color: #00BCD4;
                                 }
                             }
 
@@ -190,7 +206,7 @@ export component ScanCraftApp {
                                 text: "Smart Scan";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
 
@@ -200,15 +216,19 @@ export component ScanCraftApp {
 
                             Button {
                                 id: "grid_import_photos";
-                                text: "🖼️";
-                                background: #172554;
-                                foreground: #3B82F6;
-                                font_size: 20;
+                                background: #1E3A68;
                                 border_radius: 28dp;
                                 width: 56dp;
                                 height: 56dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     on_import_gallery();
+                                }
+                                Icon {
+                                    svg: "image";
+                                    size: 24;
+                                    color: #38BDF8;
                                 }
                             }
 
@@ -216,7 +236,7 @@ export component ScanCraftApp {
                                 text: "Import Photos";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
 
@@ -226,15 +246,19 @@ export component ScanCraftApp {
 
                             Button {
                                 id: "grid_import_files";
-                                text: "📁";
-                                background: #451A03;
-                                foreground: #F97316;
-                                font_size: 20;
+                                background: #452A14;
                                 border_radius: 28dp;
                                 width: 56dp;
                                 height: 56dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     on_import_gallery();
+                                }
+                                Icon {
+                                    svg: "upload";
+                                    size: 24;
+                                    color: #FB923C;
                                 }
                             }
 
@@ -242,7 +266,7 @@ export component ScanCraftApp {
                                 text: "Import Files";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
 
@@ -252,15 +276,19 @@ export component ScanCraftApp {
 
                             Button {
                                 id: "grid_id_card";
-                                text: "🪪";
-                                background: #042F2E;
-                                foreground: #06B6D4;
-                                font_size: 20;
+                                background: #0C3C47;
                                 border_radius: 28dp;
                                 width: 56dp;
                                 height: 56dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     on_capture_photo();
+                                }
+                                Icon {
+                                    svg: "badge_id";
+                                    size: 24;
+                                    color: #00BCD4;
                                 }
                             }
 
@@ -268,7 +296,7 @@ export component ScanCraftApp {
                                 text: "ID Card";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
                     }
@@ -286,8 +314,8 @@ export component ScanCraftApp {
                             Button {
                                 id: "grid_ocr";
                                 text: "TT";
-                                background: #3B0764;
-                                foreground: #C084FC;
+                                background: #3B1A59;
+                                foreground: #B388FF;
                                 font_size: 18;
                                 font_weight: 700;
                                 border_radius: 28dp;
@@ -302,7 +330,7 @@ export component ScanCraftApp {
                                 text: "To Text (OCR)";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
 
@@ -312,15 +340,19 @@ export component ScanCraftApp {
 
                             Button {
                                 id: "grid_pdf_tools";
-                                text: "📄";
-                                background: #450A0A;
-                                foreground: #EF4444;
-                                font_size: 20;
+                                background: #4A151B;
                                 border_radius: 28dp;
                                 width: 56dp;
                                 height: 56dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     active_tab = 3;
+                                }
+                                Icon {
+                                    svg: "pdf";
+                                    size: 22;
+                                    color: #EF4444;
                                 }
                             }
 
@@ -328,7 +360,7 @@ export component ScanCraftApp {
                                 text: "PDF Tools";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
 
@@ -338,15 +370,19 @@ export component ScanCraftApp {
 
                             Button {
                                 id: "grid_watermark";
-                                text: "💧";
-                                background: #022C22;
-                                foreground: #10B981;
-                                font_size: 20;
+                                background: #0E3D38;
                                 border_radius: 28dp;
                                 width: 56dp;
                                 height: 56dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     active_tab = 1;
+                                }
+                                Icon {
+                                    svg: "watermark";
+                                    size: 24;
+                                    color: #10B981;
                                 }
                             }
 
@@ -354,7 +390,7 @@ export component ScanCraftApp {
                                 text: "Watermark";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
 
@@ -364,15 +400,19 @@ export component ScanCraftApp {
 
                             Button {
                                 id: "grid_all_tools";
-                                text: "▦";
-                                background: #1E293B;
-                                foreground: #94A3B8;
-                                font_size: 18;
+                                background: #2A303A;
                                 border_radius: 28dp;
                                 width: 56dp;
                                 height: 56dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     active_tab = 2;
+                                }
+                                Icon {
+                                    svg: "grid_3x3";
+                                    size: 22;
+                                    color: #8E95A5;
                                 }
                             }
 
@@ -380,7 +420,7 @@ export component ScanCraftApp {
                                 text: "All Tools";
                                 font_size: 11;
                                 font_weight: 600;
-                                color: Theme.text_primary;
+                                color: #E2E8F0;
                             }
                         }
                     }
@@ -391,117 +431,134 @@ export component ScanCraftApp {
                     width: 100%;
                     justify: SpaceBetween;
                     align: Center;
-                    padding_y: 4dp;
+                    padding_y: 6dp;
 
                     Column {
                         gap: 2dp;
 
                         Text {
                             text: "Recent Docs";
-                            font_size: 19;
-                            font_weight: 700;
-                            color: Theme.text_primary;
+                            font_size: 20;
+                            font_weight: 800;
+                            color: #FFFFFF;
                         }
 
                         Text {
-                            text: "All docs (5) ▼";
+                            text: "All docs (3) ▼";
                             font_size: 12;
-                            color: Theme.text_secondary;
+                            color: #8E95A5;
                         }
                     }
 
                     Row {
-                        gap: 6dp;
+                        gap: 12dp;
                         align: Center;
 
                         Button {
                             id: "action_folder";
-                            text: "📁+";
-                            background: #1E293B;
-                            foreground: #94A3B8;
-                            font_size: 12;
-                            border_radius: 8dp;
-                            padding: 6dp;
+                            background: #00000000;
+                            width: 24dp;
+                            height: 24dp;
+                            align: Center;
+                            justify: Center;
                             on_tap => {
                                 status_message = "New Folder Dialog";
+                            }
+                            Icon {
+                                svg: "folder_plus";
+                                size: 18;
+                                color: #8E95A5;
                             }
                         }
 
                         Button {
                             id: "action_sort";
-                            text: "⇅";
-                            background: #1E293B;
-                            foreground: #94A3B8;
-                            font_size: 14;
-                            border_radius: 8dp;
-                            padding: 6dp;
+                            background: #00000000;
+                            width: 24dp;
+                            height: 24dp;
+                            align: Center;
+                            justify: Center;
                             on_tap => {
                                 status_message = "Sorted by newest first";
+                            }
+                            Icon {
+                                svg: "sort";
+                                size: 18;
+                                color: #8E95A5;
                             }
                         }
 
                         Button {
                             id: "action_view_mode";
-                            text: "▦";
-                            background: #1E293B;
-                            foreground: #94A3B8;
-                            font_size: 12;
-                            border_radius: 8dp;
-                            padding: 6dp;
+                            background: #00000000;
+                            width: 24dp;
+                            height: 24dp;
+                            align: Center;
+                            justify: Center;
                             on_tap => {
                                 status_message = "Toggled view mode";
+                            }
+                            Icon {
+                                svg: "grid";
+                                size: 18;
+                                color: #8E95A5;
                             }
                         }
 
                         Button {
                             id: "action_multi_select";
-                            text: "✓✓";
-                            background: #1E293B;
-                            foreground: #94A3B8;
-                            font_size: 12;
-                            border_radius: 8dp;
-                            padding: 6dp;
+                            background: #00000000;
+                            width: 24dp;
+                            height: 24dp;
+                            align: Center;
+                            justify: Center;
                             on_tap => {
                                 status_message = "Batch selection mode";
+                            }
+                            Icon {
+                                svg: "check_double";
+                                size: 18;
+                                color: #8E95A5;
                             }
                         }
                     }
                 }
 
-                // --- Recent Docs Scrollable Card List ---
+                // --- Recent Docs Scrollable Card List (Clean Black Background, No Bulky Boxes) ---
                 ScrollView {
                     width: 100%;
                     flex_grow: 1.0;
 
                     Column {
                         width: 100%;
-                        gap: 10dp;
-                        padding_y: 12dp;
+                        gap: 16dp;
+                        padding_y: 6dp;
 
-                        // Card 1
+                        // Item 1: Code Screen Document
                         Row {
                             width: 100%;
-                            background: Theme.surface;
-                            border_radius: 14dp;
-                            padding: 10dp;
-                            gap: 12dp;
+                            background: #00000000;
+                            gap: 14dp;
                             align: Center;
 
                             // Thumbnail with Badge
                             Column {
-                                width: 68dp;
-                                height: 80dp;
+                                width: 66dp;
+                                height: 86dp;
                                 border_radius: 8dp;
-                                background: #1E293B;
+                                background: #0D1525;
+                                border_width: 1.0;
+                                border_color: #1E293B;
                                 padding: 6dp;
                                 justify: SpaceBetween;
 
                                 Column {
                                     gap: 3dp;
                                     Row { width: 100%; height: 4dp; background: #38BDF8; border_radius: 2dp; }
-                                    Row { width: 80%; height: 3dp; background: #64748B; border_radius: 2dp; }
-                                    Row { width: 90%; height: 3dp; background: #475569; border_radius: 2dp; }
-                                    Row { width: 60%; height: 3dp; background: #475569; border_radius: 2dp; }
+                                    Row { width: 80%; height: 3dp; background: #34D399; border_radius: 2dp; }
+                                    Row { width: 90%; height: 3dp; background: #FBBF24; border_radius: 2dp; }
+                                    Row { width: 70%; height: 3dp; background: #A78BFA; border_radius: 2dp; }
+                                    Row { width: 50%; height: 3dp; background: #64748B; border_radius: 2dp; }
                                 }
 
                                 Row {
@@ -517,60 +574,73 @@ export component ScanCraftApp {
                                 gap: 4dp;
 
                                 Text {
-                                    text: "Contract_Agreement_v2.pdf";
-                                    font_size: 15;
+                                    text: "New Doc 11-09-2026 21.45";
+                                    font_size: 16;
                                     font_weight: 600;
-                                    color: Theme.text_primary;
+                                    color: #FFFFFF;
                                 }
 
                                 Text {
                                     text: "09/11/26 21:46";
-                                    font_size: 12;
-                                    color: Theme.text_secondary;
+                                    font_size: 13;
+                                    color: #8E95A5;
                                 }
 
                                 Row {
-                                    gap: 6dp;
+                                    gap: 4dp;
                                     align: Center;
-                                    Text { text: "❐ 3"; font_size: 12; color: #64748B; }
-                                    Badge { label: "Indexed"; background: #064E3B; color: #34D399; }
+                                    Icon {
+                                        svg: "pages";
+                                        size: 13;
+                                        color: #8E95A5;
+                                    }
+                                    Text { text: "3"; font_size: 13; color: #8E95A5; }
                                 }
                             }
 
                             Button {
                                 id: "doc_opt_btn_0";
-                                text: "⋮";
                                 background: #00000000;
-                                foreground: Theme.text_secondary;
-                                font_size: 18;
+                                width: 32dp;
+                                height: 32dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     on_share_doc();
+                                }
+                                Icon {
+                                    svg: "more_vert";
+                                    size: 20;
+                                    color: #8E95A5;
                                 }
                             }
                         }
 
-                        // Card 2
+                        // Item 2: Lined Notebook Paper with Handwriting
                         Row {
                             width: 100%;
-                            background: Theme.surface;
-                            border_radius: 14dp;
-                            padding: 10dp;
-                            gap: 12dp;
+                            background: #00000000;
+                            gap: 14dp;
                             align: Center;
 
                             Column {
-                                width: 68dp;
-                                height: 80dp;
+                                width: 66dp;
+                                height: 86dp;
                                 border_radius: 8dp;
-                                background: #1E293B;
+                                background: #F8FAFC;
+                                border_width: 1.0;
+                                border_color: #334155;
                                 padding: 6dp;
                                 justify: SpaceBetween;
 
                                 Column {
-                                    gap: 3dp;
-                                    Row { width: 100%; height: 4dp; background: #A855F7; border_radius: 2dp; }
-                                    Row { width: 75%; height: 3dp; background: #64748B; border_radius: 2dp; }
-                                    Row { width: 85%; height: 3dp; background: #475569; border_radius: 2dp; }
+                                    gap: 4dp;
+                                    Row { width: 100%; height: 2dp; background: #BFDBFE; }
+                                    Row { width: 75%; height: 2.5dp; background: #334155; border_radius: 1dp; }
+                                    Row { width: 100%; height: 2dp; background: #BFDBFE; }
+                                    Row { width: 85%; height: 2.5dp; background: #334155; border_radius: 1dp; }
+                                    Row { width: 100%; height: 2dp; background: #BFDBFE; }
+                                    Row { width: 60%; height: 2.5dp; background: #334155; border_radius: 1dp; }
                                 }
 
                                 Row {
@@ -586,63 +656,81 @@ export component ScanCraftApp {
 
                                 Text {
                                     text: "New Doc 11-09-2026 15.11";
-                                    font_size: 15;
+                                    font_size: 16;
                                     font_weight: 600;
-                                    color: Theme.text_primary;
+                                    color: #FFFFFF;
                                 }
 
                                 Text {
                                     text: "09/11/26 15:13";
-                                    font_size: 12;
-                                    color: Theme.text_secondary;
+                                    font_size: 13;
+                                    color: #8E95A5;
                                 }
 
                                 Row {
-                                    gap: 6dp;
+                                    gap: 4dp;
                                     align: Center;
-                                    Text { text: "❐ 9"; font_size: 12; color: #64748B; }
-                                    Badge { label: "Ready"; background: #1E3A5F; color: #60A5FA; }
+                                    Icon {
+                                        svg: "pages";
+                                        size: 13;
+                                        color: #8E95A5;
+                                    }
+                                    Text { text: "9"; font_size: 13; color: #8E95A5; }
                                 }
                             }
 
                             Button {
                                 id: "doc_opt_btn_1";
-                                text: "⋮";
                                 background: #00000000;
-                                foreground: Theme.text_secondary;
-                                font_size: 18;
+                                width: 32dp;
+                                height: 32dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     on_share_doc();
+                                }
+                                Icon {
+                                    svg: "more_vert";
+                                    size: 20;
+                                    color: #8E95A5;
                                 }
                             }
                         }
 
-                        // Card 3
+                        // Item 3: Colorful Package Box
                         Row {
                             width: 100%;
-                            background: Theme.surface;
-                            border_radius: 14dp;
-                            padding: 10dp;
-                            gap: 12dp;
+                            background: #00000000;
+                            gap: 14dp;
                             align: Center;
 
                             Column {
-                                width: 68dp;
-                                height: 80dp;
+                                width: 66dp;
+                                height: 86dp;
                                 border_radius: 8dp;
-                                background: #1E293B;
-                                padding: 6dp;
+                                background: #0F172A;
+                                border_width: 1.0;
+                                border_color: #1E293B;
+                                clip: true;
                                 justify: SpaceBetween;
 
                                 Column {
-                                    gap: 3dp;
-                                    Row { width: 100%; height: 4dp; background: #10B981; border_radius: 2dp; }
-                                    Row { width: 90%; height: 3dp; background: #64748B; border_radius: 2dp; }
+                                    width: 100%;
+                                    height: 40dp;
+                                    background: #DC2626;
+                                    align: Center;
+                                    justify: Center;
+                                    Text { text: "SUN"; font_size: 9; font_weight: 800; color: #FFFFFF; }
                                 }
 
                                 Row {
                                     width: 100%;
-                                    justify: End;
+                                    height: 40dp;
+                                    background: #06B6D4;
+                                    align: Center;
+                                    justify: SpaceBetween;
+                                    padding_x: 4dp;
+                                    Text { text: "LYNE"; font_size: 8; font_weight: 800; color: #000000; }
                                     Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
                                 }
                             }
@@ -653,33 +741,43 @@ export component ScanCraftApp {
 
                                 Text {
                                     text: "New Doc 11-09-2026 13.00";
-                                    font_size: 15;
+                                    font_size: 16;
                                     font_weight: 600;
-                                    color: Theme.text_primary;
+                                    color: #FFFFFF;
                                 }
 
                                 Text {
                                     text: "09/11/26 13:00";
-                                    font_size: 12;
-                                    color: Theme.text_secondary;
+                                    font_size: 13;
+                                    color: #8E95A5;
                                 }
 
                                 Row {
-                                    gap: 6dp;
+                                    gap: 4dp;
                                     align: Center;
-                                    Text { text: "❐ 3"; font_size: 12; color: #64748B; }
-                                    Badge { label: "Ready"; background: #1E3A5F; color: #60A5FA; }
+                                    Icon {
+                                        svg: "pages";
+                                        size: 13;
+                                        color: #8E95A5;
+                                    }
+                                    Text { text: "3"; font_size: 13; color: #8E95A5; }
                                 }
                             }
 
                             Button {
                                 id: "doc_opt_btn_2";
-                                text: "⋮";
                                 background: #00000000;
-                                foreground: Theme.text_secondary;
-                                font_size: 18;
+                                width: 32dp;
+                                height: 32dp;
+                                align: Center;
+                                justify: Center;
                                 on_tap => {
                                     on_share_doc();
+                                }
+                                Icon {
+                                    svg: "more_vert";
+                                    size: 20;
+                                    color: #8E95A5;
                                 }
                             }
                         }
@@ -690,54 +788,82 @@ export component ScanCraftApp {
                 Row {
                     width: 100%;
                     height: 64dp;
-                    background: #090D14;
-                    border_radius: 24dp;
+                    background: #000000;
+                    border_width: 1.0;
+                    border_color: #1E293B;
+                    border_radius: 28dp;
                     align: Center;
                     justify: SpaceAround;
-                    padding_x: 16dp;
+                    padding_x: 20dp;
 
                     // Documents Tab (Active)
                     Button {
                         id: "nav_tab_documents";
-                        text: "📄 Documents";
-                        background: #083344;
-                        foreground: #00BCD4;
-                        font_size: 14;
-                        font_weight: 600;
-                        border_radius: 16dp;
-                        padding: 8dp;
+                        background: #00000000;
+                        align: Center;
+                        justify: Center;
                         on_tap => {
                             active_tab = 0;
+                        }
+                        Column {
+                            align: Center;
+                            gap: 3dp;
+                            Icon {
+                                svg: "document";
+                                size: 20;
+                                color: #00BCD4;
+                            }
+                            Text {
+                                text: "Documents";
+                                font_size: 11;
+                                font_weight: 700;
+                                color: #00BCD4;
+                            }
                         }
                     }
 
                     // Center Camera FAB Button
                     Button {
                         id: "nav_camera_fab";
-                        text: "📷";
                         background: #00897B;
-                        foreground: #FFFFFF;
-                        font_size: 24;
                         border_radius: 28dp;
                         width: 56dp;
                         height: 56dp;
+                        align: Center;
+                        justify: Center;
                         on_tap => {
                             on_capture_photo();
+                        }
+                        Icon {
+                            svg: "camera";
+                            size: 26;
+                            color: #FFFFFF;
                         }
                     }
 
                     // Tools Tab
                     Button {
                         id: "nav_tab_tools";
-                        text: "🛠️ Tools";
                         background: #00000000;
-                        foreground: #94A3B8;
-                        font_size: 14;
-                        font_weight: 600;
-                        border_radius: 16dp;
-                        padding: 8dp;
+                        align: Center;
+                        justify: Center;
                         on_tap => {
-                            active_tab = 2;
+                            active_tab = 1;
+                        }
+                        Column {
+                            align: Center;
+                            gap: 3dp;
+                            Icon {
+                                svg: "tools";
+                                size: 20;
+                                color: #8E95A5;
+                            }
+                            Text {
+                                text: "Tools";
+                                font_size: 11;
+                                font_weight: 600;
+                                color: #8E95A5;
+                            }
                         }
                     }
                 }
@@ -760,8 +886,8 @@ export component ScanCraftApp {
                     Button {
                         id: "back_to_docs_btn";
                         text: "← Back";
-                        background: Theme.surface_variant;
-                        foreground: Theme.text_primary;
+                        background: #1E293B;
+                        foreground: #FFFFFF;
                         border_radius: 8dp;
                         padding: 6dp;
                         on_tap => {
@@ -773,7 +899,7 @@ export component ScanCraftApp {
                         text: doc_title;
                         font_size: 16;
                         font_weight: 700;
-                        color: Theme.text_primary;
+                        color: #FFFFFF;
                     }
 
                     Button {
@@ -887,8 +1013,8 @@ export component ScanCraftApp {
 
                     Button {
                         text: "↻ Rotate 90°";
-                        background: Theme.surface_variant;
-                        foreground: Theme.text_primary;
+                        background: #1E293B;
+                        foreground: #FFFFFF;
                         border_radius: 8dp;
                         padding: 8dp;
                         flex_grow: 1.0;
@@ -939,8 +1065,8 @@ export component ScanCraftApp {
 
                     Button {
                         text: "← Back";
-                        background: Theme.surface_variant;
-                        foreground: Theme.text_primary;
+                        background: #1E293B;
+                        foreground: #FFFFFF;
                         border_radius: 8dp;
                         padding: 6dp;
                         on_tap => {
@@ -952,7 +1078,7 @@ export component ScanCraftApp {
                         text: "AI Scanner Tools";
                         font_size: 18;
                         font_weight: 700;
-                        color: Theme.text_primary;
+                        color: #FFFFFF;
                     }
 
                     Button {
@@ -970,7 +1096,7 @@ export component ScanCraftApp {
                 // OCR Extraction Card
                 Column {
                     width: 100%;
-                    background: Theme.surface;
+                    background: #1E293B;
                     border_radius: 12dp;
                     padding: 12dp;
                     gap: 8dp;
@@ -979,14 +1105,14 @@ export component ScanCraftApp {
                         width: 100%;
                         justify: SpaceBetween;
                         align: Center;
-                        Text { text: "AI Optical Character Recognition (OCR)"; font_size: 15; font_weight: 600; color: Theme.text_primary; }
+                        Text { text: "AI Optical Character Recognition (OCR)"; font_size: 15; font_weight: 600; color: #FFFFFF; }
                         Badge { label: "Multi-Language"; background: #065F46; color: #6EE7B7; }
                     }
 
                     Text {
                         text: ocr_text;
                         font_size: 13;
-                        color: Theme.text_secondary;
+                        color: #CBD5E1;
                     }
 
                     Row {
@@ -1007,24 +1133,24 @@ export component ScanCraftApp {
                 // Device Capabilities & Permissions Card
                 Column {
                     width: 100%;
-                    background: Theme.surface;
+                    background: #1E293B;
                     border_radius: 12dp;
                     padding: 12dp;
                     gap: 8dp;
 
-                    Text { text: "Hardware & Permissions Telemetry"; font_size: 15; font_weight: 600; color: Theme.text_primary; }
+                    Text { text: "Hardware & Permissions Telemetry"; font_size: 15; font_weight: 600; color: #FFFFFF; }
 
                     Row {
                         gap: 8dp;
                         Badge { label: camera_perm_badge; background: #059669; color: #FFFFFF; }
-                        Badge { label: battery_status; background: Theme.surface_variant; color: Theme.text_primary; }
-                        Badge { label: storage_status; background: Theme.surface_variant; color: Theme.text_secondary; }
+                        Badge { label: battery_status; background: #334155; color: #FFFFFF; }
+                        Badge { label: storage_status; background: #334155; color: #94A3B8; }
                     }
 
                     Button {
                         text: "Request Camera & Storage Permissions";
-                        background: Theme.surface_variant;
-                        foreground: Theme.text_primary;
+                        background: #334155;
+                        foreground: #FFFFFF;
                         border_radius: 8dp;
                         padding: 8dp;
                         on_tap => {
@@ -1049,8 +1175,8 @@ export component ScanCraftApp {
 
                     Button {
                         text: "← Back";
-                        background: Theme.surface_variant;
-                        foreground: Theme.text_primary;
+                        background: #1E293B;
+                        foreground: #FFFFFF;
                         border_radius: 8dp;
                         padding: 6dp;
                         on_tap => {
@@ -1062,7 +1188,7 @@ export component ScanCraftApp {
                         text: "PDF Tools Studio";
                         font_size: 18;
                         font_weight: 700;
-                        color: Theme.text_primary;
+                        color: #FFFFFF;
                     }
 
                     Button {
@@ -1079,12 +1205,12 @@ export component ScanCraftApp {
 
                 Column {
                     width: 100%;
-                    background: Theme.surface;
+                    background: #1E293B;
                     border_radius: 12dp;
                     padding: 12dp;
                     gap: 10dp;
 
-                    Text { text: "Export & PDF Conversion Options"; font_size: 15; font_weight: 600; color: Theme.text_primary; }
+                    Text { text: "Export & PDF Conversion Options"; font_size: 15; font_weight: 600; color: #FFFFFF; }
 
                     Button {
                         text: "📄 Export as High-Quality Searchable PDF (A4)";
@@ -1099,7 +1225,7 @@ export component ScanCraftApp {
 
                     Button {
                         text: "🗜️ Compress PDF to Under 1 MB";
-                        background: #1E293B;
+                        background: #334155;
                         foreground: #E2E8F0;
                         border_radius: 8dp;
                         padding: 10dp;
@@ -1110,7 +1236,7 @@ export component ScanCraftApp {
 
                     Button {
                         text: "🔒 Add Password Protection & Security";
-                        background: #1E293B;
+                        background: #334155;
                         foreground: #E2E8F0;
                         border_radius: 8dp;
                         padding: 10dp;
