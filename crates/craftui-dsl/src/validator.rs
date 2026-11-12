@@ -853,6 +853,19 @@ fn validate_element(el: &ElementNode, ctx: &ScopeCtx<'_>, diags: &mut Vec<Diagno
         validate_animate_spec(spec, ctx, diags);
     }
 
+    for state in &el.states {
+        validate_expr(&state.condition, Some(&state.name), state.span, ctx, diags);
+        for prop in &state.property_overrides {
+            validate_expr(&prop.value, Some(prop.name.as_str()), prop.span, ctx, diags);
+        }
+    }
+
+    for tr in &el.transitions {
+        for anim in &tr.animations {
+            validate_animate_spec(anim, ctx, diags);
+        }
+    }
+
     for child in &el.children {
         validate_child(child, ctx, diags);
     }

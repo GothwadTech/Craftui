@@ -186,7 +186,7 @@ fn resolve_source_internal(
         state.merged_components.push(comp.clone());
     }
 
-    let merged = CuiFile {
+    let mut merged = CuiFile {
         imports: parsed.file.imports.clone(),
         structs: state.merged_structs,
         enums: state.merged_enums,
@@ -199,6 +199,8 @@ fn resolve_source_internal(
         &merged,
         &extra_known_symbols,
     ));
+
+    crate::passes::run_optimization_passes(&mut merged);
 
     ResolvedCuiUnit {
         merged,

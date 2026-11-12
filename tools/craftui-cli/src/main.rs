@@ -118,13 +118,17 @@ enum Commands {
         #[arg(long, default_value = "ui")]
         dir: PathBuf,
     },
-    /// Open a live hot-reloading desktop preview window for a .cui file
+    /// Open an interactive live preview canvas for a .cui file with telemetry HUD, device frame, and inspector
     Preview {
         file: PathBuf,
         #[arg(long)]
         component: Option<String>,
         #[arg(long)]
         cpu: bool,
+        #[arg(long, help = "Render inside mobile device frame (Android 412x915)")]
+        device: bool,
+        #[arg(long, help = "Enable element inspection overlay")]
+        inspector: bool,
     },
     /// Parse, validate, and optionally emit AOT Rust code for .cui files
     Check {
@@ -228,14 +232,20 @@ fn run() -> Result<()> {
             file,
             component,
             cpu,
-        } => craftui_platform_desktop::run_hot_reload_cui(
+            device,
+            inspector,
+        } => craftui_platform_desktop::run_live_preview_cui(
             craftui_platform_desktop::WindowConfig {
-                title: format!("CraftUI Preview — {}", file.display()),
+                title: format!("CraftUI Live Preview — {}", file.display()),
                 force_cpu: cpu,
+                width: if device { 460.0 } else { 800.0 },
+                height: if device { 960.0 } else { 600.0 },
                 ..Default::default()
             },
             file,
             component,
+            device,
+            inspector,
         ),
         Commands::Check { path, emit_rust } => {
             let stats = check_cui_paths(&path, emit_rust)?;

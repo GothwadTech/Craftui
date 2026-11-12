@@ -6,13 +6,15 @@ pub mod codegen;
 pub mod cst;
 pub mod lexer;
 pub mod parser;
+pub mod passes;
 pub mod resolver;
 pub mod validator;
 
 pub use ast::{
     AnimateSpec, AssignOp, BinOp, CallbackDecl, ChildItem, ComponentDecl, CuiFile, Diagnostic,
     ElementNode, EnumDecl, Expr, HandlerBinding, ImportDecl, PropBinding, PropertyDecl,
-    PropertyDir, Severity, Span, Stmt, StructDecl, StructField, TypeExpr, Unit,
+    PropertyDir, Severity, Span, StateDecl, Stmt, StructDecl, StructField, TransitionSpec,
+    TypeExpr, Unit,
 };
 pub use codegen::{compile_cui_dir, compile_cui_file, generate_rust};
 pub use cst::{CuiLanguage, SyntaxKind, SyntaxNode, SyntaxToken};
@@ -461,5 +463,55 @@ export component Phase3Demo {
         assert!(code.contains("set_on_dismiss("));
         assert!(code.contains("ToastSeverity::Success"));
         assert!(code.contains("ToastItem {"));
+    }
+
+    #[test]
+    fn cleanroom_slint_parity_states_and_optimizer_passes() {
+        let src = r#"
+import { Button, Column, Container } from "std/widgets.cui"
+import { Theme } from "theme/tokens.cui"
+
+export component ParityCard {
+    in-out property <bool> is_active: false;
+    in-out property <int> count: 1 + 2 * 3;
+
+    Column {
+        width: 100%;
+        padding: Theme.spacing_md;
+        background: Theme.surface_container;
+
+        Container {
+            Button {
+                text: "Interactive State Button";
+                background: Theme.primary;
+                states [
+                    active when is_active: {
+                        background: Theme.primary_container;
+                    }
+                    inactive when !is_active: {
+                        background: Theme.surface;
+                    }
+                ]
+            }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        let diags = validate(&parsed.file);
+        assert!(diags.is_empty(), "semantic diags: {diags:?}");
+
+        let rust = generate_rust(&parsed.file);
+        // Verify states lowered into reactive ternaries
+        assert!(rust.contains("primary_container"));
+        // Verify constant propagation folded 1 + 2 * 3 = 7
+        assert!(rust.contains("7"));
+        // Verify dead Container wrapper was pruned
+        assert!(!rust.contains("tree.container("));
     }
 }
