@@ -281,11 +281,21 @@ impl M3Elevation {
     pub fn to_shadow(self, ambient_tint: Color) -> crate::BoxShadow {
         match self {
             Self::Level0 => crate::BoxShadow::drop(0.0, 0.0, 0.0, 0.0, Color::TRANSPARENT),
-            Self::Level1 => crate::BoxShadow::drop(0.0, 1.0, 3.0, 0.0, ambient_tint.with_alpha(0.14)),
-            Self::Level2 => crate::BoxShadow::drop(0.0, 2.0, 6.0, 0.0, ambient_tint.with_alpha(0.18)),
-            Self::Level3 => crate::BoxShadow::drop(0.0, 4.0, 10.0, 0.0, ambient_tint.with_alpha(0.22)),
-            Self::Level4 => crate::BoxShadow::drop(0.0, 6.0, 14.0, 0.0, ambient_tint.with_alpha(0.26)),
-            Self::Level5 => crate::BoxShadow::drop(0.0, 8.0, 20.0, 0.0, ambient_tint.with_alpha(0.30)),
+            Self::Level1 => {
+                crate::BoxShadow::drop(0.0, 1.0, 3.0, 0.0, ambient_tint.with_alpha(0.14))
+            }
+            Self::Level2 => {
+                crate::BoxShadow::drop(0.0, 2.0, 6.0, 0.0, ambient_tint.with_alpha(0.18))
+            }
+            Self::Level3 => {
+                crate::BoxShadow::drop(0.0, 4.0, 10.0, 0.0, ambient_tint.with_alpha(0.22))
+            }
+            Self::Level4 => {
+                crate::BoxShadow::drop(0.0, 6.0, 14.0, 0.0, ambient_tint.with_alpha(0.26))
+            }
+            Self::Level5 => {
+                crate::BoxShadow::drop(0.0, 8.0, 20.0, 0.0, ambient_tint.with_alpha(0.30))
+            }
         }
     }
 }
@@ -325,7 +335,12 @@ impl Material3Tokens {
                 on_primary: seed.lerp(Color::BLACK, 0.85),
                 primary_container: seed.lerp(Color::BLACK, 0.55),
                 on_primary_container: seed.lerp(Color::WHITE, 0.8),
-                secondary: Color::rgb(r.saturating_add(20), g.saturating_add(20), b.saturating_add(30)).lerp(Color::WHITE, 0.35),
+                secondary: Color::rgb(
+                    r.saturating_add(20),
+                    g.saturating_add(20),
+                    b.saturating_add(30),
+                )
+                .lerp(Color::WHITE, 0.35),
                 on_secondary: Color::BLACK,
                 secondary_container: seed.lerp(Color::rgb(20, 25, 35), 0.6),
                 on_secondary_container: Color::rgb(220, 230, 245),
@@ -348,7 +363,11 @@ impl Material3Tokens {
                 on_primary: Color::WHITE,
                 primary_container: seed.lerp(Color::WHITE, 0.75),
                 on_primary_container: seed.lerp(Color::BLACK, 0.7),
-                secondary: Color::rgb(r.saturating_add(15), g.saturating_add(15), b.saturating_add(20)),
+                secondary: Color::rgb(
+                    r.saturating_add(15),
+                    g.saturating_add(15),
+                    b.saturating_add(20),
+                ),
                 on_secondary: Color::WHITE,
                 secondary_container: seed.lerp(Color::WHITE, 0.82),
                 on_secondary_container: Color::rgb(20, 30, 50),
@@ -371,7 +390,11 @@ impl Material3Tokens {
     /// Convert this Material 3 palette to standard CraftUI ThemeTokens.
     pub fn to_theme_tokens(&self) -> ThemeTokens {
         ThemeTokens {
-            mode: if self.is_dark { ThemeMode::Dark } else { ThemeMode::Light },
+            mode: if self.is_dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
             background: self.surface,
             surface: self.surface_container,
             surface_variant: self.surface_variant,
@@ -412,9 +435,14 @@ mod tests {
         let dark = Material3Tokens::from_seed(seed, true);
 
         // Dark mode primary should be lighter (tone 80) than light mode primary (tone 40)
-        let light_brightness = (light.primary.r as u32 + light.primary.g as u32 + light.primary.b as u32) / 3;
-        let dark_brightness = (dark.primary.r as u32 + dark.primary.g as u32 + dark.primary.b as u32) / 3;
-        assert!(dark_brightness > light_brightness, "M3 dark mode primary is higher tone than light mode");
+        let light_brightness =
+            (light.primary.r as u32 + light.primary.g as u32 + light.primary.b as u32) / 3;
+        let dark_brightness =
+            (dark.primary.r as u32 + dark.primary.g as u32 + dark.primary.b as u32) / 3;
+        assert!(
+            dark_brightness > light_brightness,
+            "M3 dark mode primary is higher tone than light mode"
+        );
 
         // Surface tones
         assert_eq!(dark.surface, Color::rgb(15, 20, 30));

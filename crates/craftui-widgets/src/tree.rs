@@ -243,8 +243,7 @@ enum ControlVisualAnim {
 impl ControlVisualAnim {
     fn is_animating(&self) -> bool {
         match self {
-            Self::Button { hover_t, press_t }
-            | Self::FloatingActionButton { hover_t, press_t } => {
+            Self::Button { hover_t, press_t } | Self::FloatingActionButton { hover_t, press_t } => {
                 hover_t.is_animating() || press_t.is_animating()
             }
             Self::Switch { knob_t } => knob_t.is_animating(),
@@ -264,8 +263,7 @@ impl ControlVisualAnim {
 
     fn step(&mut self, dt_sec: f32) -> bool {
         match self {
-            Self::Button { hover_t, press_t }
-            | Self::FloatingActionButton { hover_t, press_t } => {
+            Self::Button { hover_t, press_t } | Self::FloatingActionButton { hover_t, press_t } => {
                 let a = hover_t.step(dt_sec);
                 let b = press_t.step(dt_sec);
                 a || b
@@ -488,14 +486,12 @@ impl WidgetTree {
                     ),
                 })
             }
-            WidgetKind::BottomNavBar { selected, .. } => {
-                Some(ControlVisualAnim::BottomNavBar {
-                    active_t: AnimatedFloat::new(
-                        selected.get_untracked() as f32,
-                        TransitionCurve::spring(360.0, 30.0),
-                    ),
-                })
-            }
+            WidgetKind::BottomNavBar { selected, .. } => Some(ControlVisualAnim::BottomNavBar {
+                active_t: AnimatedFloat::new(
+                    selected.get_untracked() as f32,
+                    TransitionCurve::spring(360.0, 30.0),
+                ),
+            }),
             WidgetKind::FloatingActionButton { .. } => {
                 Some(ControlVisualAnim::FloatingActionButton {
                     hover_t: AnimatedFloat::new(0.0, TransitionCurve::spring(500.0, 36.0)),
@@ -939,7 +935,10 @@ impl WidgetTree {
                         if let Some(ref b) = background {
                             let _ = b.get();
                         }
-                        mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::A11Y);
+                        mark_node_dirty(
+                            id,
+                            DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::A11Y,
+                        );
                     });
                 }
             }
@@ -5664,8 +5663,7 @@ impl WidgetTree {
                         .with_weight(if act_weight > 0.5 { 600.0 } else { 500.0 })
                         .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
                     let max_w = (sr.width - 8.0).max(10.0);
-                    let display_title =
-                        self.text_engine.truncate_with_ellipsis(title, &tst, max_w);
+                    let display_title = self.text_engine.truncate_with_ellipsis(title, &tst, max_w);
                     let measured = self.text_engine.measure(&display_title, &tst, None);
                     scene.push_clip(sr, CornerRadii::all(6.0));
                     scene.draw_text(
@@ -5722,8 +5720,12 @@ impl WidgetTree {
                 let pill_h = 32.0f32.min(rect.height * 0.55);
                 let pill_cx = rect.x + (anim_idx + 0.5) * item_w;
                 let pill_cy = rect.y + 18.0;
-                let pill_r =
-                    Rect::new(pill_cx - pill_w * 0.5, pill_cy - pill_h * 0.5, pill_w, pill_h);
+                let pill_r = Rect::new(
+                    pill_cx - pill_w * 0.5,
+                    pill_cy - pill_h * 0.5,
+                    pill_w,
+                    pill_h,
+                );
 
                 let pill_bg = theme.primary.with_alpha(0.18);
                 scene.fill_rect(pill_r, pill_bg, CornerRadii::all(16.0));
@@ -5737,9 +5739,7 @@ impl WidgetTree {
                     let icon_color = theme.text_secondary.lerp(theme.primary, act_weight);
 
                     if !icon_glyph.is_empty() {
-                        let icon_st = TextStyle::default()
-                            .with_size(18.0)
-                            .with_color(icon_color);
+                        let icon_st = TextStyle::default().with_size(18.0).with_color(icon_color);
                         let isz = self.text_engine.measure(icon_glyph, &icon_st, None);
                         scene.draw_text(
                             Point::new(cx - isz.width * 0.5, rect.y + 9.0),
@@ -5754,15 +5754,19 @@ impl WidgetTree {
                         .with_weight(if act_weight > 0.5 { 600.0 } else { 500.0 })
                         .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
                     let max_lbl_w = (item_w - 6.0).max(10.0);
-                    let display_lbl =
-                        self.text_engine.truncate_with_ellipsis(title, &lbl_st, max_lbl_w);
+                    let display_lbl = self
+                        .text_engine
+                        .truncate_with_ellipsis(title, &lbl_st, max_lbl_w);
                     let lsz = self.text_engine.measure(&display_lbl, &lbl_st, None);
 
                     let item_rect =
                         Rect::new(rect.x + i as f32 * item_w, rect.y, item_w, rect.height);
                     scene.push_clip(item_rect, CornerRadii::ZERO);
                     scene.draw_text(
-                        Point::new(cx - lsz.width * 0.5, rect.y + rect.height - lsz.height - 6.0),
+                        Point::new(
+                            cx - lsz.width * 0.5,
+                            rect.y + rect.height - lsz.height - 6.0,
+                        ),
                         display_lbl,
                         lbl_st,
                         Some(max_lbl_w),

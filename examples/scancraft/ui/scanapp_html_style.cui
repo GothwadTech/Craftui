@@ -1,11 +1,12 @@
 export component ScanAppHtmlView {
     in-out property <int> active_tab: 0;
-    in-out property <string> doc_title: "Scanned_Doc_001.pdf";
-    in-out property <string> status_message: "ScanApp Ready — HTML & Tailwind Syntax Active";
+    in-out property <string> doc_title: "New Doc 11-09-2026 21.45";
+    in-out property <string> status_message: "ScanCraft Ready — HTML & Tailwind AOT Mode";
 
     callback on_capture_photo();
     callback on_import_gallery();
     callback on_theme_toggle();
+    callback on_share_doc();
 
     div {
         class: "flex flex-col w-full h-full bg-black p-4 gap-4";
@@ -14,26 +15,27 @@ export component ScanAppHtmlView {
         header {
             class: "flex flex-row justify-between items-center w-full py-1";
             button {
-                class: "w-10 h-10 rounded-full bg-[#0E2938]";
-                Icon { svg: "user"; }
+                class: "w-10 h-10 rounded-full bg-[#0E2938] items-center justify-center";
+                Icon { svg: "user"; size: 20; color: #00BCD4; }
             }
             div {
                 class: "flex flex-row items-center gap-2";
+                Icon { svg: "aperture"; size: 24; color: #00BCD4; }
                 span {
                     class: "text-xl font-bold text-[#00BCD4]";
-                    text: "ScanApp";
+                    text: "ScanCraft";
                 }
             }
             div {
                 class: "flex flex-row items-center gap-3";
                 button {
-                    class: "w-8 h-8 rounded-full";
+                    class: "w-8 h-8 rounded-full items-center justify-center";
                     on_tap => { on_theme_toggle(); }
-                    Icon { svg: "sun"; }
+                    Icon { svg: "sun"; size: 20; color: #FACC15; }
                 }
                 button {
-                    class: "w-8 h-8 rounded-full";
-                    Icon { svg: "search"; }
+                    class: "w-8 h-8 rounded-full items-center justify-center";
+                    Icon { svg: "search"; size: 20; color: #FFFFFF; }
                 }
             }
         }
@@ -41,14 +43,16 @@ export component ScanAppHtmlView {
         // 8-Tool Action Grid (2 Rows x 4 Columns)
         section {
             class: "flex flex-col w-full gap-3";
+
+            // Row 1: Smart Scan, Import Photos, Import Files, ID Card
             div {
                 class: "flex flex-row justify-between items-center w-full";
                 button {
-                    class: "flex flex-col items-center gap-2";
+                    class: "flex flex-col items-center gap-1.5";
                     on_tap => { on_capture_photo(); }
                     div {
-                        class: "w-14 h-14 rounded-full bg-[#0E3B43] shadow-md";
-                        Icon { svg: "camera"; }
+                        class: "w-14 h-14 rounded-full bg-[#0E3B43] items-center justify-center shadow-md";
+                        Icon { svg: "camera"; size: 24; color: #00BCD4; }
                     }
                     span {
                         class: "text-xs font-medium text-slate-200";
@@ -56,11 +60,11 @@ export component ScanAppHtmlView {
                     }
                 }
                 button {
-                    class: "flex flex-col items-center gap-2";
+                    class: "flex flex-col items-center gap-1.5";
                     on_tap => { on_import_gallery(); }
                     div {
-                        class: "w-14 h-14 rounded-full bg-[#1E3A68] shadow-md";
-                        Icon { svg: "image"; }
+                        class: "w-14 h-14 rounded-full bg-[#1E3A68] items-center justify-center shadow-md";
+                        Icon { svg: "image"; size: 24; color: #38BDF8; }
                     }
                     span {
                         class: "text-xs font-medium text-slate-200";
@@ -68,10 +72,11 @@ export component ScanAppHtmlView {
                     }
                 }
                 button {
-                    class: "flex flex-col items-center gap-2";
+                    class: "flex flex-col items-center gap-1.5";
+                    on_tap => { on_import_gallery(); }
                     div {
-                        class: "w-14 h-14 rounded-full bg-[#452A14] shadow-md";
-                        Icon { svg: "upload"; }
+                        class: "w-14 h-14 rounded-full bg-[#452A14] items-center justify-center shadow-md";
+                        Icon { svg: "upload"; size: 24; color: #F97316; }
                     }
                     span {
                         class: "text-xs font-medium text-slate-200";
@@ -79,10 +84,10 @@ export component ScanAppHtmlView {
                     }
                 }
                 button {
-                    class: "flex flex-col items-center gap-2";
+                    class: "flex flex-col items-center gap-1.5";
                     div {
-                        class: "w-14 h-14 rounded-full bg-[#0E2F38] shadow-md";
-                        Icon { svg: "badge_id"; }
+                        class: "w-14 h-14 rounded-full bg-[#0C3C47] items-center justify-center shadow-md";
+                        Icon { svg: "badge_id"; size: 24; color: #06B6D4; }
                     }
                     span {
                         class: "text-xs font-medium text-slate-200";
@@ -90,39 +95,323 @@ export component ScanAppHtmlView {
                     }
                 }
             }
-        }
 
-        // Recent Docs Section
-        section {
-            class: "flex flex-col w-full gap-3";
+            // Row 2: To Text (OCR), PDF Tools, Watermark, All Tools
             div {
                 class: "flex flex-row justify-between items-center w-full";
-                span {
+                button {
+                    class: "flex flex-col items-center gap-1.5";
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#3B1A59] items-center justify-center shadow-md";
+                        span {
+                            class: "text-lg font-bold text-[#B388FF]";
+                            text: "TT";
+                        }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "To Text (OCR)";
+                    }
+                }
+                button {
+                    class: "flex flex-col items-center gap-1.5";
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#4A151B] items-center justify-center shadow-md";
+                        Icon { svg: "pdf"; size: 24; color: #EF4444; }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "PDF Tools";
+                    }
+                }
+                button {
+                    class: "flex flex-col items-center gap-1.5";
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#0E3D38] items-center justify-center shadow-md";
+                        Icon { svg: "watermark"; size: 24; color: #10B981; }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "Watermark";
+                    }
+                }
+                button {
+                    class: "flex flex-col items-center gap-1.5";
+                    div {
+                        class: "w-14 h-14 rounded-full bg-[#2A303A] items-center justify-center shadow-md";
+                        Icon { svg: "grid_3x3"; size: 24; color: #8E95A5; }
+                    }
+                    span {
+                        class: "text-xs font-medium text-slate-200";
+                        text: "All Tools";
+                    }
+                }
+            }
+        }
+
+        // Recent Docs Section Header
+        div {
+            class: "flex flex-row justify-between items-center w-full pt-3 pb-1";
+            div {
+                class: "flex flex-col gap-0.5";
+                h2 {
                     class: "text-lg font-bold text-white";
                     text: "Recent Docs";
                 }
+                div {
+                    class: "flex flex-row items-center gap-1";
+                    span {
+                        class: "text-xs text-slate-400";
+                        text: "All docs (3)";
+                    }
+                    Icon { svg: "chevron_down"; size: 12; color: #94A3B8; }
+                }
             }
+
+            // 4 Header Actions: New Folder, Sort, Grid View, Batch Select
             div {
-                class: "flex flex-row items-center justify-between w-full p-3 bg-zinc-900 rounded-xl";
+                class: "flex flex-row items-center gap-4 text-slate-400";
+                button {
+                    class: "w-6 h-6 items-center justify-center";
+                    Icon { svg: "folder_plus"; size: 18; color: #94A3B8; }
+                }
+                button {
+                    class: "w-6 h-6 items-center justify-center";
+                    Icon { svg: "sort"; size: 18; color: #94A3B8; }
+                }
+                button {
+                    class: "w-6 h-6 items-center justify-center";
+                    Icon { svg: "grid"; size: 18; color: #94A3B8; }
+                }
+                button {
+                    class: "w-6 h-6 items-center justify-center";
+                    Icon { svg: "check_double"; size: 18; color: #94A3B8; }
+                }
+            }
+        }
+
+        // 3 Recent Document List Items (Matching Real Screen)
+        div {
+            class: "flex flex-col w-full gap-3";
+
+            // Item 1: Terminal / Code Screen Document
+            button {
+                class: "flex flex-row items-center justify-between w-full py-1";
+                on_tap => {
+                    doc_title = "New Doc 11-09-2026 21.45";
+                    active_tab = 1;
+                }
                 div {
                     class: "flex flex-row items-center gap-3";
+
+                    // Thumbnail with mini code bars and teal checkmark badge
                     div {
-                        class: "w-12 h-14 bg-slate-800 rounded-md";
+                        class: "flex flex-col justify-between w-16 h-21 bg-[#0D1525] border border-slate-800 rounded-lg p-2";
+                        div {
+                            class: "flex flex-col gap-1 w-full";
+                            div { class: "w-8 h-1.5 bg-[#38BDF8] rounded-sm"; }
+                            div { class: "w-12 h-1.5 bg-[#34D399] rounded-sm"; }
+                            div { class: "w-10 h-1.5 bg-[#FBBF24] rounded-sm"; }
+                            div { class: "w-11 h-1.5 bg-[#A855F7] rounded-sm"; }
+                            div { class: "w-6 h-1.5 bg-[#64748B] rounded-sm"; }
+                        }
+                        div {
+                            class: "flex flex-row justify-end w-full";
+                            div {
+                                class: "w-4 h-4 rounded-full bg-[#00897B] items-center justify-center";
+                                Icon { svg: "check"; size: 10; color: #FFFFFF; }
+                            }
+                        }
                     }
+
+                    // Metadata
                     div {
                         class: "flex flex-col gap-1";
-                        span {
-                            class: "text-sm font-semibold text-white";
+                        h3 {
+                            class: "text-base font-semibold text-white";
                             text: "New Doc 11-09-2026 21.45";
                         }
                         span {
                             class: "text-xs text-slate-400";
-                            text: "09/11/26 21:46 • 3 Pages";
+                            text: "09/11/26 21:46";
+                        }
+                        div {
+                            class: "flex flex-row items-center gap-1.5 text-slate-400";
+                            Icon { svg: "pages"; size: 12; color: #94A3B8; }
+                            span {
+                                class: "text-xs text-slate-400";
+                                text: "3";
+                            }
                         }
                     }
+                }
+
+                // 3-Dots Menu
+                button {
+                    class: "w-8 h-8 items-center justify-center";
+                    on_tap => { on_share_doc(); }
+                    Icon { svg: "more_vert"; size: 18; color: #94A3B8; }
+                }
+            }
+
+            // Item 2: Handwritten Notes on Lined Paper
+            button {
+                class: "flex flex-row items-center justify-between w-full py-1";
+                on_tap => {
+                    doc_title = "New Doc 11-09-2026 15.11";
+                    active_tab = 1;
+                }
+                div {
+                    class: "flex flex-row items-center gap-3";
+
+                    // Thumbnail with lined notebook simulation and teal checkmark badge
+                    div {
+                        class: "flex flex-col justify-between w-16 h-21 bg-[#F8FAFC] border border-slate-700 rounded-lg p-2";
+                        div {
+                            class: "flex flex-col gap-1 w-full";
+                            div { class: "w-8 h-1.5 bg-slate-400 rounded-sm"; }
+                            div { class: "w-11 h-1.5 bg-slate-400 rounded-sm"; }
+                            div { class: "w-7 h-1.5 bg-slate-400 rounded-sm"; }
+                            div { class: "w-10 h-1.5 bg-slate-400 rounded-sm"; }
+                            div { class: "w-9 h-1.5 bg-slate-400 rounded-sm"; }
+                        }
+                        div {
+                            class: "flex flex-row justify-end w-full";
+                            div {
+                                class: "w-4 h-4 rounded-full bg-[#00897B] items-center justify-center";
+                                Icon { svg: "check"; size: 10; color: #FFFFFF; }
+                            }
+                        }
+                    }
+
+                    // Metadata
+                    div {
+                        class: "flex flex-col gap-1";
+                        h3 {
+                            class: "text-base font-semibold text-white";
+                            text: "New Doc 11-09-2026 15.11";
+                        }
+                        span {
+                            class: "text-xs text-slate-400";
+                            text: "09/11/26 15:13";
+                        }
+                        div {
+                            class: "flex flex-row items-center gap-1.5 text-slate-400";
+                            Icon { svg: "pages"; size: 12; color: #94A3B8; }
+                            span {
+                                class: "text-xs text-slate-400";
+                                text: "9";
+                            }
+                        }
+                    }
+                }
+
+                button {
+                    class: "w-8 h-8 items-center justify-center";
+                    on_tap => { on_share_doc(); }
+                    Icon { svg: "more_vert"; size: 18; color: #94A3B8; }
+                }
+            }
+
+            // Item 3: Colorful Package Box (SUN / LYNE)
+            button {
+                class: "flex flex-row items-center justify-between w-full py-1";
+                on_tap => {
+                    doc_title = "New Doc 11-09-2026 13.00";
+                    active_tab = 1;
+                }
+                div {
+                    class: "flex flex-row items-center gap-3";
+
+                    // Thumbnail with SUN / LYNE split box simulation and teal checkmark badge
+                    div {
+                        class: "flex flex-col justify-between w-16 h-21 bg-slate-900 border border-slate-800 rounded-lg p-1";
+                        div {
+                            class: "flex flex-col w-full gap-0.5";
+                            div {
+                                class: "h-6 bg-[#DC2626] rounded-sm items-center justify-center";
+                                span {
+                                    class: "text-xs font-bold text-white";
+                                    text: "SUN";
+                                }
+                            }
+                            div {
+                                class: "h-6 bg-[#06B6D4] rounded-sm items-center justify-center";
+                                span {
+                                    class: "text-xs font-bold text-black";
+                                    text: "LYNE";
+                                }
+                            }
+                        }
+                        div {
+                            class: "flex flex-row justify-end w-full";
+                            div {
+                                class: "w-4 h-4 rounded-full bg-[#00897B] items-center justify-center";
+                                Icon { svg: "check"; size: 10; color: #FFFFFF; }
+                            }
+                        }
+                    }
+
+                    // Metadata
+                    div {
+                        class: "flex flex-col gap-1";
+                        h3 {
+                            class: "text-base font-semibold text-white";
+                            text: "New Doc 11-09-2026 13.00";
+                        }
+                        span {
+                            class: "text-xs text-slate-400";
+                            text: "09/11/26 13:00";
+                        }
+                        div {
+                            class: "flex flex-row items-center gap-1.5 text-slate-400";
+                            Icon { svg: "pages"; size: 12; color: #94A3B8; }
+                            span {
+                                class: "text-xs text-slate-400";
+                                text: "3";
+                            }
+                        }
+                    }
+                }
+
+                button {
+                    class: "w-8 h-8 items-center justify-center";
+                    on_tap => { on_share_doc(); }
+                    Icon { svg: "more_vert"; size: 18; color: #94A3B8; }
+                }
+            }
+        }
+
+        // Bottom Navigation Bar with Center Floating Camera FAB
+        nav {
+            class: "flex flex-row justify-around items-center w-full py-2 bg-black";
+
+            // Documents Tab
+            button {
+                class: "flex flex-col items-center gap-1";
+                Icon { svg: "document"; size: 24; color: #00BCD4; }
+                span {
+                    class: "text-xs font-semibold text-[#00BCD4]";
+                    text: "Documents";
+                }
+            }
+
+            // Center: Elevated Circular Camera FAB
+            button {
+                class: "w-16 h-16 rounded-full bg-[#00897B] items-center justify-center shadow-lg teal-glow";
+                on_tap => { on_capture_photo(); }
+                Icon { svg: "camera"; size: 28; color: #FFFFFF; }
+            }
+
+            // Tools Tab
+            button {
+                class: "flex flex-col items-center gap-1";
+                Icon { svg: "tools"; size: 24; color: #8E95A5; }
+                span {
+                    class: "text-xs font-semibold text-slate-400";
+                    text: "Tools";
                 }
             }
         }
     }
 }
-

@@ -1259,7 +1259,8 @@ fn emit_element(
                     }
                     if let Some(c) = tw.text_color {
                         let (r, g, b, a) = (c.r, c.g, c.b, c.a);
-                        style_chain.push_str(&format!(".with_color(Color::rgba({r}, {g}, {b}, {a}))"));
+                        style_chain
+                            .push_str(&format!(".with_color(Color::rgba({r}, {g}, {b}, {a}))"));
                     }
                 }
             }
@@ -1278,8 +1279,29 @@ fn emit_element(
         "button" => {
             let text_expr = find_prop(el, &["text", "title", "label"])
                 .map(|p| expr_to_reactive_string(&p.value, ctx))
-                .unwrap_or_else(|| "ReactiveValue::Static(\"Button\".to_string())".into());
-            let _ = writeln!(out, "{indent}let {var} = {tr}.button({cx}, {text_expr}, || {{}});");
+                .unwrap_or_else(|| {
+                    if el.children.is_empty() {
+                        "ReactiveValue::Static(\"Button\".to_string())".into()
+                    } else {
+                        "ReactiveValue::Static(String::new())".into()
+                    }
+                });
+            let btn_ctx = EmitCtx {
+                use_self: false,
+                ..*ctx
+            };
+            let handler_code = find_handler(el, &["on_tap", "on_click"])
+                .map(|h| emit_handler_body(&h.body, &btn_ctx))
+                .unwrap_or_default();
+            let captures = emit_signal_captures(ctx, &[]);
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {{ {captures} {tr}.button({cx}, {text_expr}, move || {{ {handler_code} }}) }};"
+            );
+            let _ = writeln!(
+                out,
+                "{indent}{{ let mut bs = {tr}.nodes.get({var}).map(|n| n.box_style.clone()).unwrap_or_default(); bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))); {tr}.set_box_style({var}, bs); }}"
+            );
         }
         "input" => {
             let ph = find_prop(el, &["placeholder"])
@@ -1299,7 +1321,10 @@ fn emit_element(
                         format!("Some({})", ctx.prop_access(id)),
                     )
                 }
-                Some(p) => (expr_to_typed_rust(&p.value, "String", ctx), "None".to_string()),
+                Some(p) => (
+                    expr_to_typed_rust(&p.value, "String", ctx),
+                    "None".to_string(),
+                ),
                 None => ("String::new()".to_string(), "None".to_string()),
             };
             let _ = writeln!(
@@ -1563,11 +1588,23 @@ fn emit_common_props_and_events(
             }
             if tw.align_center {
                 layout_init_stmts.push("ls.align_items = Alignment::Center;".into());
+            } else if tw.align_start {
+                layout_init_stmts.push("ls.align_items = Alignment::Start;".into());
+            } else if tw.align_end {
+                layout_init_stmts.push("ls.align_items = Alignment::End;".into());
             }
             if tw.justify_between {
                 layout_init_stmts.push("ls.justify_content = Justify::SpaceBetween;".into());
             } else if tw.justify_center {
                 layout_init_stmts.push("ls.justify_content = Justify::Center;".into());
+            } else if tw.justify_around {
+                layout_init_stmts.push("ls.justify_content = Justify::SpaceAround;".into());
+            } else if tw.justify_evenly {
+                layout_init_stmts.push("ls.justify_content = Justify::SpaceEvenly;".into());
+            } else if tw.justify_start {
+                layout_init_stmts.push("ls.justify_content = Justify::Start;".into());
+            } else if tw.justify_end {
+                layout_init_stmts.push("ls.justify_content = Justify::End;".into());
             }
             if let Some(pad) = tw.padding {
                 layout_init_stmts.push(format!(
@@ -1583,8 +1620,11 @@ fn emit_common_props_and_events(
                     craftui_core::Length::Pct(pct) => {
                         layout_init_stmts.push(format!("ls.width = Length::Pct({pct}f32);"));
                     }
+                    craftui_core::Length::Dp(dp) => {
+                        layout_init_stmts.push(format!("ls.width = Length::Dp({dp}f32); ls.min_width = Length::Dp({dp}f32); ls.flex_shrink = 0.0f32;"));
+                    }
                     craftui_core::Length::Px(px) => {
-                        layout_init_stmts.push(format!("ls.width = Length::Px({px}f32);"));
+                        layout_init_stmts.push(format!("ls.width = Length::Dp({px}f32); ls.min_width = Length::Dp({px}f32); ls.flex_shrink = 0.0f32;"));
                     }
                     _ => {}
                 }
@@ -1594,8 +1634,15 @@ fn emit_common_props_and_events(
                     craftui_core::Length::Pct(pct) => {
                         layout_init_stmts.push(format!("ls.height = Length::Pct({pct}f32);"));
                     }
+                    craftui_core::Length::Dp(dp) => {
+                        layout_init_stmts.push(format!(
+                            "ls.height = Length::Dp({dp}f32); ls.min_height = Length::Dp({dp}f32);"
+                        ));
+                    }
                     craftui_core::Length::Px(px) => {
-                        layout_init_stmts.push(format!("ls.height = Length::Px({px}f32);"));
+                        layout_init_stmts.push(format!(
+                            "ls.height = Length::Dp({px}f32); ls.min_height = Length::Dp({px}f32);"
+                        ));
                     }
                     _ => {}
                 }
@@ -1617,6 +1664,20 @@ fn emit_common_props_and_events(
                 box_stmts.push(format!(
                     "bs.shadow = Some(BoxShadow::drop({}f32, {}f32, {}f32, {}f32, Color::rgba({r}, {g}, {b}, {a})));",
                     sh.offset_x, sh.offset_y, sh.blur_radius, sh.spread
+                ));
+            }
+            if tw.border_width.is_some() || tw.border_color.is_some() {
+                let bw = tw.border_width.unwrap_or(1.0);
+                let bc = tw
+                    .border_color
+                    .unwrap_or(craftui_core::Color::rgb(30, 41, 59));
+                box_stmts.push(format!(
+                    "bs.border = Some(Border {{ width: {bw}f32, color: Color::rgba({}, {}, {}, {}), radius: bs.radius }});",
+                    bc.r, bc.g, bc.b, bc.a
+                ));
+                box_stmts.push(format!(
+                    "bs.border_color = Some(ReactiveValue::Static(Color::rgba({}, {}, {}, {})));",
+                    bc.r, bc.g, bc.b, bc.a
                 ));
             }
         }
@@ -1989,7 +2050,7 @@ fn emit_common_props_and_events(
     }
 
     // 7. Gesture & pointer handlers supported on all nodes (skip Button's primary on_tap unless subcomponent)
-    if (is_subcomponent || el.kind != "Button")
+    if (is_subcomponent || (el.kind != "Button" && el.kind != "button"))
         && let Some(h) = find_handler(el, &["on_tap", "on_click"])
         && (!is_subcomponent
             || !ctx

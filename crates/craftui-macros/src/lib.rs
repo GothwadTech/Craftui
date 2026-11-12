@@ -566,7 +566,9 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
 
     let init_stmt = match kind_str.as_str() {
         "Row" => quote! { let #var = __tree.row(__cx); },
-        "Column" | "View" | "Container" | "div" | "section" | "nav" => quote! { let #var = __tree.column(__cx); },
+        "Column" | "View" | "Container" | "div" | "section" | "nav" => {
+            quote! { let #var = __tree.column(__cx); }
+        }
         "Grid" => {
             let cols = find_arg(&["columns", "cols"])
                 .map(|e| quote!(#e as u16))

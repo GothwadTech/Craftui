@@ -813,8 +813,8 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
             let icon_rv = find_prop(el, &["icon"])
                 .map(|p| expr_to_reactive_string(&p.value, env))
                 .unwrap_or_else(|| ReactiveValue::Static(String::new()));
-            let label_opt = find_prop(el, &["label", "text"])
-                .map(|p| expr_to_reactive_string(&p.value, env));
+            let label_opt =
+                find_prop(el, &["label", "text"]).map(|p| expr_to_reactive_string(&p.value, env));
             tree.floating_action_button(scope, icon_rv, label_opt)
         }
         "Accordion" => {

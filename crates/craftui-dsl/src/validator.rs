@@ -363,7 +363,13 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "FloatingActionButton" => {
             out.extend_from_slice(CONTAINER_PROPS);
             out.extend_from_slice(&[
-                "icon", "label", "text", "disabled", "foreground", "background", "color",
+                "icon",
+                "label",
+                "text",
+                "disabled",
+                "foreground",
+                "background",
+                "color",
             ]);
         }
         "Accordion" => {
@@ -450,7 +456,8 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
     match kind {
         "Slider" | "Checkbox" | "Switch" | "SplitPane" => out.push("on_change"),
         "TextInput" | "TextArea" | "input" => out.extend_from_slice(&["on_change", "on_submit"]),
-        "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" | "Select" | "Dropdown" | "RadioGroup" => {
+        "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" | "Select" | "Dropdown"
+        | "RadioGroup" => {
             out.extend_from_slice(&["on_change", "on_select"]);
         }
         "Accordion" => out.extend_from_slice(&["on_change", "on_toggle"]),

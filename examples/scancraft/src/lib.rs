@@ -364,6 +364,30 @@ pub fn mount_scancraft_app_with_services(
         });
     }
 
+    if let Ok(mut guard) = SCANAPP_TAB.lock() {
+        *guard = Some(screen.active_tab);
+    }
+
+    // Reactively switch Tauri Android WebView on tab 4
+    cx.effect({
+        let scr = screen.clone();
+        move || {
+            let tab = scr.active_tab.get();
+            #[cfg(target_os = "android")]
+            {
+                if tab == 4 {
+                    call_activity_static_method("showTauriWebViewNative");
+                } else {
+                    call_activity_static_method("hideTauriWebViewNative");
+                }
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = tab;
+            }
+        }
+    });
+
     let root_node = screen.clone().build(cx, tree);
 
     let state = ScanCraftAppState {
@@ -375,6 +399,20 @@ pub fn mount_scancraft_app_with_services(
 
     (root_node, state)
 }
+
+static SCANAPP_TAB: std::sync::Mutex<Option<Signal<i32>>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_craftui_app_MainActivity_nativeExitTauriMode(
+    _env: *mut jni::sys::JNIEnv,
+    _class: jni::sys::jclass,
+) {
+}
+
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_dev_craftui_app_MainActivity_nativeExitTauriMode() {}
 
 pub fn mount_scancraft_app(cx: Scope, tree: &mut WidgetTree) -> (NodeId, ScanCraftAppState) {
     mount_scancraft_app_with_services(cx, tree, tree.services.clone())
@@ -391,7 +429,13 @@ fn call_activity_static_method(method: &str) {
         }
         let mut env: *mut jni::sys::JNIEnv = std::ptr::null_mut();
         let attach_fn = (**vm).v1_4.AttachCurrentThread;
-        if attach_fn(vm, &mut env as *mut _ as *mut *mut std::ffi::c_void, std::ptr::null_mut()) != 0 || env.is_null() {
+        if attach_fn(
+            vm,
+            &mut env as *mut _ as *mut *mut std::ffi::c_void,
+            std::ptr::null_mut(),
+        ) != 0
+            || env.is_null()
+        {
             return;
         }
         let clear_fn = (**env).v1_4.ExceptionClear;
@@ -404,8 +448,12 @@ fn call_activity_static_method(method: &str) {
             return;
         }
 
-        let Ok(c_get_cl) = std::ffi::CString::new("getClassLoader") else { return; };
-        let Ok(c_get_cl_sig) = std::ffi::CString::new("()Ljava/lang/ClassLoader;") else { return; };
+        let Ok(c_get_cl) = std::ffi::CString::new("getClassLoader") else {
+            return;
+        };
+        let Ok(c_get_cl_sig) = std::ffi::CString::new("()Ljava/lang/ClassLoader;") else {
+            return;
+        };
         let get_method = (**env).v1_4.GetMethodID;
         let get_cl_method = get_method(env, app_cls, c_get_cl.as_ptr(), c_get_cl_sig.as_ptr());
         if get_cl_method.is_null() {
@@ -420,28 +468,40 @@ fn call_activity_static_method(method: &str) {
 
         // 2. Load dev.craftui.app.MainActivity via classLoader.loadClass(...)
         let cl_cls = get_obj_class(env, class_loader);
-        let Ok(c_load_cls) = std::ffi::CString::new("loadClass") else { return; };
-        let Ok(c_load_cls_sig) = std::ffi::CString::new("(Ljava/lang/String;)Ljava/lang/Class;") else { return; };
+        let Ok(c_load_cls) = std::ffi::CString::new("loadClass") else {
+            return;
+        };
+        let Ok(c_load_cls_sig) = std::ffi::CString::new("(Ljava/lang/String;)Ljava/lang/Class;")
+        else {
+            return;
+        };
         let load_cls_method = get_method(env, cl_cls, c_load_cls.as_ptr(), c_load_cls_sig.as_ptr());
         if load_cls_method.is_null() {
             return;
         }
 
-        let Ok(c_act_name) = std::ffi::CString::new("dev.craftui.app.MainActivity") else { return; };
+        let Ok(c_act_name) = std::ffi::CString::new("dev.craftui.app.MainActivity") else {
+            return;
+        };
         let new_string_utf = (**env).v1_4.NewStringUTF;
         let act_name_str = new_string_utf(env, c_act_name.as_ptr());
         if act_name_str.is_null() {
             return;
         }
 
-        let main_act_cls = call_obj_method(env, class_loader, load_cls_method, act_name_str) as jni::sys::jclass;
+        let main_act_cls =
+            call_obj_method(env, class_loader, load_cls_method, act_name_str) as jni::sys::jclass;
         if main_act_cls.is_null() {
             return;
         }
 
         // 3. Invoke MainActivity.<method>()
-        let Ok(c_method) = std::ffi::CString::new(method) else { return; };
-        let Ok(c_sig) = std::ffi::CString::new("()V") else { return; };
+        let Ok(c_method) = std::ffi::CString::new(method) else {
+            return;
+        };
+        let Ok(c_sig) = std::ffi::CString::new("()V") else {
+            return;
+        };
         let get_static_method = (**env).v1_4.GetStaticMethodID;
         let method_id = get_static_method(env, main_act_cls, c_method.as_ptr(), c_sig.as_ptr());
         if !method_id.is_null() {
@@ -459,6 +519,16 @@ pub fn launch_android_camera() {
 #[cfg(target_os = "android")]
 pub fn launch_android_gallery() {
     call_activity_static_method("launchGalleryFromNative");
+}
+
+#[cfg(target_os = "android")]
+pub fn show_android_tauri_webview() {
+    call_activity_static_method("showTauriWebViewNative");
+}
+
+#[cfg(target_os = "android")]
+pub fn hide_android_tauri_webview() {
+    call_activity_static_method("hideTauriWebViewNative");
 }
 
 #[cfg(target_os = "android")]
