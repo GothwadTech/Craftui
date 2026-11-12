@@ -1,0 +1,144 @@
+// =========================================================================
+// CRAFTUI CLEAN-ROOM MATERIAL 3 COMPONENT LIBRARY (MIT / Apache-2.0)
+// High-performance declarative mobile components
+// =========================================================================
+
+export component ActionToolButton {
+    in property <string> label: "";
+    in property <string> icon: "camera";
+    in property <string> badge_text: "";
+    in property <color> icon_bg: #0E3B43;
+    in property <color> icon_fg: #00BCD4;
+    callback on_tap();
+
+    Column {
+        align: Center;
+        gap: 6dp;
+
+        Button {
+            background: icon_bg;
+            foreground: icon_fg;
+            border_radius: 28dp;
+            width: 56dp;
+            height: 56dp;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_tap();
+            }
+            if badge_text != "" : Text {
+                text: badge_text;
+                font_size: 18;
+                font_weight: 700;
+                color: icon_fg;
+            }
+            if badge_text == "" : Icon {
+                svg: icon;
+                size: 24;
+                color: icon_fg;
+            }
+        }
+
+        Text {
+            text: label;
+            font_size: 11;
+            font_weight: 600;
+            color: #E2E8F0;
+        }
+    }
+}
+
+export component CameraFab {
+    callback on_tap();
+
+    Button {
+        background: #00838F;
+        border_radius: 28dp;
+        width: 56dp;
+        height: 56dp;
+        align: Center;
+        justify: Center;
+        shadow: true;
+        on_tap => {
+            on_tap();
+        }
+        Icon {
+            svg: "camera";
+            size: 28;
+            color: #FFFFFF;
+        }
+    }
+}
+
+export component BottomNav {
+    in-out property <int> active_tab: 0;
+    callback on_documents();
+    callback on_camera();
+    callback on_tools();
+
+    Row {
+        width: 100%;
+        height: 64dp;
+        background: #000000;
+        border_width: 1.0;
+        border_color: #1E293B;
+        border_radius: 28dp;
+        align: Center;
+        justify: SpaceAround;
+        padding_x: 20dp;
+
+        Button {
+            background: #00000000;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_documents();
+            }
+            Column {
+                align: Center;
+                gap: 3dp;
+                Icon {
+                    svg: "document";
+                    size: 20;
+                    color: active_tab == 0 ? #00BCD4 : #64748B;
+                }
+                Text {
+                    text: "Documents";
+                    font_size: 11;
+                    font_weight: 700;
+                    color: active_tab == 0 ? #00BCD4 : #64748B;
+                }
+            }
+        }
+
+        CameraFab {
+            on_tap => {
+                on_camera();
+            }
+        }
+
+        Button {
+            background: #00000000;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_tools();
+            }
+            Column {
+                align: Center;
+                gap: 3dp;
+                Icon {
+                    svg: "tools";
+                    size: 20;
+                    color: active_tab == 1 ? #00BCD4 : #64748B;
+                }
+                Text {
+                    text: "Tools";
+                    font_size: 11;
+                    font_weight: 700;
+                    color: active_tab == 1 ? #00BCD4 : #64748B;
+                }
+            }
+        }
+    }
+}

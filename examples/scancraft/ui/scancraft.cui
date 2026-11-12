@@ -1,3 +1,426 @@
+// =========================================================================
+// CRAFTUI CLEAN-ROOM REUSABLE COMPONENTS (MIT / Apache-2.0)
+// Architectural design inspired by Slint's component & token model
+// =========================================================================
+
+component ActionToolButton {
+    in property <string> label: "";
+    in property <string> icon: "camera";
+    in property <string> badge_text: "";
+    in property <color> icon_bg: #0E3B43;
+    in property <color> icon_fg: #00BCD4;
+    callback on_tap();
+
+    Column {
+        align: Center;
+        gap: 6dp;
+
+        Button {
+            background: icon_bg;
+            foreground: icon_fg;
+            border_radius: 28dp;
+            width: 56dp;
+            height: 56dp;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_tap();
+            }
+            if badge_text != "" : Text {
+                text: badge_text;
+                font_size: 18;
+                font_weight: 700;
+                color: icon_fg;
+            }
+            if badge_text == "" : Icon {
+                svg: icon;
+                size: 24;
+                color: icon_fg;
+            }
+        }
+
+        Text {
+            text: label;
+            font_size: 11;
+            font_weight: 600;
+            color: #E2E8F0;
+        }
+    }
+}
+
+component DocCardCode {
+    in property <string> title: "New Doc 11-09-2026 21.45";
+    in property <string> date: "09/11/26 21:46";
+    in property <string> pages: "3";
+    callback on_tap();
+    callback on_more();
+
+    Row {
+        width: 100%;
+        background: #00000000;
+        gap: 14dp;
+        align: Center;
+        on_tap => {
+            on_tap();
+        }
+
+        // Thumbnail with Badge
+        Column {
+            width: 66dp;
+            height: 86dp;
+            border_radius: 8dp;
+            background: #0D1525;
+            border_width: 1.0;
+            border_color: #1E293B;
+            padding: 6dp;
+            justify: SpaceBetween;
+
+            Column {
+                gap: 3dp;
+                Row { width: 100%; height: 4dp; background: #38BDF8; border_radius: 2dp; }
+                Row { width: 80%; height: 3dp; background: #34D399; border_radius: 2dp; }
+                Row { width: 90%; height: 3dp; background: #FBBF24; border_radius: 2dp; }
+                Row { width: 70%; height: 3dp; background: #A78BFA; border_radius: 2dp; }
+                Row { width: 50%; height: 3dp; background: #64748B; border_radius: 2dp; }
+            }
+
+            Row {
+                width: 100%;
+                justify: End;
+                Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
+            }
+        }
+
+        // Info Column
+        Column {
+            flex_grow: 1.0;
+            gap: 4dp;
+
+            Text {
+                text: title;
+                font_size: 16;
+                font_weight: 600;
+                color: #FFFFFF;
+            }
+
+            Text {
+                text: date;
+                font_size: 13;
+                color: #8E95A5;
+            }
+
+            Row {
+                gap: 4dp;
+                align: Center;
+                Icon {
+                    svg: "pages";
+                    size: 13;
+                    color: #8E95A5;
+                }
+                Text { text: pages; font_size: 13; color: #8E95A5; }
+            }
+        }
+
+        Button {
+            background: #00000000;
+            width: 32dp;
+            height: 32dp;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_more();
+            }
+            Icon {
+                svg: "more_vert";
+                size: 20;
+                color: #8E95A5;
+            }
+        }
+    }
+}
+
+component DocCardNotebook {
+    in property <string> title: "New Doc 11-09-2026 15.11";
+    in property <string> date: "09/11/26 15:13";
+    in property <string> pages: "9";
+    callback on_tap();
+    callback on_more();
+
+    Row {
+        width: 100%;
+        background: #00000000;
+        gap: 14dp;
+        align: Center;
+        on_tap => {
+            on_tap();
+        }
+
+        Column {
+            width: 66dp;
+            height: 86dp;
+            border_radius: 8dp;
+            background: #F8FAFC;
+            border_width: 1.0;
+            border_color: #334155;
+            padding: 6dp;
+            justify: SpaceBetween;
+
+            Column {
+                gap: 4dp;
+                Row { width: 100%; height: 2dp; background: #BFDBFE; }
+                Row { width: 75%; height: 2.5dp; background: #334155; border_radius: 1dp; }
+                Row { width: 100%; height: 2dp; background: #BFDBFE; }
+                Row { width: 85%; height: 2.5dp; background: #334155; border_radius: 1dp; }
+                Row { width: 100%; height: 2dp; background: #BFDBFE; }
+                Row { width: 60%; height: 2.5dp; background: #334155; border_radius: 1dp; }
+            }
+
+            Row {
+                width: 100%;
+                justify: End;
+                Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
+            }
+        }
+
+        Column {
+            flex_grow: 1.0;
+            gap: 4dp;
+
+            Text {
+                text: title;
+                font_size: 16;
+                font_weight: 600;
+                color: #FFFFFF;
+            }
+
+            Text {
+                text: date;
+                font_size: 13;
+                color: #8E95A5;
+            }
+
+            Row {
+                gap: 4dp;
+                align: Center;
+                Icon {
+                    svg: "pages";
+                    size: 13;
+                    color: #8E95A5;
+                }
+                Text { text: pages; font_size: 13; color: #8E95A5; }
+            }
+        }
+
+        Button {
+            background: #00000000;
+            width: 32dp;
+            height: 32dp;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_more();
+            }
+            Icon {
+                svg: "more_vert";
+                size: 20;
+                color: #8E95A5;
+            }
+        }
+    }
+}
+
+component DocCardPackage {
+    in property <string> title: "New Doc 11-09-2026 13.00";
+    in property <string> date: "09/11/26 13:00";
+    in property <string> pages: "3";
+    callback on_tap();
+    callback on_more();
+
+    Row {
+        width: 100%;
+        background: #00000000;
+        gap: 14dp;
+        align: Center;
+        on_tap => {
+            on_tap();
+        }
+
+        Column {
+            width: 66dp;
+            height: 86dp;
+            border_radius: 8dp;
+            background: #0F172A;
+            border_width: 1.0;
+            border_color: #1E293B;
+            clip: true;
+            justify: SpaceBetween;
+
+            Column {
+                width: 100%;
+                height: 40dp;
+                background: #DC2626;
+                align: Center;
+                justify: Center;
+                Text { text: "SUN"; font_size: 9; font_weight: 800; color: #FFFFFF; }
+            }
+
+            Row {
+                width: 100%;
+                height: 40dp;
+                background: #06B6D4;
+                align: Center;
+                justify: SpaceBetween;
+                padding_x: 4dp;
+                Text { text: "LYNE"; font_size: 8; font_weight: 800; color: #000000; }
+                Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
+            }
+        }
+
+        Column {
+            flex_grow: 1.0;
+            gap: 4dp;
+
+            Text {
+                text: title;
+                font_size: 16;
+                font_weight: 600;
+                color: #FFFFFF;
+            }
+
+            Text {
+                text: date;
+                font_size: 13;
+                color: #8E95A5;
+            }
+
+            Row {
+                gap: 4dp;
+                align: Center;
+                Icon {
+                    svg: "pages";
+                    size: 13;
+                    color: #8E95A5;
+                }
+                Text { text: pages; font_size: 13; color: #8E95A5; }
+            }
+        }
+
+        Button {
+            background: #00000000;
+            width: 32dp;
+            height: 32dp;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_more();
+            }
+            Icon {
+                svg: "more_vert";
+                size: 20;
+                color: #8E95A5;
+            }
+        }
+    }
+}
+
+component CameraFab {
+    callback on_tap();
+
+    Button {
+        background: #00838F;
+        border_radius: 28dp;
+        width: 56dp;
+        height: 56dp;
+        align: Center;
+        justify: Center;
+        shadow: true;
+        on_tap => {
+            on_tap();
+        }
+        Icon {
+            svg: "camera";
+            size: 28;
+            color: #FFFFFF;
+        }
+    }
+}
+
+component BottomNav {
+    in-out property <int> active_tab: 0;
+    callback on_documents();
+    callback on_camera();
+    callback on_tools();
+
+    Row {
+        width: 100%;
+        height: 64dp;
+        background: #000000;
+        border_width: 1.0;
+        border_color: #1E293B;
+        border_radius: 28dp;
+        align: Center;
+        justify: SpaceAround;
+        padding_x: 20dp;
+
+        // Documents Tab
+        Button {
+            background: #00000000;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_documents();
+            }
+            Column {
+                align: Center;
+                gap: 3dp;
+                Icon {
+                    svg: "document";
+                    size: 20;
+                    color: active_tab == 0 ? #00BCD4 : #64748B;
+                }
+                Text {
+                    text: "Documents";
+                    font_size: 11;
+                    font_weight: 700;
+                    color: active_tab == 0 ? #00BCD4 : #64748B;
+                }
+            }
+        }
+
+        // Center Camera FAB Button
+        CameraFab {
+            on_tap => {
+                on_camera();
+            }
+        }
+
+        // Tools Tab
+        Button {
+            background: #00000000;
+            align: Center;
+            justify: Center;
+            on_tap => {
+                on_tools();
+            }
+            Column {
+                align: Center;
+                gap: 3dp;
+                Icon {
+                    svg: "tools";
+                    size: 20;
+                    color: active_tab == 1 ? #00BCD4 : #64748B;
+                }
+                Text {
+                    text: "Tools";
+                    font_size: 11;
+                    font_weight: 700;
+                    color: active_tab == 1 ? #00BCD4 : #64748B;
+                }
+            }
+        }
+    }
+}
+
 export component ScanCraftApp {
     in-out property <int> active_tab: 0;
     in-out property <string> doc_title: "Contract_Agreement_v2.pdf";
@@ -95,7 +518,7 @@ export component ScanCraftApp {
                         }
 
                         Text {
-                            text: "ScanApp";
+                            text: "ScanCraft";
                             font_size: 22;
                             font_weight: 800;
                             color: #00BCD4;
@@ -180,125 +603,10 @@ export component ScanCraftApp {
                         justify: SpaceAround;
                         align: Center;
 
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_smart_scan";
-                                background: #0E3B43;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    on_capture_photo();
-                                }
-                                Icon {
-                                    svg: "camera";
-                                    size: 24;
-                                    color: #00BCD4;
-                                }
-                            }
-
-                            Text {
-                                text: "Smart Scan";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
-
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_import_photos";
-                                background: #1E3A68;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    on_import_gallery();
-                                }
-                                Icon {
-                                    svg: "image";
-                                    size: 24;
-                                    color: #38BDF8;
-                                }
-                            }
-
-                            Text {
-                                text: "Import Photos";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
-
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_import_files";
-                                background: #452A14;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    on_import_gallery();
-                                }
-                                Icon {
-                                    svg: "upload";
-                                    size: 24;
-                                    color: #FB923C;
-                                }
-                            }
-
-                            Text {
-                                text: "Import Files";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
-
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_id_card";
-                                background: #0C3C47;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    on_capture_photo();
-                                }
-                                Icon {
-                                    svg: "badge_id";
-                                    size: 24;
-                                    color: #00BCD4;
-                                }
-                            }
-
-                            Text {
-                                text: "ID Card";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
+                        ActionToolButton { label: "Smart Scan"; icon: "camera"; icon_bg: #0E3B43; icon_fg: #00BCD4; on_tap => { on_capture_photo(); } }
+                        ActionToolButton { label: "Import Photo"; icon: "image"; icon_bg: #1E3A68; icon_fg: #38BDF8; on_tap => { on_import_gallery(); } }
+                        ActionToolButton { label: "Import Files"; icon: "upload"; icon_bg: #452A14; icon_fg: #FB923C; on_tap => { on_import_gallery(); } }
+                        ActionToolButton { label: "ID Card"; icon: "badge_id"; icon_bg: #0C3C47; icon_fg: #00BCD4; on_tap => { on_capture_photo(); } }
                     }
 
                     // Row 2 (To Text (OCR), PDF Tools, Watermark, All Tools)
@@ -307,122 +615,10 @@ export component ScanCraftApp {
                         justify: SpaceAround;
                         align: Center;
 
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_ocr";
-                                text: "TT";
-                                background: #3B1A59;
-                                foreground: #B388FF;
-                                font_size: 18;
-                                font_weight: 700;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                on_tap => {
-                                    active_tab = 2;
-                                }
-                            }
-
-                            Text {
-                                text: "To Text (OCR)";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
-
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_pdf_tools";
-                                background: #4A151B;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    active_tab = 5;
-                                }
-                                Icon {
-                                    svg: "pdf";
-                                    size: 22;
-                                    color: #EF4444;
-                                }
-                            }
-
-                            Text {
-                                text: "PDF Tools";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
-
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_watermark";
-                                background: #0E3D38;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    active_tab = 1;
-                                }
-                                Icon {
-                                    svg: "watermark";
-                                    size: 24;
-                                    color: #10B981;
-                                }
-                            }
-
-                            Text {
-                                text: "Watermark";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
-
-                        Column {
-                            align: Center;
-                            gap: 6dp;
-
-                            Button {
-                                id: "grid_all_tools";
-                                background: #2A303A;
-                                border_radius: 28dp;
-                                width: 56dp;
-                                height: 56dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    active_tab = 2;
-                                }
-                                Icon {
-                                    svg: "grid_3x3";
-                                    size: 22;
-                                    color: #8E95A5;
-                                }
-                            }
-
-                            Text {
-                                text: "All Tools";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #E2E8F0;
-                            }
-                        }
+                        ActionToolButton { label: "To Text (OCR)"; badge_text: "TT"; icon_bg: #3B1A59; icon_fg: #B388FF; on_tap => { active_tab = 2; } }
+                        ActionToolButton { label: "PDF Tools"; icon: "pdf"; icon_bg: #4A151B; icon_fg: #EF4444; on_tap => { active_tab = 5; } }
+                        ActionToolButton { label: "Watermark"; icon: "watermark"; icon_bg: #0E3D38; icon_fg: #10B981; on_tap => { active_tab = 1; } }
+                        ActionToolButton { label: "All Tools"; icon: "grid"; icon_bg: #1E293B; icon_fg: #94A3B8; on_tap => { active_tab = 1; } }
                     }
                 }
 
@@ -577,338 +773,38 @@ export component ScanCraftApp {
                         gap: 16dp;
                         padding_y: 6dp;
 
-                        // Item 1: Code Screen Document
-                        Row {
-                            width: 100%;
-                            background: #00000000;
-                            gap: 14dp;
-                            align: Center;
-
-                            // Thumbnail with Badge
-                            Column {
-                                width: 66dp;
-                                height: 86dp;
-                                border_radius: 8dp;
-                                background: #0D1525;
-                                border_width: 1.0;
-                                border_color: #1E293B;
-                                padding: 6dp;
-                                justify: SpaceBetween;
-
-                                Column {
-                                    gap: 3dp;
-                                    Row { width: 100%; height: 4dp; background: #38BDF8; border_radius: 2dp; }
-                                    Row { width: 80%; height: 3dp; background: #34D399; border_radius: 2dp; }
-                                    Row { width: 90%; height: 3dp; background: #FBBF24; border_radius: 2dp; }
-                                    Row { width: 70%; height: 3dp; background: #A78BFA; border_radius: 2dp; }
-                                    Row { width: 50%; height: 3dp; background: #64748B; border_radius: 2dp; }
-                                }
-
-                                Row {
-                                    width: 100%;
-                                    justify: End;
-                                    Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
-                                }
-                            }
-
-                            // Info Column
-                            Column {
-                                flex_grow: 1.0;
-                                gap: 4dp;
-
-                                Text {
-                                    text: "New Doc 11-09-2026 21.45";
-                                    font_size: 16;
-                                    font_weight: 600;
-                                    color: #FFFFFF;
-                                }
-
-                                Text {
-                                    text: "09/11/26 21:46";
-                                    font_size: 13;
-                                    color: #8E95A5;
-                                }
-
-                                Row {
-                                    gap: 4dp;
-                                    align: Center;
-                                    Icon {
-                                        svg: "pages";
-                                        size: 13;
-                                        color: #8E95A5;
-                                    }
-                                    Text { text: "3"; font_size: 13; color: #8E95A5; }
-                                }
-                            }
-
-                            Button {
-                                id: "doc_opt_btn_0";
-                                background: #00000000;
-                                width: 32dp;
-                                height: 32dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    on_share_doc();
-                                }
-                                Icon {
-                                    svg: "more_vert";
-                                    size: 20;
-                                    color: #8E95A5;
-                                }
-                            }
+                        DocCardCode {
+                            title: "New Doc 11-09-2026 21.45";
+                            date: "09/11/26 21:46";
+                            pages: "3";
+                            on_tap => { active_tab = 1; doc_title = "New Doc 11-09-2026 21.45"; }
+                            on_more => { on_share_doc(); }
                         }
 
-                        // Item 2: Lined Notebook Paper with Handwriting
-                        Row {
-                            width: 100%;
-                            background: #00000000;
-                            gap: 14dp;
-                            align: Center;
-
-                            Column {
-                                width: 66dp;
-                                height: 86dp;
-                                border_radius: 8dp;
-                                background: #F8FAFC;
-                                border_width: 1.0;
-                                border_color: #334155;
-                                padding: 6dp;
-                                justify: SpaceBetween;
-
-                                Column {
-                                    gap: 4dp;
-                                    Row { width: 100%; height: 2dp; background: #BFDBFE; }
-                                    Row { width: 75%; height: 2.5dp; background: #334155; border_radius: 1dp; }
-                                    Row { width: 100%; height: 2dp; background: #BFDBFE; }
-                                    Row { width: 85%; height: 2.5dp; background: #334155; border_radius: 1dp; }
-                                    Row { width: 100%; height: 2dp; background: #BFDBFE; }
-                                    Row { width: 60%; height: 2.5dp; background: #334155; border_radius: 1dp; }
-                                }
-
-                                Row {
-                                    width: 100%;
-                                    justify: End;
-                                    Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
-                                }
-                            }
-
-                            Column {
-                                flex_grow: 1.0;
-                                gap: 4dp;
-
-                                Text {
-                                    text: "New Doc 11-09-2026 15.11";
-                                    font_size: 16;
-                                    font_weight: 600;
-                                    color: #FFFFFF;
-                                }
-
-                                Text {
-                                    text: "09/11/26 15:13";
-                                    font_size: 13;
-                                    color: #8E95A5;
-                                }
-
-                                Row {
-                                    gap: 4dp;
-                                    align: Center;
-                                    Icon {
-                                        svg: "pages";
-                                        size: 13;
-                                        color: #8E95A5;
-                                    }
-                                    Text { text: "9"; font_size: 13; color: #8E95A5; }
-                                }
-                            }
-
-                            Button {
-                                id: "doc_opt_btn_1";
-                                background: #00000000;
-                                width: 32dp;
-                                height: 32dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    on_share_doc();
-                                }
-                                Icon {
-                                    svg: "more_vert";
-                                    size: 20;
-                                    color: #8E95A5;
-                                }
-                            }
+                        DocCardNotebook {
+                            title: "New Doc 11-09-2026 15.11";
+                            date: "09/11/26 15:13";
+                            pages: "9";
+                            on_tap => { active_tab = 1; doc_title = "New Doc 11-09-2026 15.11"; }
+                            on_more => { on_share_doc(); }
                         }
 
-                        // Item 3: Colorful Package Box
-                        Row {
-                            width: 100%;
-                            background: #00000000;
-                            gap: 14dp;
-                            align: Center;
-
-                            Column {
-                                width: 66dp;
-                                height: 86dp;
-                                border_radius: 8dp;
-                                background: #0F172A;
-                                border_width: 1.0;
-                                border_color: #1E293B;
-                                clip: true;
-                                justify: SpaceBetween;
-
-                                Column {
-                                    width: 100%;
-                                    height: 40dp;
-                                    background: #DC2626;
-                                    align: Center;
-                                    justify: Center;
-                                    Text { text: "SUN"; font_size: 9; font_weight: 800; color: #FFFFFF; }
-                                }
-
-                                Row {
-                                    width: 100%;
-                                    height: 40dp;
-                                    background: #06B6D4;
-                                    align: Center;
-                                    justify: SpaceBetween;
-                                    padding_x: 4dp;
-                                    Text { text: "LYNE"; font_size: 8; font_weight: 800; color: #000000; }
-                                    Badge { label: "✓"; background: #00897B; color: #FFFFFF; }
-                                }
-                            }
-
-                            Column {
-                                flex_grow: 1.0;
-                                gap: 4dp;
-
-                                Text {
-                                    text: "New Doc 11-09-2026 13.00";
-                                    font_size: 16;
-                                    font_weight: 600;
-                                    color: #FFFFFF;
-                                }
-
-                                Text {
-                                    text: "09/11/26 13:00";
-                                    font_size: 13;
-                                    color: #8E95A5;
-                                }
-
-                                Row {
-                                    gap: 4dp;
-                                    align: Center;
-                                    Icon {
-                                        svg: "pages";
-                                        size: 13;
-                                        color: #8E95A5;
-                                    }
-                                    Text { text: "3"; font_size: 13; color: #8E95A5; }
-                                }
-                            }
-
-                            Button {
-                                id: "doc_opt_btn_2";
-                                background: #00000000;
-                                width: 32dp;
-                                height: 32dp;
-                                align: Center;
-                                justify: Center;
-                                on_tap => {
-                                    on_share_doc();
-                                }
-                                Icon {
-                                    svg: "more_vert";
-                                    size: 20;
-                                    color: #8E95A5;
-                                }
-                            }
+                        DocCardPackage {
+                            title: "New Doc 11-09-2026 13.00";
+                            date: "09/11/26 13:00";
+                            pages: "3";
+                            on_tap => { active_tab = 1; doc_title = "New Doc 11-09-2026 13.00"; }
+                            on_more => { on_share_doc(); }
                         }
                     }
                 }
 
                 // --- Mobile Bottom Navigation Bar with Center Camera FAB ---
-                Row {
-                    width: 100%;
-                    height: 64dp;
-                    background: #000000;
-                    border_width: 1.0;
-                    border_color: #1E293B;
-                    border_radius: 28dp;
-                    align: Center;
-                    justify: SpaceAround;
-                    padding_x: 20dp;
-
-                    // Documents Tab (Active)
-                    Button {
-                        id: "nav_tab_documents";
-                        background: #00000000;
-                        align: Center;
-                        justify: Center;
-                        on_tap => {
-                            active_tab = 0;
-                        }
-                        Column {
-                            align: Center;
-                            gap: 3dp;
-                            Icon {
-                                svg: "document";
-                                size: 20;
-                                color: #00BCD4;
-                            }
-                            Text {
-                                text: "Documents";
-                                font_size: 11;
-                                font_weight: 700;
-                                color: #00BCD4;
-                            }
-                        }
-                    }
-
-                    // Center Camera FAB Button
-                    Button {
-                        id: "nav_camera_fab";
-                        background: #00897B;
-                        border_radius: 28dp;
-                        width: 56dp;
-                        height: 56dp;
-                        align: Center;
-                        justify: Center;
-                        on_tap => {
-                            on_capture_photo();
-                        }
-                        Icon {
-                            svg: "camera";
-                            size: 26;
-                            color: #FFFFFF;
-                        }
-                    }
-
-                    // Tools Tab
-                    Button {
-                        id: "nav_tab_tools";
-                        background: #00000000;
-                        align: Center;
-                        justify: Center;
-                        on_tap => {
-                            active_tab = 1;
-                        }
-                        Column {
-                            align: Center;
-                            gap: 3dp;
-                            Icon {
-                                svg: "tools";
-                                size: 20;
-                                color: #8E95A5;
-                            }
-                            Text {
-                                text: "Tools";
-                                font_size: 11;
-                                font_weight: 600;
-                                color: #8E95A5;
-                            }
-                        }
-                    }
+                BottomNav {
+                    active_tab <=> active_tab;
+                    on_documents => { active_tab = 0; }
+                    on_camera => { on_capture_photo(); }
+                    on_tools => { active_tab = 1; }
                 }
             }
 
