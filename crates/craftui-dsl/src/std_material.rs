@@ -93,6 +93,7 @@ export component FloatingActionButton {
     callback on_tap();
 
     Container {
+        on_tap => { root.on_tap(); }
         height: 56dp;
         background: root.background;
         border_radius: 16dp;
@@ -109,12 +110,10 @@ export component FloatingActionButton {
                 color: root.foreground;
             }
 
-            if root.label != "" {
-                Text {
-                    text: root.label;
-                    color: root.foreground;
-                    weight: Medium;
-                }
+            if root.label != "" : Text {
+                text: root.label;
+                color: root.foreground;
+                weight: Medium;
             }
         }
     }
@@ -138,6 +137,11 @@ export component NavigationBar {
             justify: SpaceAround;
             width: 100%;
             height: 100%;
+
+            Container {
+                width: 100%;
+                height: 100%;
+            }
         }
     }
 }
@@ -147,6 +151,9 @@ export component Switch {
     in property <bool> disabled: false;
 
     Container {
+        on_tap => {
+            if !root.disabled : root.checked = !root.checked;
+        }
         width: 52dp;
         height: 32dp;
         border_radius: 16dp;
@@ -170,6 +177,10 @@ export component Chip {
     callback on_tap();
 
     Container {
+        on_tap => {
+            root.selected = !root.selected;
+            root.on_tap();
+        }
         height: 32dp;
         border_radius: 8dp;
         padding: 8dp;
@@ -181,12 +192,10 @@ export component Chip {
             gap: 6dp;
             align: Center;
 
-            if root.icon != "" {
-                Icon {
-                    svg: root.icon;
-                    size: 18dp;
-                    color: root.selected ? Theme.on_secondary_container : Theme.text_primary;
-                }
+            if root.icon != "" : Icon {
+                svg: root.icon;
+                size: 18dp;
+                color: root.selected ? Theme.on_secondary_container : Theme.text_primary;
             }
 
             Text {
@@ -202,26 +211,25 @@ export component BottomSheet {
     in-out property <bool> open: false;
     in property <length> max_height: 400dp;
 
-    if root.open {
-        Container {
-            width: 100%;
-            height: root.max_height;
-            background: Theme.surface;
-            border_radius: 28dp;
-            padding: 16dp;
-            shadow: BoxShadow { blur: 24.0, offset_y: -4.0, color: #40000000 };
+    Container {
+        visible: root.open;
+        width: 100%;
+        height: root.open ? root.max_height : 0dp;
+        background: Theme.surface;
+        border_radius: 28dp;
+        padding: 16dp;
+        shadow: BoxShadow { blur: 24.0, offset_y: -4.0, color: #40000000 };
 
-            Column {
-                gap: 16dp;
-                align: Center;
+        Column {
+            gap: 16dp;
+            align: Center;
 
-                // M3 Drag handle
-                Container {
-                    width: 32dp;
-                    height: 4dp;
-                    border_radius: 2dp;
-                    background: Theme.border;
-                }
+            // M3 Drag handle
+            Container {
+                width: 32dp;
+                height: 4dp;
+                border_radius: 2dp;
+                background: Theme.border;
             }
         }
     }

@@ -1564,8 +1564,8 @@ fn paint_live_preview_overlays(
             1.5,
             CornerRadii::all(8.0),
         );
-        let err_short = if err.len() > 100 {
-            format!("{}...", &err[..100])
+        let err_short = if err.chars().count() > 100 {
+            format!("{}...", err.chars().take(100).collect::<String>())
         } else {
             err.clone()
         };

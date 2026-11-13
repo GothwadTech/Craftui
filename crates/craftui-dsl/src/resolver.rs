@@ -267,6 +267,16 @@ fn process_import(
         }
         if let Some(v_src) = virtual_module_source(&imp.from_path) {
             let parsed_v = parse(v_src);
+            for d in parsed_v.diagnostics {
+                state.diagnostics.push(Diagnostic {
+                    span: imp.span,
+                    severity: d.severity,
+                    message: format!(
+                        "in embedded module '{}': {}",
+                        imp.from_path, d.message
+                    ),
+                });
+            }
             for st in parsed_v.file.structs {
                 if !state.seen_structs.contains(&st.name) {
                     state.seen_structs.insert(st.name.clone());

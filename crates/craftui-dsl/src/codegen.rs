@@ -226,6 +226,14 @@ fn emit_component(
     let _ = writeln!(out, "impl {} {{", comp.name);
     let _ = writeln!(out, "    #[allow(dead_code)]");
     let _ = writeln!(out, "    pub fn new(_cx: Scope) -> Self {{");
+    let _ = writeln!(
+        out,
+        "        let __theme_sig = _cx.use_context::<Signal<ThemeTokens>>().unwrap_or_else(|| _cx.signal(ThemeTokens::dark()));"
+    );
+    let _ = writeln!(
+        out,
+        "        let __metrics_sig = _cx.use_context::<Signal<WindowMetrics>>().unwrap_or_else(|| _cx.signal(WindowMetrics::default()));"
+    );
     let _ = writeln!(out, "        Self {{");
     for prop in &comp.properties {
         let rty = map_type(&prop.ty);
@@ -276,6 +284,7 @@ fn emit_component(
         out,
         "        let __theme_ov_sig = tree.theme_override_signal;"
     );
+    let _ = writeln!(out, "        let __metrics_sig = tree.metrics_signal;");
 
     if let Some(ref root) = comp.root {
         let mut counter = 0usize;
@@ -1333,6 +1342,17 @@ fn emit_element(
                         format!("Some({})", ctx.prop_access(id)),
                     )
                 }
+                Some(p) if expr_has_reactive_props(&p.value, ctx) => {
+                    let init_s = expr_to_typed_rust(&p.value, "String", ctx);
+                    let dyn_s = expr_to_typed_rust_captured(&p.value, "String", ctx);
+                    let captures = emit_signal_captures(ctx, &[]);
+                    (
+                        "String::new()".to_string(),
+                        format!(
+                            "Some({{ {captures} let __tsig = {cx}.signal({init_s}); {cx}.effect(move || {{ let v = {dyn_s}; if __tsig.get_untracked() != v {{ __tsig.set(v); }} }}); __tsig }})"
+                        ),
+                    )
+                }
                 Some(p) => (
                     expr_to_typed_rust(&p.value, "String", ctx),
                     "None".to_string(),
@@ -1343,6 +1363,40 @@ fn emit_element(
                 out,
                 "{indent}let {var} = {tr}.text_input({cx}, {init_str}, {ph}, {sig_opt});"
             );
+            for (ev_name, setter) in [
+                ("on_change", "set_on_change"),
+                ("on_submit", "set_on_submit"),
+            ] {
+                if let Some(h) = find_handler(el, &[ev_name]) {
+                    let mut h_locals = ctx.locals.clone();
+                    let bind_val = can_bind_handler_local("value", ctx);
+                    let bind_txt = can_bind_handler_local("text", ctx);
+                    let mut alias_stmts = String::new();
+                    if bind_val {
+                        h_locals.insert("value".into(), "String".into());
+                        if bind_txt {
+                            alias_stmts.push_str("let value = __val.clone(); ");
+                        } else {
+                            alias_stmts.push_str("let value = __val; ");
+                        }
+                    }
+                    if bind_txt {
+                        h_locals.insert("text".into(), "String".into());
+                        alias_stmts.push_str("let text = __val; ");
+                    }
+                    let h_ctx = EmitCtx {
+                        locals: &h_locals,
+                        use_self: false,
+                        ..*ctx
+                    };
+                    let captures = emit_signal_captures(ctx, &[]);
+                    let body = emit_handler_body(&h.body, &h_ctx);
+                    let _ = writeln!(
+                        out,
+                        "{indent}{tr}.{setter}({var}, {{ {captures} move |__val: String| {{ {alias_stmts}{body} }} }});"
+                    );
+                }
+            }
         }
         "ScrollView" => {
             let (axis, base_layout) = match find_prop(el, &["direction"]).map(|p| &p.value) {
@@ -2240,6 +2294,28 @@ fn emit_shadow_assignment(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> Stri
                 "bs.shadow = if {cond} {{ Some(BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80))) }} else {{ None }};"
             )
         }
+        Expr::StructLit { name, fields } if name == "BoxShadow" => {
+            let mut off_x = "0.0".to_string();
+            let mut off_y = "4.0".to_string();
+            let mut blur = "12.0".to_string();
+            let mut spread = "0.0".to_string();
+            let mut color = "Color::rgba(0, 0, 0, 80)".to_string();
+            let mut inset = "false".to_string();
+            for (f_name, f_val) in fields {
+                match f_name.as_str() {
+                    "offset_x" => off_x = expr_to_f32(f_val, eval_ctx, tracked),
+                    "offset_y" => off_y = expr_to_f32(f_val, eval_ctx, tracked),
+                    "blur" | "blur_radius" => blur = expr_to_f32(f_val, eval_ctx, tracked),
+                    "spread" => spread = expr_to_f32(f_val, eval_ctx, tracked),
+                    "color" => color = expr_to_typed_rust(f_val, "Color", eval_ctx),
+                    "inset" => inset = expr_to_typed_rust(f_val, "bool", eval_ctx),
+                    _ => {}
+                }
+            }
+            format!(
+                "bs.shadow = Some(BoxShadow {{ offset_x: {off_x}, offset_y: {off_y}, blur_radius: {blur}, spread: {spread}, inset: {inset}, color: {color} }});"
+            )
+        }
         other => {
             let blur = expr_to_f32(other, eval_ctx, tracked);
             format!(
@@ -2265,8 +2341,12 @@ fn emit_expr_dependency_reads(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
         );
     }
     for d in deps {
-        let acc = cap_ctx.prop_access(&d);
-        let _ = write!(s, "let _ = {acc}.get(); ");
+        if d == "__metrics_sig" {
+            let _ = write!(s, "let _ = __metrics_sig.get(); ");
+        } else {
+            let acc = cap_ctx.prop_access(&d);
+            let _ = write!(s, "let _ = {acc}.get(); ");
+        }
     }
     s
 }
@@ -2278,9 +2358,17 @@ fn collect_expr_deps(expr: &Expr, ctx: &EmitCtx<'_>, out: &mut Vec<String>, them
                 out.push(id.clone());
             }
         }
-        Expr::Member(base, _) => {
+        Expr::Member(base, field) => {
             if matches!(base.as_ref(), Expr::Ident(r) if r == "Theme") {
                 *theme = true;
+            } else if matches!(base.as_ref(), Expr::Ident(r) if r == "root") {
+                if ctx.signal_type(field.as_str()).is_some() && !out.contains(field) {
+                    out.push(field.clone());
+                }
+            } else if matches!(base.as_ref(), Expr::Ident(r) if r == "Window") {
+                if !out.contains(&"__metrics_sig".to_string()) {
+                    out.push("__metrics_sig".to_string());
+                }
             } else {
                 collect_expr_deps(base, ctx, out, theme);
             }
@@ -3142,6 +3230,9 @@ fn expr_has_reactive_props(expr: &Expr, ctx: &EmitCtx<'_>) -> bool {
                 if root == "root" {
                     return ctx.signal_type(field.as_str()).is_some();
                 }
+                if root == "Window" {
+                    return true;
+                }
             }
             matches!(base.as_ref(), Expr::Ident(s) if s == "Theme")
                 || expr_has_reactive_props(base, ctx)
@@ -3238,11 +3329,14 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
                 if root == "root" {
-                    return ctx
-                        .prop_types
-                        .get(field.as_str())
-                        .cloned()
-                        .unwrap_or_else(|| "String".into());
+                    let pty = ctx.signal_type(field.as_str()).unwrap_or("String");
+                    let acc = ctx.prop_access(field);
+                    let get_call = if tracked {
+                        format!("{acc}.get()")
+                    } else {
+                        format!("{acc}.get_untracked()")
+                    };
+                    return cast_expr_var(&get_call, pty, ty);
                 }
                 if root == "Theme" {
                     return theme_token_expr_tracked(field, ty, tracked);
@@ -3267,17 +3361,17 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                     return cast_expr_var(const_val, "f32", ty);
                 }
                 if root == "Window" {
-                    let tr = ctx.tree_var;
+                    let get = if tracked { "get" } else { "get_untracked" };
                     let expr_str = match field.as_str() {
-                        "width" => format!("{tr}.metrics.logical_size.width"),
-                        "height" => format!("{tr}.metrics.logical_size.height"),
-                        "scale_factor" => format!("{tr}.metrics.scale_factor"),
-                        "is_compact" => format!("({tr}.metrics.logical_size.width < 600.0)"),
+                        "width" => format!("__metrics_sig.{get}().logical_size.width"),
+                        "height" => format!("__metrics_sig.{get}().logical_size.height"),
+                        "scale_factor" => format!("__metrics_sig.{get}().scale_factor"),
+                        "is_compact" => format!("(__metrics_sig.{get}().logical_size.width < 600.0)"),
                         "is_medium" => format!(
-                            "({tr}.metrics.logical_size.width >= 600.0 && {tr}.metrics.logical_size.width <= 1024.0)"
+                            "(__metrics_sig.{get}().logical_size.width >= 600.0 && __metrics_sig.{get}().logical_size.width <= 1024.0)"
                         ),
-                        "is_expanded" => format!("({tr}.metrics.logical_size.width > 1024.0)"),
-                        "breakpoint" => format!("format!(\"{{:?}}\", {tr}.metrics.breakpoint())"),
+                        "is_expanded" => format!("(__metrics_sig.{get}().logical_size.width > 1024.0)"),
+                        "breakpoint" => format!("format!(\"{{:?}}\", __metrics_sig.{get}().breakpoint())"),
                         _ => "0.0".into(),
                     };
                     let field_ty = match field.as_str() {
@@ -3505,23 +3599,23 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                     cast_expr_var(&format!("{rc}.trim().to_string()"), "String", ty)
                 }
                 "sin" | "cos" | "tan" | "sqrt" if args.is_empty() => {
-                    cast_expr_var(&format!("({rc}).{method}()"), "f32", ty)
+                    cast_expr_var(&format!("(({rc}) as f32).{method}()"), "f32", ty)
                 }
                 "abs" | "round" | "floor" | "ceil" if args.is_empty() => {
-                    cast_expr_var(&format!("({rc}).{method}()"), "f32", ty)
+                    cast_expr_var(&format!("(({rc}) as f32).{method}()"), "f32", ty)
                 }
                 "min" | "max" if args.len() == 1 => {
                     let other = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                    cast_expr_var(&format!("({rc}).{method}({other})"), "f32", ty)
+                    cast_expr_var(&format!("(({rc}) as f32).{method}({other})"), "f32", ty)
                 }
                 "pow" if args.len() == 1 => {
                     let other = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                    cast_expr_var(&format!("({rc}).powf({other})"), "f32", ty)
+                    cast_expr_var(&format!("(({rc}) as f32).powf({other})"), "f32", ty)
                 }
                 "clamp" if args.len() == 2 => {
                     let lo = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
                     let hi = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
-                    cast_expr_var(&format!("({rc}).clamp({lo}, {hi})"), "f32", ty)
+                    cast_expr_var(&format!("(({rc}) as f32).clamp({lo}, {hi})"), "f32", ty)
                 }
                 _ => "Default::default()".into(),
             }
@@ -3839,20 +3933,8 @@ fn is_gradient_call(expr: &Expr) -> bool {
     )
 }
 
-fn emit_gradient_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+fn expr_to_brush_inner(expr: &Expr, eval_ctx: &EmitCtx<'_>, is_reactive: bool) -> String {
     if let Expr::Call(name, args) = expr {
-        let is_reactive = expr_has_reactive_props(expr, ctx);
-        let cap_ctx = EmitCtx {
-            use_self: false,
-            ..*ctx
-        };
-        let eval_ctx = if is_reactive { &cap_ctx } else { ctx };
-        let captures = if is_reactive {
-            emit_signal_captures(ctx, &[])
-        } else {
-            String::new()
-        };
-
         if matches!(name.as_str(), "@linear-gradient" | "linear_gradient") && args.len() >= 2 {
             let angle_code = expr_to_typed_rust_inner(&args[0], "f32", eval_ctx, is_reactive);
             let color_args = &args[1..];
@@ -3870,16 +3952,9 @@ fn emit_gradient_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                 ));
             }
             let stops_body = format!("vec![{}]", stops_code.join(", "));
-            let inner = format!(
+            return format!(
                 "{{ let __ang = (({angle_code}) as f32 - 90.0).to_radians(); let __dx = __ang.cos(); let __dy = __ang.sin(); Brush::LinearGradient {{ start: Point::new(0.5 - 0.5 * __dx, 0.5 - 0.5 * __dy), end: Point::new(0.5 + 0.5 * __dx, 0.5 + 0.5 * __dy), stops: {stops_body} }} }}"
             );
-            if is_reactive {
-                return format!(
-                    "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {inner})) }}"
-                );
-            } else {
-                return format!("ReactiveValue::Static({inner})");
-            }
         } else if matches!(name.as_str(), "@radial-gradient" | "radial_gradient") && args.len() >= 2
         {
             let rad_code = expr_to_typed_rust_inner(&args[0], "f32", eval_ctx, is_reactive);
@@ -3898,24 +3973,64 @@ fn emit_gradient_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                 ));
             }
             let stops_body = format!("vec![{}]", stops_code.join(", "));
-            let inner = format!(
+            return format!(
                 "Brush::RadialGradient {{ center: Point::new(0.5, 0.5), radius: ({rad_code}) as f32, stops: {stops_body} }}"
             );
-            if is_reactive {
-                return format!(
-                    "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {inner})) }}"
-                );
-            } else {
-                return format!("ReactiveValue::Static({inner})");
-            }
         }
     }
-    format!("ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))")
+    let c = expr_to_typed_rust_inner(expr, "Color", eval_ctx, is_reactive);
+    format!("Brush::Solid({c})")
+}
+
+fn emit_gradient_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+    let is_reactive = expr_has_reactive_props(expr, ctx);
+    let cap_ctx = EmitCtx {
+        use_self: false,
+        ..*ctx
+    };
+    let eval_ctx = if is_reactive { &cap_ctx } else { ctx };
+    let captures = if is_reactive {
+        emit_signal_captures(ctx, &[])
+    } else {
+        String::new()
+    };
+    let inner = expr_to_brush_inner(expr, eval_ctx, is_reactive);
+    if is_reactive {
+        format!("{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {inner})) }}")
+    } else {
+        format!("ReactiveValue::Static({inner})")
+    }
 }
 
 fn expr_to_reactive_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
     if is_gradient_call(expr) {
         emit_gradient_brush(expr, ctx)
+    } else if let Expr::Ternary {
+        cond,
+        then_expr,
+        else_expr,
+    } = expr
+    {
+        let is_reactive = expr_has_reactive_props(expr, ctx);
+        let cap_ctx = EmitCtx {
+            use_self: false,
+            ..*ctx
+        };
+        let eval_ctx = if is_reactive { &cap_ctx } else { ctx };
+        let captures = if is_reactive {
+            emit_signal_captures(ctx, &[])
+        } else {
+            String::new()
+        };
+        let cond_code = expr_to_typed_rust_inner(cond, "bool", eval_ctx, is_reactive);
+        let then_brush = expr_to_brush_inner(then_expr, eval_ctx, is_reactive);
+        let else_brush = expr_to_brush_inner(else_expr, eval_ctx, is_reactive);
+        let inner = format!("if {cond_code} {{ {then_brush} }} else {{ {else_brush} }}");
+        if is_reactive {
+            format!("{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {inner})) }}")
+        } else {
+            format!("ReactiveValue::Static({inner})")
+        }
     } else if expr_is_theme_color(expr) || expr_has_reactive_props(expr, ctx) {
         let captures = emit_signal_captures(ctx, &[]);
         let body = expr_to_typed_rust_captured(expr, "Color", ctx);

@@ -2284,6 +2284,16 @@ class MainActivity : GameActivity() {{
         fun launchGalleryFromNative() {{
             instance?.launchGalleryWithPermission()
         }}
+
+        @JvmStatic
+        fun showTauriWebViewNative() {{
+            instance?.showWebView()
+        }}
+
+        @JvmStatic
+        fun hideTauriWebViewNative() {{
+            instance?.hideWebView()
+        }}
     }}
 
     private var pendingPermRequestId: Long = 0L
@@ -2335,6 +2345,18 @@ class MainActivity : GameActivity() {{
             }} else {{
                 galleryPermissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
             }}
+        }}
+    }}
+
+    fun showWebView() {{
+        runOnUiThread {{
+            // Activate overlay WebView on demand
+        }}
+    }}
+
+    fun hideWebView() {{
+        runOnUiThread {{
+            // Deactivate overlay WebView
         }}
     }}
 

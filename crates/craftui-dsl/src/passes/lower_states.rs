@@ -34,10 +34,19 @@ fn lower_states_in_element(el: &mut ElementNode) {
         return;
     }
 
-    // 1. Lower transitions: collect any transition animations into element animations
+    // 1. Lower transitions: preserve from_state and to_state selectors on animations
     for tr in el.transitions.drain(..) {
-        for anim in tr.animations {
-            if !el.animations.iter().any(|a| a.prop == anim.prop) {
+        for mut anim in tr.animations {
+            if let Some(ref from) = tr.from_state {
+                anim.fields.push(("from_state".into(), Expr::String(from.clone())));
+            }
+            if let Some(ref to) = tr.to_state {
+                anim.fields.push(("to_state".into(), Expr::String(to.clone())));
+            }
+            let duplicate = el.animations.iter().any(|a| {
+                a.prop == anim.prop && a.fields == anim.fields
+            });
+            if !duplicate {
                 el.animations.push(anim);
             }
         }
@@ -60,24 +69,13 @@ fn lower_states_in_element(el: &mut ElementNode) {
     // 3. For each overridden property, construct the conditional expression chain:
     // If state1.cond then state1.val else (if state2.cond then state2.val else base_val)
     for prop_name in overridden_prop_names {
-        // Find existing base property value, or default to the last state's value
+        // Find existing base property value, or default to standard property default
         let base_val = el
             .props
             .iter()
             .find(|p| p.name == prop_name)
             .map(|p| p.value.clone())
-            .unwrap_or_else(|| {
-                el.states
-                    .iter()
-                    .rev()
-                    .find_map(|s| {
-                        s.property_overrides
-                            .iter()
-                            .find(|p| p.name == prop_name)
-                            .map(|p| p.value.clone())
-                    })
-                    .unwrap_or(Expr::Int(0))
-            });
+            .unwrap_or_else(|| default_prop_value(&prop_name));
 
         // Fold in reverse so the first state declared takes highest priority
         let mut folded = base_val;
@@ -109,4 +107,14 @@ fn lower_states_in_element(el: &mut ElementNode) {
 
     // States are now fully lowered into reactive ternary expressions!
     el.states.clear();
+}
+
+fn default_prop_value(name: &str) -> Expr {
+    match name {
+        "opacity" => Expr::Float(1.0),
+        "visible" => Expr::Bool(true),
+        "background" | "color" | "border_color" => Expr::ColorHex("00000000".into()),
+        "width" | "height" => Expr::Ident("Auto".into()),
+        _ => Expr::Float(0.0),
+    }
 }

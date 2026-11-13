@@ -182,6 +182,9 @@ pub fn mount_scancraft_app_with_services(
             #[cfg(target_os = "android")]
             launch_android_camera();
 
+            // Note: On Android, launch_android_camera() is invoked asynchronously.
+            // Until asynchronous JNI result hooks are registered to deliver the raw image buffer,
+            // we initialize a synthetic document entry so the preview and enhancement studio remain interactive.
             let next_cnt = c_count.get_untracked() + 1;
             c_count.set(next_cnt);
 
@@ -217,6 +220,8 @@ pub fn mount_scancraft_app_with_services(
             #[cfg(target_os = "android")]
             launch_android_gallery();
 
+            // Note: On Android, launch_android_gallery() is invoked asynchronously.
+            // Synthetic entry provides immediate interaction in desktop testing and visual studio.
             let next_cnt = c_count.get_untracked() + 1;
             c_count.set(next_cnt);
 

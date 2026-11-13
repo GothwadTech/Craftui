@@ -125,6 +125,7 @@ impl DynValue {
         match self {
             Self::Brush(b) => Some(b.clone()),
             Self::Color(c) => Some(Brush::Solid(*c)),
+            Self::String(s) => Color::from_hex(s).map(Brush::Solid),
             _ => None,
         }
     }
@@ -364,7 +365,7 @@ impl HotReloadSession {
             metrics_sig: tree.metrics_signal,
         };
 
-        // Ensure component properties exist in preserved DynamicStore
+        // First pass: ensure all component properties exist in preserved DynamicStore
         for prop in &comp.properties {
             let env_cur = DynEnv {
                 props: self.store.props.clone(),
@@ -375,15 +376,22 @@ impl HotReloadSession {
                 .as_ref()
                 .map(|e| eval_expr(e, &env_cur))
                 .unwrap_or(DynValue::Null);
-            let sig = self
-                .store
+            self.store
                 .get_or_create_prop(self.state_scope, &prop.name, init);
+        }
 
+        let full_env = DynEnv {
+            props: self.store.props.clone(),
+            ..base_env.clone()
+        };
+
+        // Second pass: install reactive Window effects with full component properties map
+        for prop in &comp.properties {
             if let Some(ref def_expr) = prop.default_value {
                 if expr_references_window(def_expr) {
-                    let sig_c = sig;
+                    let sig_c = self.store.props.get(&prop.name).copied().unwrap();
                     let expr_c = def_expr.clone();
-                    let env_c = base_env.clone();
+                    let env_c = full_env.clone();
                     mount_scope.effect(move || {
                         let v = eval_expr_tracked(&expr_c, &env_c, true);
                         sig_c.set(v);
@@ -1205,7 +1213,32 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
             let ph = eval_prop("placeholder")
                 .map(|v| v.as_str())
                 .unwrap_or_default();
-            tree.text_input(scope, init_s, ph, sig_opt)
+            let n = tree.text_input(scope, init_s, ph, sig_opt);
+            if let Some(h) = el.handlers.iter().find(|h| h.event == "on_change") {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_change(n, move |value| {
+                    let mut h_env = env_c.clone();
+                    h_env
+                        .locals
+                        .insert("value".into(), DynValue::String(value.clone()));
+                    h_env.locals.insert("text".into(), DynValue::String(value));
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            if let Some(h) = el.handlers.iter().find(|h| h.event == "on_submit") {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_submit(n, move |value| {
+                    let mut h_env = env_c.clone();
+                    h_env
+                        .locals
+                        .insert("value".into(), DynValue::String(value.clone()));
+                    h_env.locals.insert("text".into(), DynValue::String(value));
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            n
         }
         _ => tree.column(scope),
     };
@@ -2262,7 +2295,20 @@ fn instantiate_subcomponent(
                 .as_ref()
                 .map(|e| eval_expr(e, outer_env))
                 .unwrap_or(DynValue::Null);
-            sub_props.insert(p.name.clone(), scope.signal(v));
+            let child_sig = scope.signal(v);
+            if let Some(ref def_expr) = p.default_value {
+                if expr_references_window(def_expr) {
+                    let expr_c = def_expr.clone();
+                    let outer_c = outer_env.clone();
+                    scope.effect(move || {
+                        let nv = eval_expr_tracked(&expr_c, &outer_c, true);
+                        if child_sig.get_untracked() != nv {
+                            child_sig.set(nv);
+                        }
+                    });
+                }
+            }
+            sub_props.insert(p.name.clone(), child_sig);
         }
     }
 
@@ -2690,9 +2736,16 @@ fn eval_iterable(expr: &Expr, env: &DynEnv, track: bool) -> Vec<DynValue> {
 fn expr_has_reactivity(expr: &Expr, env: &DynEnv) -> bool {
     match expr {
         Expr::Ident(name) => env.props.contains_key(name) || env.signal_locals.contains_key(name),
-        Expr::Member(base, _) => {
-            matches!(base.as_ref(), Expr::Ident(r) if r == "Theme")
-                || expr_has_reactivity(base, env)
+        Expr::Member(base, field) => {
+            if let Expr::Ident(r) = base.as_ref() {
+                if r == "Theme" || r == "Window" {
+                    return true;
+                }
+                if r == "root" {
+                    return env.props.contains_key(field) || env.signal_locals.contains_key(field);
+                }
+            }
+            expr_has_reactivity(base, env)
         }
         Expr::Index(a, b) | Expr::Binary(a, _, b) => {
             expr_has_reactivity(a, env) || expr_has_reactivity(b, env)
