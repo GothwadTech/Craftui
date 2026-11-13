@@ -232,27 +232,27 @@ pub fn paint_whiteboard(bounds: Rect, scene: &mut PaintScene, ctrl: &WhiteboardC
 }
 
 fn paint_dot_grid(bounds: Rect, scene: &mut PaintScene, view: ViewTransform) {
-    let grid_step = 28.0;
+    let grid_step = 36.0;
     let scaled_step = grid_step * view.zoom;
 
-    if scaled_step < 10.0 {
+    if scaled_step < 16.0 {
         return; // Don't crowd screen when zoomed out
     }
 
     let start_x = ((view.pan.x % scaled_step) + scaled_step) % scaled_step;
     let start_y = ((view.pan.y % scaled_step) + scaled_step) % scaled_step;
 
-    let dot_color = Color::rgba(220, 224, 230, (180.0 * view.zoom.min(1.0)) as u8);
-    let dot_radius = (1.0 * view.zoom.clamp(0.8, 1.5)).max(0.8);
+    let dot_color = Color::rgba(215, 220, 228, (160.0 * view.zoom.min(1.0)) as u8);
+    let dot_size = 1.5;
 
     let mut x = start_x;
     while x < bounds.width {
         let mut y = start_y;
         while y < bounds.height {
             scene.fill_rect(
-                Rect::new(x - dot_radius, y - dot_radius, dot_radius * 2.0, dot_radius * 2.0),
+                Rect::new(x, y, dot_size, dot_size),
                 dot_color,
-                CornerRadii::all(dot_radius),
+                CornerRadii::ZERO,
             );
             y += scaled_step;
         }

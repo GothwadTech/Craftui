@@ -17,7 +17,7 @@ use craftui_core::{
 };
 use craftui_layout::{LayoutEngine, LayoutStyle};
 use craftui_reactive::{Scope, Signal, drain_dirty_nodes, mark_node_dirty};
-use craftui_render::{PaintCommand, PaintScene, paint_svg_icon};
+use craftui_render::{PaintCommand, PaintScene, builtin_icon_svg, paint_svg_icon};
 use craftui_text::{TextEditorState, TextEngine, TextStyle};
 use slotmap::{SecondaryMap, SlotMap};
 use std::cell::RefCell;
@@ -4327,8 +4327,12 @@ impl WidgetTree {
                     WidgetKind::Icon { size, .. } => Size::new(*size, *size),
                     WidgetKind::Button { label, .. } => {
                         let txt = label.get();
-                        let st = TextStyle::default().with_size(15.0).with_weight(600.0);
-                        text_engine.measure(&txt, &st, None)
+                        if builtin_icon_svg(&txt).is_some() {
+                            Size::new(20.0, 20.0)
+                        } else {
+                            let st = TextStyle::default().with_size(15.0).with_weight(600.0);
+                            text_engine.measure(&txt, &st, None)
+                        }
                     }
                     WidgetKind::Checkbox { label, .. } => {
                         let s =
@@ -5445,14 +5449,22 @@ impl WidgetTree {
                         } else {
                             theme.on_primary
                         };
-                        let tstyle = TextStyle::default()
-                            .with_size(15.0)
-                            .with_weight(600.0)
-                            .with_color(fg);
-                        let measured = self.text_engine.measure(&txt, &tstyle, None);
-                        let tx = rect.x + (rect.width - measured.width) * 0.5;
-                        let ty = rect.y + (rect.height - measured.height) * 0.5;
-                        scene.draw_text(Point::new(tx, ty), txt, tstyle, None);
+                        if builtin_icon_svg(&txt).is_some() {
+                            let icon_sz = (rect.width - 8.0).min(rect.height - 8.0).clamp(12.0, 24.0);
+                            let ix = rect.x + (rect.width - icon_sz) * 0.5;
+                            let iy = rect.y + (rect.height - icon_sz) * 0.5;
+                            let icon_rect = Rect::new(ix, iy, icon_sz, icon_sz);
+                            let _ = paint_svg_icon(scene, icon_rect, &txt, fg);
+                        } else {
+                            let tstyle = TextStyle::default()
+                                .with_size(15.0)
+                                .with_weight(600.0)
+                                .with_color(fg);
+                            let measured = self.text_engine.measure(&txt, &tstyle, None);
+                            let tx = rect.x + (rect.width - measured.width) * 0.5;
+                            let ty = rect.y + (rect.height - measured.height) * 0.5;
+                            scene.draw_text(Point::new(tx, ty), txt, tstyle, None);
+                        }
                     }
                 }
             }
@@ -6840,17 +6852,24 @@ impl WidgetTree {
                 if let Some(lead) = leading {
                     let lead_str = lead.get();
                     if !lead_str.is_empty() {
-                        let lead_st = TextStyle::default().with_size(20.0).with_color(
-                            if is_sel {
-                                theme.primary
-                            } else {
-                                theme.text_secondary
-                            },
-                        );
-                        let lsz = self.text_engine.measure(&lead_str, &lead_st, None);
-                        let icon_y = rect.y + (rect.height - lsz.height) * 0.5;
-                        scene.draw_text(Point::new(cur_x, icon_y), lead_str, lead_st, None);
-                        cur_x += lsz.width + 16.0;
+                        let tint = if is_sel {
+                            theme.primary
+                        } else {
+                            theme.text_secondary
+                        };
+                        if builtin_icon_svg(&lead_str).is_some() {
+                            let icon_sz = 20.0;
+                            let icon_y = rect.y + (rect.height - icon_sz) * 0.5;
+                            let icon_rect = Rect::new(cur_x, icon_y, icon_sz, icon_sz);
+                            let _ = paint_svg_icon(scene, icon_rect, &lead_str, tint);
+                            cur_x += icon_sz + 16.0;
+                        } else {
+                            let lead_st = TextStyle::default().with_size(20.0).with_color(tint);
+                            let lsz = self.text_engine.measure(&lead_str, &lead_st, None);
+                            let icon_y = rect.y + (rect.height - lsz.height) * 0.5;
+                            scene.draw_text(Point::new(cur_x, icon_y), lead_str, lead_st, None);
+                            cur_x += lsz.width + 16.0;
+                        }
                     }
                 }
 
@@ -7500,7 +7519,9 @@ impl WidgetTree {
                 }) => {
                     if let Ok(mut func) = cb.try_borrow_mut() {
                         func(rect, &local_pe);
-                        changed = true;
+                        if !matches!(local_pe.phase, PointerPhase::Move) || local_pe.button.is_some() {
+                            changed = true;
+                        }
                     }
                 }
                 Some(WidgetKind::Custom(cw)) => {

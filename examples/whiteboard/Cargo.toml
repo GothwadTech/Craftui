@@ -18,7 +18,11 @@ required-features = ["desktop"]
 [features]
 default = ["desktop"]
 desktop = ["craftui/desktop"]
-web = ["craftui/web"]
+web = [
+    "craftui/web",
+    "craftui/gpu-sdf",
+    "craftui/cpu-tiny-skia",
+]
 
 [lints]
 workspace = true

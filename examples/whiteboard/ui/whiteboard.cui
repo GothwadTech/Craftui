@@ -51,7 +51,7 @@ export component WhiteboardScreen {
 
             // 2.1 Top-Left Floating Hamburger Menu Button
             Button {
-                text: "☰";
+                text: "menu";
                 font_size: 18;
                 background: Theme.surface;
                 foreground: Theme.text_primary;
@@ -81,7 +81,7 @@ export component WhiteboardScreen {
 
                     // Lock tool
                     Button {
-                        text: tool_locked ? "🔒" : "🔓";
+                        text: tool_locked ? "lock" : "unlock";
                         font_size: 14;
                         background: tool_locked ? #ede9fe : Theme.surface;
                         foreground: tool_locked ? #4f46e5 : Theme.text_secondary;
@@ -93,7 +93,7 @@ export component WhiteboardScreen {
 
                     // Hand (Pan)
                     Button {
-                        text: "✋";
+                        text: "hand";
                         font_size: 15;
                         background: active_tool == "Hand" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Hand" ? #4338ca : Theme.text_primary;
@@ -105,9 +105,8 @@ export component WhiteboardScreen {
 
                     // Selection tool (Active with soft lavender highlight)
                     Button {
-                        text: "↖";
+                        text: "select";
                         font_size: 15;
-                        font_weight: Bold;
                         background: active_tool == "Select" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Select" ? #4338ca : Theme.text_primary;
                         border_radius: 6dp;
@@ -118,7 +117,7 @@ export component WhiteboardScreen {
 
                     // Rectangle
                     Button {
-                        text: "▭";
+                        text: "rectangle";
                         font_size: 15;
                         background: active_tool == "Rectangle" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Rectangle" ? #4338ca : Theme.text_primary;
@@ -130,7 +129,7 @@ export component WhiteboardScreen {
 
                     // Diamond
                     Button {
-                        text: "◇";
+                        text: "diamond";
                         font_size: 15;
                         background: active_tool == "Diamond" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Diamond" ? #4338ca : Theme.text_primary;
@@ -142,7 +141,7 @@ export component WhiteboardScreen {
 
                     // Ellipse
                     Button {
-                        text: "◯";
+                        text: "circle";
                         font_size: 15;
                         background: active_tool == "Ellipse" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Ellipse" ? #4338ca : Theme.text_primary;
@@ -154,7 +153,7 @@ export component WhiteboardScreen {
 
                     // Arrow
                     Button {
-                        text: "➔";
+                        text: "arrow";
                         font_size: 15;
                         background: active_tool == "Arrow" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Arrow" ? #4338ca : Theme.text_primary;
@@ -166,7 +165,7 @@ export component WhiteboardScreen {
 
                     // Line
                     Button {
-                        text: "—";
+                        text: "line";
                         font_size: 15;
                         background: active_tool == "Line" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Line" ? #4338ca : Theme.text_primary;
@@ -178,7 +177,7 @@ export component WhiteboardScreen {
 
                     // Pen (Draw)
                     Button {
-                        text: "✏";
+                        text: "pen";
                         font_size: 15;
                         background: active_tool == "Pen" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Pen" ? #4338ca : Theme.text_primary;
@@ -190,9 +189,8 @@ export component WhiteboardScreen {
 
                     // Text
                     Button {
-                        text: "A";
+                        text: "text";
                         font_size: 15;
-                        font_weight: Bold;
                         background: active_tool == "Text" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Text" ? #4338ca : Theme.text_primary;
                         border_radius: 6dp;
@@ -203,7 +201,7 @@ export component WhiteboardScreen {
 
                     // Note / Card
                     Button {
-                        text: "▤";
+                        text: "card";
                         font_size: 15;
                         background: active_tool == "Card" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Card" ? #4338ca : Theme.text_primary;
@@ -215,7 +213,7 @@ export component WhiteboardScreen {
 
                     // Eraser
                     Button {
-                        text: "⌫";
+                        text: "eraser";
                         font_size: 15;
                         background: active_tool == "Eraser" ? #e0dfff : Theme.surface;
                         foreground: active_tool == "Eraser" ? #4338ca : Theme.text_primary;
@@ -233,7 +231,7 @@ export component WhiteboardScreen {
 
                     // More tools menu
                     Button {
-                        text: "⋮";
+                        text: "more_vert";
                         font_size: 16;
                         background: Theme.surface;
                         foreground: Theme.text_primary;
@@ -305,36 +303,63 @@ export component WhiteboardScreen {
                 gap: 8dp;
                 align: Center;
 
-                // "Try Excalidraw+ 14-day free trial" pill button
+                // "Try Whiteboard+ 14-day free trial" pill button
                 Button {
-                    text: "🎁 Try Excalidraw+";
-                    font_size: 12;
                     background: #f5f3ff;
-                    foreground: #4f46e5;
                     border_radius: 8dp;
                     border_width: 1;
                     border_color: #c7d2fe;
                     padding_x: 10dp;
                     padding_y: 8dp;
                     on_tap => { on_toggle_mode(); }
+
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+
+                        Icon {
+                            svg: "gift";
+                            size: 15;
+                            color: #4f46e5;
+                        }
+
+                        Text {
+                            text: "Try Whiteboard+";
+                            font_size: 12;
+                            color: #4f46e5;
+                        }
+                    }
                 }
 
                 // Share button
                 Button {
-                    text: "↗ Share";
-                    font_size: 13;
-                    font_weight: Bold;
                     background: #4f46e5;
-                    foreground: #ffffff;
                     border_radius: 8dp;
                     padding_x: 13dp;
                     padding_y: 8dp;
                     on_tap => { on_share(); }
+
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+
+                        Icon {
+                            svg: "share";
+                            size: 14;
+                            color: #ffffff;
+                        }
+
+                        Text {
+                            text: "Share";
+                            font_size: 13;
+                            color: #ffffff;
+                        }
+                    }
                 }
 
                 // Theme toggle button
                 Button {
-                    text: is_dark ? "☀" : "☾";
+                    text: is_dark ? "sun" : "moon";
                     font_size: 16;
                     background: Theme.surface;
                     foreground: Theme.text_primary;
@@ -376,7 +401,7 @@ export component WhiteboardScreen {
                 }
 
                 Button {
-                    text: "🗺";
+                    text: "map";
                     font_size: 13;
                     background: Theme.surface;
                     foreground: Theme.text_secondary;
@@ -397,7 +422,7 @@ export component WhiteboardScreen {
                 align: Center;
 
                 Button {
-                    text: "↶";
+                    text: "undo";
                     font_size: 15;
                     background: Theme.surface;
                     foreground: can_undo ? Theme.text_primary : #ced4da;
@@ -406,7 +431,7 @@ export component WhiteboardScreen {
                 }
 
                 Button {
-                    text: "↷";
+                    text: "redo";
                     font_size: 15;
                     background: Theme.surface;
                     foreground: can_redo ? Theme.text_primary : #ced4da;
@@ -425,7 +450,7 @@ export component WhiteboardScreen {
 
             // Security Shield badge
             Button {
-                text: "🛡";
+                text: "shield";
                 font_size: 16;
                 background: Theme.surface;
                 foreground: #4f46e5;
@@ -439,7 +464,7 @@ export component WhiteboardScreen {
 
             // Help Question Mark button
             Button {
-                text: "?";
+                text: "help";
                 font_size: 14;
                 font_weight: Bold;
                 background: Theme.surface;
@@ -466,7 +491,7 @@ export component WhiteboardScreen {
                 gap: 12dp;
 
                 Text {
-                    text: "CraftUI Excalidraw";
+                    text: "CraftUI Whiteboard";
                     font_size: 20;
                     font_weight: Bold;
                     color: Theme.text_primary;
@@ -485,25 +510,25 @@ export component WhiteboardScreen {
                     ListTile {
                         title: "New Canvas";
                         subtitle: "Start fresh with a clean board";
-                        leading: "📄";
+                        leading: "file";
                         on_tap => { on_new_canvas(); }
                     }
                     ListTile {
                         title: "Export as SVG";
                         subtitle: "Hand-drawn vector graphic to clipboard";
-                        leading: "🖼";
+                        leading: "image";
                         on_tap => { on_export_svg(); }
                     }
                     ListTile {
                         title: "Export as JSON";
                         subtitle: "Excalidraw compatible JSON format";
-                        leading: "💾";
+                        leading: "download";
                         on_tap => { on_export_json(); }
                     }
                     ListTile {
                         title: "Import from Clipboard";
                         subtitle: "Load document JSON";
-                        leading: "📋";
+                        leading: "copy";
                         on_tap => { on_import_json(); }
                     }
                 }
@@ -516,21 +541,21 @@ export component WhiteboardScreen {
                     ListTile {
                         title: "Admin Privileges";
                         subtitle: "Elevated platform settings";
-                        leading: "🔑";
+                        leading: "lock";
                         trailing: "Open";
                         on_tap => { on_open_admin(); }
                     }
                     ListTile {
                         title: "Accessibility Settings";
                         subtitle: "System access & screen reader";
-                        leading: "♿";
+                        leading: "shield";
                         trailing: "Open";
                         on_tap => { on_open_accessibility(); }
                     }
                     ListTile {
                         title: "System App Settings";
                         subtitle: "Manage permissions";
-                        leading: "⚙";
+                        leading: "settings";
                         trailing: "Open";
                         on_tap => { on_open_settings(); }
                     }
