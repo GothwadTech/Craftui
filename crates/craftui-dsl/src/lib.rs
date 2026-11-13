@@ -628,4 +628,60 @@ export component MaterialSuiteDemo {
         );
         assert!(rust.contains("struct Chip"), "must emit imported Chip");
     }
+
+    #[test]
+    fn test_material3_builtin_widgets_validation_and_codegen() {
+        let src = r#"
+export component M3FullCatalog {
+    in-out property <bool> active: false;
+    in-out property <float> progress_val: 0.75;
+
+    Column {
+        ElevatedCard {
+            padding: 16dp;
+            FilledButton { text: "Filled"; on_tap => { active = !active; } }
+            ElevatedButton { text: "Elevated"; }
+            TonalButton { text: "Tonal"; }
+            OutlinedButton { text: "Outlined"; }
+            TextButton { text: "Text"; }
+            IconButton { icon: "settings"; }
+            FilledIconButton { icon: "menu"; }
+            TonalIconButton { icon: "search"; }
+            OutlinedIconButton { icon: "close"; }
+        }
+        FilledCard {
+            FilterChip { label: "Filter"; selected <=> active; }
+            ActionChip { label: "Action"; }
+            HorizontalDivider {}
+            VerticalDivider {}
+            CircularProgressIndicator { size: 32; }
+            LinearProgressIndicator { value: progress_val; }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let diags = validate(&parsed.file);
+        assert!(
+            diags.is_empty(),
+            "semantic validation diagnostics: {:?}",
+            diags
+        );
+
+        let rust = generate_rust(&parsed.file);
+        assert!(rust.contains("struct M3FullCatalog"));
+        assert!(rust.contains(".card(cx, CardVariant::Elevated)"));
+        assert!(rust.contains(".card(cx, CardVariant::Filled)"));
+        assert!(rust.contains(".divider(cx, Axis::Horizontal, 1.0)"));
+        assert!(rust.contains(".divider(cx, Axis::Vertical, 1.0)"));
+        assert!(rust.contains(".spinner(cx, 32.0f32)"));
+        assert!(rust.contains(".progress_indicator(cx,"));
+        assert!(rust.contains(".chip(cx,"));
+        assert!(rust.contains(".button(cx,"));
+    }
 }

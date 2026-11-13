@@ -539,10 +539,12 @@ fn emit_element(
                 "{indent}let {var} = {tr}.icon({cx}, {svg_rv}, {size_code}, {col_opt});"
             );
         }
-        "Divider" => {
+        "Divider" | "HorizontalDivider" | "VerticalDivider" => {
+            let is_vertical = el.kind == "VerticalDivider";
+            let default_axis = if is_vertical { "Axis::Vertical" } else { "Axis::Horizontal" };
             let axis = find_prop(el, &["direction"])
                 .map(|p| expr_to_axis(&p.value, ctx, false))
-                .unwrap_or_else(|| "Axis::Horizontal".into());
+                .unwrap_or_else(|| default_axis.into());
             let thick = find_prop(el, &["thickness"])
                 .map(|p| expr_to_f32(&p.value, ctx, false))
                 .unwrap_or_else(|| "1.0".into());
@@ -555,36 +557,109 @@ fn emit_element(
                 let _ = writeln!(out, "{indent}{tr}.set_divider_color({var}, {col_rv});");
             }
         }
-        "Button" => {
-            let text_expr = find_prop(el, &["text", "title", "label"])
+        "Button" | "button" | "FilledButton" | "ElevatedButton" | "TonalButton"
+        | "FilledTonalButton" | "OutlinedButton" | "TextButton" | "IconButton"
+        | "FilledIconButton" | "TonalIconButton" | "OutlinedIconButton" => {
+            let is_icon = matches!(
+                el.kind.as_str(),
+                "IconButton" | "FilledIconButton" | "TonalIconButton" | "OutlinedIconButton"
+            );
+            let text_expr = find_prop(el, &["text", "title", "label", "icon", "name"])
                 .map(|p| expr_to_reactive_string(&p.value, ctx))
                 .unwrap_or_else(|| {
-                    if el.children.is_empty() {
-                        "ReactiveValue::Static(\"Button\".to_string())".into()
-                    } else {
+                    if is_icon || !el.children.is_empty() {
                         "ReactiveValue::Static(String::new())".into()
+                    } else {
+                        "ReactiveValue::Static(\"Button\".to_string())".into()
                     }
                 });
             let btn_ctx = EmitCtx {
                 use_self: false,
                 ..*ctx
             };
-            let handler_code = find_handler(el, &["on_tap", "on_click"])
+            let handler_code = find_handler(el, &["on_tap", "on_click", "onTap", "onClick"])
                 .map(|h| emit_handler_body(&h.body, &btn_ctx))
                 .unwrap_or_default();
             let captures = emit_signal_captures(ctx, &[]);
-            if let Some(fg_prop) = find_prop(el, &["foreground", "color"]) {
-                let fg_rv = expr_to_reactive_color(&fg_prop.value, ctx);
-                let _ = writeln!(
-                    out,
-                    "{indent}let {var} = {{ let __lbl = {text_expr}; let __fg = {fg_rv}; let __btn = {{ {captures} {tr}.button({cx}, __lbl, move || {{ {handler_code} }}) }}; {tr}.set_button_foreground(__btn, __fg); __btn }};"
-                );
-            } else {
-                let _ = writeln!(
-                    out,
-                    "{indent}let {var} = {{ let __lbl = {text_expr}; {captures} {tr}.button({cx}, __lbl, move || {{ {handler_code} }}) }};"
-                );
+            let custom_fg = find_prop(el, &["foreground", "color"])
+                .map(|p| expr_to_reactive_color(&p.value, ctx));
+
+            let kind_str = el.kind.as_str();
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {{ let __lbl = {text_expr}; let __btn = {{ {captures} {tr}.button({cx}, __lbl, move || {{ {handler_code} }}) }};"
+            );
+            match kind_str {
+                "FilledButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().on_primary))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || Brush::Solid(__ts_btn.get().primary)))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::symmetric(24.0, 10.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "ElevatedButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().primary))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || Brush::Solid(__ts_btn.get().surface)))); bs.shadow = Some(BoxShadow::drop(0.0, 1.0, 3.0, 0.0, Color::rgba(0, 0, 0, 38))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::symmetric(24.0, 10.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "TonalButton" | "FilledTonalButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().on_surface))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || Brush::Solid(__ts_btn.get().surface_variant)))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::symmetric(24.0, 10.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "OutlinedButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().primary))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))); bs.border = Some(Border {{ width: 1.0, color: Color::TRANSPARENT, radius: CornerRadii::all(20.0) }}); bs.border_color = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().border))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::symmetric(24.0, 10.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "TextButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().primary))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::symmetric(12.0, 10.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "IconButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().text_primary))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::all(8.0); ls.min_width = Length::Dp(40.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "FilledIconButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().on_primary))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || Brush::Solid(__ts_btn.get().primary)))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::all(8.0); ls.min_width = Length::Dp(40.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "TonalIconButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().on_surface))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || Brush::Solid(__ts_btn.get().surface_variant)))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::all(8.0); ls.min_width = Length::Dp(40.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                "OutlinedIconButton" => {
+                    let fg_code = custom_fg.unwrap_or_else(|| "ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().primary))".into());
+                    let _ = writeln!(
+                        out,
+                        "{indent}    {{ let __ts_btn = __theme_sig; {tr}.set_button_foreground(__btn, {fg_code}); if let Some(mut bs) = {tr}.nodes.get(__btn).map(|n| n.box_style.clone()) {{ bs.radius = CornerRadii::all(20.0); bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))); bs.border = Some(Border {{ width: 1.0, color: Color::TRANSPARENT, radius: CornerRadii::all(20.0) }}); bs.border_color = Some(ReactiveValue::Dynamic(std::rc::Rc::new(move || __ts_btn.get().border))); {tr}.set_box_style(__btn, bs); }} if let Some(mut ls) = {tr}.nodes.get(__btn).map(|n| n.layout.clone()) {{ ls.padding = Insets::all(8.0); ls.min_width = Length::Dp(40.0); ls.min_height = Length::Dp(40.0); {tr}.set_layout(__btn, ls); }} }}"
+                    );
+                }
+                _ => {
+                    if let Some(fg) = custom_fg {
+                        let _ = writeln!(out, "{indent}    {tr}.set_button_foreground(__btn, {fg});");
+                    }
+                }
             }
+            let _ = writeln!(out, "{indent}    __btn }};");
         }
         "ImageView" | "Image" => {
             let tex_expr = find_prop(el, &["source"])
@@ -1022,7 +1097,7 @@ fn emit_element(
                 .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
             let _ = writeln!(out, "{indent}let {var} = {tr}.tooltip({cx}, {txt_rv});");
         }
-        "ProgressIndicator" => {
+        "ProgressIndicator" | "LinearProgressIndicator" => {
             let prog_rv = match find_prop(el, &["progress", "value"]) {
                 Some(p) => {
                     if let Expr::Ident(id) = &p.value
@@ -1056,7 +1131,7 @@ fn emit_element(
                 "{indent}let {var} = {tr}.progress_indicator({cx}, {prog_rv});"
             );
         }
-        "Spinner" => {
+        "Spinner" | "CircularProgressIndicator" => {
             let sz_prop = find_prop(el, &["size"]);
             let init_sz = sz_prop
                 .map(|p| expr_to_f32(&p.value, ctx, false))
@@ -1248,17 +1323,22 @@ fn emit_element(
                 "{indent}let {var} = {tr}.html_view({cx}, {src_rv}, {html_rv}, None);"
             );
         }
-        "Card" => {
-            let variant = find_prop(el, &["variant"])
-                .and_then(|p| match &p.value {
-                    Expr::String(s) => match s.to_lowercase().as_str() {
-                        "filled" => Some("CardVariant::Filled"),
-                        "outlined" => Some("CardVariant::Outlined"),
-                        _ => Some("CardVariant::Elevated"),
-                    },
-                    _ => None,
-                })
-                .unwrap_or("CardVariant::Elevated");
+        "Card" | "ElevatedCard" | "FilledCard" | "OutlinedCard" => {
+            let variant = match el.kind.as_str() {
+                "ElevatedCard" => "CardVariant::Elevated",
+                "FilledCard" => "CardVariant::Filled",
+                "OutlinedCard" => "CardVariant::Outlined",
+                _ => find_prop(el, &["variant"])
+                    .and_then(|p| match &p.value {
+                        Expr::String(s) => match s.to_lowercase().as_str() {
+                            "filled" => Some("CardVariant::Filled"),
+                            "outlined" => Some("CardVariant::Outlined"),
+                            _ => Some("CardVariant::Elevated"),
+                        },
+                        _ => None,
+                    })
+                    .unwrap_or("CardVariant::Elevated"),
+            };
             let _ = writeln!(
                 out,
                 "{indent}let {var} = {tr}.card({cx}, {variant});"
@@ -1293,13 +1373,13 @@ fn emit_element(
                 "{indent}let {var} = {tr}.list_tile({cx}, {title_rv}, {sub_rv}, {lead_rv}, {trail_rv}, {on_tap});"
             );
         }
-        "Chip" => {
-            let label_rv = find_prop(el, &["label"])
+        "Chip" | "FilterChip" | "ActionChip" | "ChoiceChip" | "InputChip" => {
+            let label_rv = find_prop(el, &["label", "text"])
                 .map(|p| expr_to_reactive_string(&p.value, ctx))
                 .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
-            let sel_prop = find_prop(el, &["selected"]);
+            let sel_prop = find_prop(el, &["selected", "value"]);
             let sel_sig = emit_bool_signal_adapter(sel_prop, cx, ctx);
-            let icon_rv = find_prop(el, &["icon"])
+            let icon_rv = find_prop(el, &["icon", "leading_icon"])
                 .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
                 .unwrap_or_else(|| "None".into());
             let lt_ctx = EmitCtx {
@@ -1409,33 +1489,6 @@ fn emit_element(
             let _ = writeln!(
                 out,
                 "{indent}let {var} = {{ let __st = TextStyle::default().with_size({default_size}f32).with_weight({default_weight}f32){style_chain}; {tr}.text({cx}, {content_expr}, __st) }};"
-            );
-        }
-        "button" => {
-            let text_expr = find_prop(el, &["text", "title", "label"])
-                .map(|p| expr_to_reactive_string(&p.value, ctx))
-                .unwrap_or_else(|| {
-                    if el.children.is_empty() {
-                        "ReactiveValue::Static(\"Button\".to_string())".into()
-                    } else {
-                        "ReactiveValue::Static(String::new())".into()
-                    }
-                });
-            let btn_ctx = EmitCtx {
-                use_self: false,
-                ..*ctx
-            };
-            let handler_code = find_handler(el, &["on_tap", "on_click"])
-                .map(|h| emit_handler_body(&h.body, &btn_ctx))
-                .unwrap_or_default();
-            let captures = emit_signal_captures(ctx, &[]);
-            let _ = writeln!(
-                out,
-                "{indent}let {var} = {{ {captures} {tr}.button({cx}, {text_expr}, move || {{ {handler_code} }}) }};"
-            );
-            let _ = writeln!(
-                out,
-                "{indent}{{ let mut bs = {tr}.nodes.get({var}).map(|n| n.box_style.clone()).unwrap_or_default(); bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))); {tr}.set_box_style({var}, bs); }}"
             );
         }
         "input" => {
@@ -2246,8 +2299,8 @@ fn emit_common_props_and_events(
         let _ = writeln!(out, "{indent}{tr}.set_disabled({var}, {drv});");
     }
 
-    // 7. Gesture & pointer handlers supported on all nodes (skip Button's and ListTile's primary on_tap unless subcomponent)
-    if (is_subcomponent || (el.kind != "Button" && el.kind != "button" && el.kind != "ListTile" && el.kind != "list_tile"))
+    // 7. Gesture & pointer handlers supported on all nodes (skip Button variants' and ListTile's primary on_tap unless subcomponent)
+    if (is_subcomponent || (!el.kind.ends_with("Button") && !el.kind.ends_with("button") && el.kind != "ListTile" && el.kind != "list_tile"))
         && let Some(h) = find_handler(el, &["on_tap", "on_click"])
         && (!is_subcomponent
             || !ctx

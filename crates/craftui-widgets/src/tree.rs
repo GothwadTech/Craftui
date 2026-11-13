@@ -312,6 +312,7 @@ pub struct WidgetTree {
     pub services: PlatformServices,
     pub direction: Direction,
     pub focused: Option<NodeId>,
+    pub focus_visible: bool,
     pub hovered: Option<NodeId>,
     last_pointer_pos: Option<Point>,
     pub metrics: WindowMetrics,
@@ -358,6 +359,7 @@ impl WidgetTree {
             services,
             direction: Direction::Ltr,
             focused: None,
+            focus_visible: false,
             hovered: None,
             last_pointer_pos: None,
             metrics: WindowMetrics::default(),
@@ -5236,7 +5238,7 @@ impl WidgetTree {
         let node_padding = node.layout.padding;
         let children = node.children.clone();
         let kind = node.kind.clone();
-        let is_focused = self.focused == Some(id);
+        let is_focused = self.focused == Some(id) && self.focus_visible;
         let is_disabled = node.is_disabled();
 
         match &kind {
@@ -5573,7 +5575,8 @@ impl WidgetTree {
                 ..
             } => {
                 scene.fill_rect(rect, theme.surface, box_style.radius);
-                let border_color = if is_focused {
+                let is_input_active = self.focused == Some(id);
+                let border_color = if is_input_active {
                     theme.primary
                 } else {
                     theme.border
@@ -5581,7 +5584,7 @@ impl WidgetTree {
                 scene.stroke_rect(
                     rect,
                     border_color,
-                    if is_focused { 1.8 } else { 1.0 },
+                    if is_input_active { 1.8 } else { 1.0 },
                     box_style.radius,
                 );
 
@@ -5606,7 +5609,7 @@ impl WidgetTree {
                 if disp.is_empty() {
                     draw_style.color = theme.text_secondary;
                     scene.draw_text(inner.origin(), placeholder, draw_style, wrap_w);
-                    if is_focused && self.caret_visible {
+                    if is_input_active && self.caret_visible {
                         scene.fill_rect(
                             Rect::new(inner.x, inner.y, 2.0, font_sz * 1.25),
                             theme.primary,
@@ -5628,7 +5631,7 @@ impl WidgetTree {
                         }
                     }
                     scene.draw_text(inner.origin(), &disp, draw_style, wrap_w);
-                    if is_focused && self.caret_visible {
+                    if is_input_active && self.caret_visible {
                         let cr = self.text_engine.cursor_rect(&layout, editor.cursor);
                         scene.fill_rect(
                             Rect::new(inner.x + cr.x, inner.y + cr.y, 2.0, cr.height),
@@ -7639,6 +7642,7 @@ impl WidgetTree {
                 RecognizedGesture::Tap { node, position } => {
                     if !self.nodes.get(node).is_some_and(WidgetNode::is_disabled) {
                         self.focused = Some(node);
+                        self.focus_visible = false;
                         self.activate_tap(node, position, true);
                         changed = true;
                     }
@@ -8565,6 +8569,7 @@ impl WidgetTree {
             on.dirty |= DirtyFlags::PAINT;
         }
         self.focused = Some(next);
+        self.focus_visible = true;
         if let Some(nn) = self.nodes.get_mut(next) {
             nn.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
         }
