@@ -6,13 +6,17 @@ pub mod codegen;
 pub mod cst;
 pub mod lexer;
 pub mod parser;
+pub mod passes;
 pub mod resolver;
+pub mod std_icons;
+pub mod std_material;
 pub mod validator;
 
 pub use ast::{
     AnimateSpec, AssignOp, BinOp, CallbackDecl, ChildItem, ComponentDecl, CuiFile, Diagnostic,
     ElementNode, EnumDecl, Expr, HandlerBinding, ImportDecl, PropBinding, PropertyDecl,
-    PropertyDir, Severity, Span, Stmt, StructDecl, StructField, TypeExpr, Unit,
+    PropertyDir, Severity, Span, StateDecl, Stmt, StructDecl, StructField, TransitionSpec,
+    TypeExpr, Unit,
 };
 pub use codegen::{compile_cui_dir, compile_cui_file, generate_rust};
 pub use cst::{CuiLanguage, SyntaxKind, SyntaxNode, SyntaxToken};
@@ -461,5 +465,167 @@ export component Phase3Demo {
         assert!(code.contains("set_on_dismiss("));
         assert!(code.contains("ToastSeverity::Success"));
         assert!(code.contains("ToastItem {"));
+    }
+
+    #[test]
+    fn cleanroom_slint_parity_states_and_optimizer_passes() {
+        let src = r#"
+import { Button, Column, Container } from "std/widgets.cui"
+import { Theme } from "theme/tokens.cui"
+
+export component ParityCard {
+    in-out property <bool> is_active: false;
+    in-out property <int> count: 1 + 2 * 3;
+
+    Column {
+        width: 100%;
+        padding: Theme.spacing_md;
+        background: Theme.surface_container;
+
+        Container {
+            Button {
+                text: "Interactive State Button";
+                background: Theme.primary;
+                states [
+                    active when is_active: {
+                        background: Theme.primary_container;
+                    }
+                    inactive when !is_active: {
+                        background: Theme.surface;
+                    }
+                ]
+            }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        let diags = validate(&parsed.file);
+        assert!(diags.is_empty(), "semantic diags: {diags:?}");
+
+        let rust = generate_rust(&parsed.file);
+        // Verify states lowered into reactive ternaries
+        assert!(rust.contains("primary_container"));
+        // Verify constant propagation folded 1 + 2 * 3 = 7
+        assert!(rust.contains("7"));
+        // Verify dead Container wrapper was pruned
+        assert!(!rust.contains("tree.container("));
+    }
+
+    #[test]
+    fn test_slint_math_and_gradient_parity() {
+        let src = r#"
+import { Container, Text } from "std/widgets.cui"
+
+export component MathAndGradientsDemo {
+    property <float> pi_val: Math.PI;
+    property <float> sin_val: Math.sin(0.0);
+    property <float> sqrt_val: Math.sqrt(16.0);
+    property <float> min_val: Math.min(10.0, 20.0);
+    property <float> max_val: Math.max(10.0, 20.0);
+    property <float> clamp_val: Math.clamp(15.0, 0.0, 10.0);
+
+    Container {
+        width: 400dp;
+        height: 600dp;
+        background: @linear-gradient(90deg, #6750A4, #D0BCFF);
+
+        Container {
+            width: 200dp;
+            height: 100dp;
+            background: @radial-gradient(50.0, #FFD8E4, #6750A4);
+
+            Text {
+                text: "Math and Gradient Parity Active";
+            }
+        }
+    }
+}
+"#;
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diags: {:?}",
+            parsed.diagnostics
+        );
+        let diags = validate(&parsed.file);
+        assert!(diags.is_empty(), "semantic diags: {diags:?}");
+
+        let rust = generate_rust(&parsed.file);
+        assert!(
+            rust.contains("Brush::LinearGradient"),
+            "codegen must contain Brush::LinearGradient"
+        );
+        assert!(
+            rust.contains("Brush::RadialGradient"),
+            "codegen must contain Brush::RadialGradient"
+        );
+        assert!(
+            rust.contains("MathAndGradientsDemo"),
+            "codegen must emit component struct"
+        );
+    }
+
+    #[test]
+    fn test_std_material_and_icons_virtual_module() {
+        let src = r#"
+import { Card, ElevatedCard, SearchBar, FloatingActionButton, Chip } from "std/material.cui"
+import { IconSearch, IconClose, IconArrowBack } from "std/icons.cui"
+
+export component MaterialSuiteDemo {
+    in-out property <string> query: "";
+    in-out property <bool> active_chip: true;
+
+    ElevatedCard {
+        width: 360dp;
+        padding: 16dp;
+
+        SearchBar {
+            text <=> query;
+            placeholder: "Search components...";
+        }
+
+        Chip {
+            label: "Filter M3";
+            selected <=> active_chip;
+        }
+
+        FloatingActionButton {
+            icon: "add";
+            label: "Create Item";
+        }
+    }
+}
+"#;
+        let resolved = resolve_source(src, Some(std::path::Path::new(".")));
+        assert!(
+            resolved.diagnostics.is_empty(),
+            "resolve diags: {:?}",
+            resolved.diagnostics
+        );
+
+        let rust = generate_rust(&resolved.merged);
+        assert!(
+            rust.contains("struct MaterialSuiteDemo"),
+            "must emit entry component"
+        );
+        assert!(
+            rust.contains("struct ElevatedCard"),
+            "must emit imported ElevatedCard"
+        );
+        assert!(
+            rust.contains("struct SearchBar"),
+            "must emit imported SearchBar"
+        );
+        assert!(
+            rust.contains("struct FloatingActionButton"),
+            "must emit imported FAB"
+        );
+        assert!(rust.contains("struct Chip"), "must emit imported Chip");
     }
 }

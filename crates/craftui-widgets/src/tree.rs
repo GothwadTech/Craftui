@@ -243,8 +243,7 @@ enum ControlVisualAnim {
 impl ControlVisualAnim {
     fn is_animating(&self) -> bool {
         match self {
-            Self::Button { hover_t, press_t }
-            | Self::FloatingActionButton { hover_t, press_t } => {
+            Self::Button { hover_t, press_t } | Self::FloatingActionButton { hover_t, press_t } => {
                 hover_t.is_animating() || press_t.is_animating()
             }
             Self::Switch { knob_t } => knob_t.is_animating(),
@@ -264,8 +263,7 @@ impl ControlVisualAnim {
 
     fn step(&mut self, dt_sec: f32) -> bool {
         match self {
-            Self::Button { hover_t, press_t }
-            | Self::FloatingActionButton { hover_t, press_t } => {
+            Self::Button { hover_t, press_t } | Self::FloatingActionButton { hover_t, press_t } => {
                 let a = hover_t.step(dt_sec);
                 let b = press_t.step(dt_sec);
                 a || b
@@ -310,6 +308,7 @@ pub struct WidgetTree {
     pub root_scope: Scope,
     pub theme_signal: Signal<ThemeTokens>,
     pub theme_override_signal: Signal<ThemeOverride>,
+    pub metrics_signal: Signal<WindowMetrics>,
     pub services: PlatformServices,
     pub direction: Direction,
     pub focused: Option<NodeId>,
@@ -338,8 +337,10 @@ impl WidgetTree {
         let initial_theme = ThemeTokens::dark();
         let theme_signal = root_scope.signal(initial_theme);
         let theme_override_signal = root_scope.signal(ThemeOverride::default());
+        let metrics_signal = root_scope.signal(WindowMetrics::default());
         root_scope.provide_context(theme_signal);
         root_scope.provide_context(theme_override_signal);
+        root_scope.provide_context(metrics_signal);
         root_scope.provide_context(services.clone());
         Self {
             nodes: SlotMap::with_key(),
@@ -353,6 +354,7 @@ impl WidgetTree {
             root_scope,
             theme_signal,
             theme_override_signal,
+            metrics_signal,
             services,
             direction: Direction::Ltr,
             focused: None,
@@ -401,6 +403,11 @@ impl WidgetTree {
         self.theme_override_signal.set(override_spec.clone());
         let base = ThemeTokens::from_mode(self.theme_signal.get_untracked().mode);
         self.theme_signal.set(base.applied(&override_spec));
+    }
+
+    /// Directly set the active theme tokens (e.g. dynamic Material 3 palette).
+    pub fn set_theme(&mut self, theme: ThemeTokens) {
+        self.theme_signal.set(theme);
     }
 
     /// Animate smoothly between theme palettes (Light, Dark, AMOLED, HighContrast), preserving custom overrides.
@@ -483,14 +490,12 @@ impl WidgetTree {
                     ),
                 })
             }
-            WidgetKind::BottomNavBar { selected, .. } => {
-                Some(ControlVisualAnim::BottomNavBar {
-                    active_t: AnimatedFloat::new(
-                        selected.get_untracked() as f32,
-                        TransitionCurve::spring(360.0, 30.0),
-                    ),
-                })
-            }
+            WidgetKind::BottomNavBar { selected, .. } => Some(ControlVisualAnim::BottomNavBar {
+                active_t: AnimatedFloat::new(
+                    selected.get_untracked() as f32,
+                    TransitionCurve::spring(360.0, 30.0),
+                ),
+            }),
             WidgetKind::FloatingActionButton { .. } => {
                 Some(ControlVisualAnim::FloatingActionButton {
                     hover_t: AnimatedFloat::new(0.0, TransitionCurve::spring(500.0, 36.0)),
@@ -934,7 +939,21 @@ impl WidgetTree {
                         if let Some(ref b) = background {
                             let _ = b.get();
                         }
-                        mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::A11Y);
+                        mark_node_dirty(
+                            id,
+                            DirtyFlags::PAINT | DirtyFlags::LAYOUT | DirtyFlags::A11Y,
+                        );
+                    });
+                }
+            }
+            WidgetKind::HtmlView { src, html, .. } => {
+                let src = src.clone();
+                let html = html.clone();
+                if src.is_dynamic() || html.is_dynamic() {
+                    scope.effect(move || {
+                        let _ = src.get();
+                        let _ = html.get();
+                        mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::LAYOUT);
                     });
                 }
             }
@@ -2325,6 +2344,29 @@ impl WidgetTree {
             layout,
             scope,
         )
+    }
+
+    pub fn html_view(
+        &mut self,
+        scope: Scope,
+        src: impl Into<ReactiveValue<String>>,
+        html: impl Into<ReactiveValue<String>>,
+        router: Option<Rc<RefCell<craftui_core::IpcRouter>>>,
+    ) -> NodeId {
+        let id = self.spawn_node(
+            "HtmlView",
+            WidgetKind::HtmlView {
+                src: src.into(),
+                html: html.into(),
+                router,
+            },
+            LayoutStyle::column().with_size(Length::Pct(100.0), Length::Pct(100.0)),
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::Container;
+        }
+        id
     }
 
     /// Mount any custom user-defined widget implementing [`CustomWidget`].
@@ -3733,9 +3775,18 @@ impl WidgetTree {
         })
     }
 
+    /// Update tree window metrics and notify reactive listeners.
+    pub fn set_metrics(&mut self, metrics: WindowMetrics) {
+        self.metrics = metrics;
+        self.metrics_signal.set(metrics);
+    }
+
     /// Pull dirty flags from `craftui-reactive` and update layout + virtualized windows.
     pub fn layout(&mut self, metrics: WindowMetrics) -> usize {
-        self.metrics = metrics;
+        if self.metrics != metrics {
+            self.metrics = metrics;
+            self.metrics_signal.set(metrics);
+        }
         let dirty_updates = drain_dirty_nodes();
         let dirty_count = dirty_updates.len();
 
@@ -4068,6 +4119,19 @@ impl WidgetTree {
                         } else {
                             Size::new(56.0, 56.0)
                         }
+                    }
+                    WidgetKind::HtmlView { .. } => {
+                        let w = if constraints.max_width.is_finite() {
+                            constraints.max_width
+                        } else {
+                            400.0
+                        };
+                        let h = if constraints.max_height.is_finite() {
+                            constraints.max_height
+                        } else {
+                            300.0
+                        };
+                        Size::new(w, h)
                     }
                     WidgetKind::Accordion {
                         title, expanded, ..
@@ -4781,6 +4845,61 @@ impl WidgetTree {
         false
     }
 
+    fn adapt_brush_to_rect(brush: &Brush, rect: Rect) -> Brush {
+        match brush {
+            Brush::Solid(c) => Brush::Solid(*c),
+            Brush::LinearGradient { start, end, stops } => {
+                let s = if start.x <= 1.0 && start.y <= 1.0 && rect.width > 1.0 && rect.height > 1.0
+                {
+                    Point::new(
+                        rect.x + start.x * rect.width,
+                        rect.y + start.y * rect.height,
+                    )
+                } else {
+                    *start
+                };
+                let e = if end.x <= 1.0 && end.y <= 1.0 && rect.width > 1.0 && rect.height > 1.0 {
+                    Point::new(rect.x + end.x * rect.width, rect.y + end.y * rect.height)
+                } else {
+                    *end
+                };
+                Brush::LinearGradient {
+                    start: s,
+                    end: e,
+                    stops: stops.clone(),
+                }
+            }
+            Brush::RadialGradient {
+                center,
+                radius,
+                stops,
+            } => {
+                let c = if center.x <= 1.0
+                    && center.y <= 1.0
+                    && rect.width > 1.0
+                    && rect.height > 1.0
+                {
+                    Point::new(
+                        rect.x + center.x * rect.width,
+                        rect.y + center.y * rect.height,
+                    )
+                } else {
+                    *center
+                };
+                let r = if *radius <= 1.0 && rect.width > 1.0 && rect.height > 1.0 {
+                    *radius * rect.width.max(rect.height) * 0.5
+                } else {
+                    *radius
+                };
+                Brush::RadialGradient {
+                    center: c,
+                    radius: r,
+                    stops: stops.clone(),
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn paint_node_recursive(
         &mut self,
@@ -4900,7 +5019,8 @@ impl WidgetTree {
                 (None, None) => None,
             };
             if let Some(bg) = effective_bg {
-                scene.fill_rect(rect, bg, box_style.radius);
+                let adapted = Self::adapt_brush_to_rect(&bg, rect);
+                scene.fill_rect(rect, adapted, box_style.radius);
             }
         }
 
@@ -4981,7 +5101,8 @@ impl WidgetTree {
                         scene.fill_rect(rect, modulated, box_style.radius);
                     }
                     other_brush => {
-                        scene.fill_rect(rect, other_brush, box_style.radius);
+                        let adapted = Self::adapt_brush_to_rect(&other_brush, rect);
+                        scene.fill_rect(rect, adapted, box_style.radius);
                         if !disabled_eff && hover_t > 0.01 {
                             scene.fill_rect(
                                 rect,
@@ -5612,8 +5733,7 @@ impl WidgetTree {
                         .with_weight(if act_weight > 0.5 { 600.0 } else { 500.0 })
                         .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
                     let max_w = (sr.width - 8.0).max(10.0);
-                    let display_title =
-                        self.text_engine.truncate_with_ellipsis(title, &tst, max_w);
+                    let display_title = self.text_engine.truncate_with_ellipsis(title, &tst, max_w);
                     let measured = self.text_engine.measure(&display_title, &tst, None);
                     scene.push_clip(sr, CornerRadii::all(6.0));
                     scene.draw_text(
@@ -5670,8 +5790,12 @@ impl WidgetTree {
                 let pill_h = 32.0f32.min(rect.height * 0.55);
                 let pill_cx = rect.x + (anim_idx + 0.5) * item_w;
                 let pill_cy = rect.y + 18.0;
-                let pill_r =
-                    Rect::new(pill_cx - pill_w * 0.5, pill_cy - pill_h * 0.5, pill_w, pill_h);
+                let pill_r = Rect::new(
+                    pill_cx - pill_w * 0.5,
+                    pill_cy - pill_h * 0.5,
+                    pill_w,
+                    pill_h,
+                );
 
                 let pill_bg = theme.primary.with_alpha(0.18);
                 scene.fill_rect(pill_r, pill_bg, CornerRadii::all(16.0));
@@ -5685,9 +5809,7 @@ impl WidgetTree {
                     let icon_color = theme.text_secondary.lerp(theme.primary, act_weight);
 
                     if !icon_glyph.is_empty() {
-                        let icon_st = TextStyle::default()
-                            .with_size(18.0)
-                            .with_color(icon_color);
+                        let icon_st = TextStyle::default().with_size(18.0).with_color(icon_color);
                         let isz = self.text_engine.measure(icon_glyph, &icon_st, None);
                         scene.draw_text(
                             Point::new(cx - isz.width * 0.5, rect.y + 9.0),
@@ -5702,15 +5824,19 @@ impl WidgetTree {
                         .with_weight(if act_weight > 0.5 { 600.0 } else { 500.0 })
                         .with_color(theme.text_secondary.lerp(theme.text_primary, act_weight));
                     let max_lbl_w = (item_w - 6.0).max(10.0);
-                    let display_lbl =
-                        self.text_engine.truncate_with_ellipsis(title, &lbl_st, max_lbl_w);
+                    let display_lbl = self
+                        .text_engine
+                        .truncate_with_ellipsis(title, &lbl_st, max_lbl_w);
                     let lsz = self.text_engine.measure(&display_lbl, &lbl_st, None);
 
                     let item_rect =
                         Rect::new(rect.x + i as f32 * item_w, rect.y, item_w, rect.height);
                     scene.push_clip(item_rect, CornerRadii::ZERO);
                     scene.draw_text(
-                        Point::new(cx - lsz.width * 0.5, rect.y + rect.height - lsz.height - 6.0),
+                        Point::new(
+                            cx - lsz.width * 0.5,
+                            rect.y + rect.height - lsz.height - 6.0,
+                        ),
                         display_lbl,
                         lbl_st,
                         Some(max_lbl_w),
@@ -6321,6 +6447,15 @@ impl WidgetTree {
             WidgetKind::PlatformView { id: pv_id } => {
                 scene.push(PaintCommand::PlatformViewHole { id: pv_id, rect });
             }
+            WidgetKind::HtmlView { .. } => {
+                if box_style.background.is_none() {
+                    scene.fill_rect(rect, theme.surface, box_style.radius);
+                }
+                scene.push(PaintCommand::PlatformViewHole {
+                    id: PlatformViewId::from_raw(rect.x as u64 ^ rect.y as u64),
+                    rect,
+                });
+            }
             WidgetKind::Custom(cw) => {
                 if let Ok(mut guard) = cw.try_borrow_mut() {
                     guard.paint(rect, scene, &mut self.text_engine, theme, is_focused);
@@ -6608,6 +6743,7 @@ impl WidgetTree {
             } => {
                 self.metrics.logical_size = Size::new(*width, *height);
                 self.metrics.scale_factor = *scale_factor;
+                self.metrics_signal.set(self.metrics);
                 true
             }
             UiEvent::FocusChanged(_) => false,

@@ -287,6 +287,60 @@ pub fn builtin_icon_svg(name: &str) -> Option<&'static str> {
         "upload" => {
             r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M12 15V4M7 9l5-5 5 5M4 20h16"/></svg>"#
         }
+        "camera" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>"#
+        }
+        "image" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>"#
+        }
+        "user" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>"#
+        }
+        "more_vert" => {
+            r#"<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>"#
+        }
+        "document" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>"#
+        }
+        "tools" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>"#
+        }
+        "badge_id" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><line x1="15" y1="8" x2="17" y2="8"/><line x1="15" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="17" y2="16"/></svg>"#
+        }
+        "sort" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8V20M17 20L21 16M17 20L13 16"/></svg>"#
+        }
+        "grid" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>"#
+        }
+        "list" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>"#
+        }
+        "check_double" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M2 13l4 4L16 7M7 13l4 4L21 7"/></svg>"#
+        }
+        "aperture" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><circle cx="12" cy="12" r="10"/><line x1="14.31" y1="8" x2="20.05" y2="17.94"/><line x1="9.69" y1="8" x2="21.17" y2="8"/><line x1="7.38" y1="12" x2="13.12" y2="2.06"/><line x1="9.69" y1="16" x2="3.95" y2="6.06"/><line x1="14.31" y1="16" x2="2.83" y2="16"/><line x1="16.62" y1="12" x2="10.88" y2="21.94"/></svg>"#
+        }
+        "share" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>"#
+        }
+        "folder_plus" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><line x1="12" y1="10" x2="12" y2="16"/><line x1="9" y1="13" x2="15" y2="13"/></svg>"#
+        }
+        "watermark" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="7" y="8" width="6" height="5" rx="1" fill="currentColor"/></svg>"#
+        }
+        "grid_3x3" => {
+            r#"<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="5" r="1.8"/><circle cx="12" cy="5" r="1.8"/><circle cx="19" cy="5" r="1.8"/><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/><circle cx="5" cy="19" r="1.8"/><circle cx="12" cy="19" r="1.8"/><circle cx="19" cy="19" r="1.8"/></svg>"#
+        }
+        "pdf" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M7 14h2a1 1 0 0 0 1-1v-1a1 1 0 0 0-1-1H7v5M13 11v5M13 11h1.5a1.5 1.5 0 0 1 1.5 1.5v2a1.5 1.5 0 0 1-1.5 1.5H13"/></svg>"#
+        }
+        "copy_pages" | "pages" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V4a2 2 0 0 1 2-2h12"/></svg>"#
+        }
         _ => return None,
     })
 }

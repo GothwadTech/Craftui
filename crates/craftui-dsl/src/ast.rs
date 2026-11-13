@@ -147,11 +147,29 @@ pub struct AnimateSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateDecl {
+    pub name: String,
+    pub condition: Expr,
+    pub property_overrides: Vec<PropBinding>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransitionSpec {
+    pub from_state: Option<String>,
+    pub to_state: Option<String>,
+    pub animations: Vec<AnimateSpec>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ElementNode {
     pub kind: String,
     pub props: Vec<PropBinding>,
     pub handlers: Vec<HandlerBinding>,
     pub animations: Vec<AnimateSpec>,
+    pub states: Vec<StateDecl>,
+    pub transitions: Vec<TransitionSpec>,
     pub children: Vec<ChildItem>,
     pub span: Span,
 }
@@ -239,6 +257,8 @@ pub enum Unit {
     Dp,
     Px,
     Pct,
+    Deg,
+    Rad,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -12,13 +12,19 @@ use craftui_core::{
     PointerPhase, Result, ScrollDelta, SecureStorageBackend, ShareBackend, SharePayload, Size,
     UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
 };
+#[cfg(feature = "hot-reload")]
+use craftui_core::{BoxShadow, Brush, CornerRadii, Rect, ThemeMode, ThemeTokens};
 use craftui_reactive::Scope;
 #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
 use craftui_render::GpuSurfacePipeline;
+#[cfg(feature = "hot-reload")]
+use craftui_render::PaintCommand;
 use craftui_render::{PaintScene, SoftwareRenderer, TextureRegistry};
 #[cfg(feature = "hot-reload")]
 use craftui_runtime::HotReloadSession;
 use craftui_text::TextEngine;
+#[cfg(feature = "hot-reload")]
+use craftui_text::TextStyle;
 use craftui_widgets::WidgetTree;
 #[cfg(feature = "hot-reload")]
 use notify::{Event as NotifyEvent, RecursiveMode, Watcher};
@@ -793,6 +799,13 @@ struct HotReloadSpec {
     path: PathBuf,
     component: Option<String>,
     session: HotReloadSession,
+    show_hud: bool,
+    show_inspector: bool,
+    device_mode: bool,
+    last_reload_error: Option<String>,
+    frame_count: u32,
+    fps_sample_time: Instant,
+    current_fps: f32,
     _watcher: Option<notify::RecommendedWatcher>,
 }
 
@@ -815,12 +828,15 @@ pub fn should_trigger_hot_reload(event: &NotifyEvent) -> bool {
             .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cui")))
 }
 
-/// Run a live hot-reloading `.cui` preview window using `notify` + `craftui-runtime` (with full multi-file import support).
+/// Run an interactive live preview canvas for `.cui` files with device framing,
+/// live telemetry HUD, syntax error banners, element inspector, and theme switching.
 #[cfg(feature = "hot-reload")]
-pub fn run_hot_reload_cui(
+pub fn run_live_preview_cui(
     config: WindowConfig,
     cui_path: PathBuf,
     component: Option<String>,
+    device_mode: bool,
+    show_inspector: bool,
 ) -> Result<()> {
     let event_loop = EventLoop::<DesktopUserEvent>::with_user_event()
         .build()
@@ -854,12 +870,22 @@ pub fn run_hot_reload_cui(
     let mut tree = WidgetTree::new(root_scope);
     tree.set_platform_services(default_desktop_services());
     let mut session = HotReloadSession::new(root_scope);
-    let _ = session.reload_file(&cui_path, component.as_deref(), &mut tree)?;
+    let mut initial_error = None;
+    if let Err(e) = session.reload_file(&cui_path, component.as_deref(), &mut tree) {
+        initial_error = Some(e.to_string());
+    }
 
     let spec = HotReloadSpec {
         path: cui_path,
         component,
         session,
+        show_hud: true,
+        show_inspector,
+        device_mode,
+        last_reload_error: initial_error,
+        frame_count: 0,
+        fps_sample_time: Instant::now(),
+        current_fps: 60.0,
         _watcher: Some(watcher),
     };
 
@@ -869,6 +895,16 @@ pub fn run_hot_reload_cui(
     event_loop
         .run_app(&mut runner)
         .map_err(|e| CraftError::Platform(format!("event loop exited with error: {e}")))
+}
+
+/// Run a live hot-reloading `.cui` preview window using `notify` + `craftui-runtime` (with full multi-file import support).
+#[cfg(feature = "hot-reload")]
+pub fn run_hot_reload_cui(
+    config: WindowConfig,
+    cui_path: PathBuf,
+    component: Option<String>,
+) -> Result<()> {
+    run_live_preview_cui(config, cui_path, component, false, false)
 }
 
 struct InitialWindowSetup {
@@ -1341,6 +1377,11 @@ impl DesktopRunner {
 
         state.tree.paint(&mut state.scene);
 
+        #[cfg(feature = "hot-reload")]
+        if let Some(spec) = state.hot_reload.as_mut() {
+            paint_live_preview_overlays(&mut state.scene, &state.tree, state.cursor_pos, spec);
+        }
+
         let bg = state.tree.theme().background;
         let scale = state.tree.metrics.scale_factor;
         let tex_reg = &state.textures;
@@ -1394,18 +1435,212 @@ impl DesktopRunner {
                 .reload_file(&spec.path, spec.component.as_deref(), &mut state.tree)
             {
                 Ok(_) => {
+                    spec.last_reload_error = None;
                     tracing::info!(
-                        "Hot-reloaded {} in {:.2}ms",
+                        "Live-reloaded {} in {:.2}ms",
                         spec.path.display(),
                         spec.session.last_reload_duration.as_secs_f64() * 1000.0
                     );
                     state.window.request_redraw();
                 }
                 Err(e) => {
-                    tracing::warn!("Hot-reload diagnostic: {e}");
+                    spec.last_reload_error = Some(e.to_string());
+                    tracing::warn!("Live-reload diagnostic: {e}");
+                    state.window.request_redraw();
                 }
             }
         }
+    }
+}
+
+#[cfg(feature = "hot-reload")]
+fn paint_live_preview_overlays(
+    scene: &mut PaintScene,
+    tree: &WidgetTree,
+    cursor_pos: Point,
+    spec: &mut HotReloadSpec,
+) {
+    // 1. Frame counter & FPS sampling
+    spec.frame_count += 1;
+    let elapsed = spec.fps_sample_time.elapsed();
+    if elapsed >= Duration::from_millis(500) {
+        spec.current_fps = spec.frame_count as f32 / elapsed.as_secs_f32();
+        spec.frame_count = 0;
+        spec.fps_sample_time = Instant::now();
+    }
+
+    let win_w = tree.metrics.logical_size.width;
+    let win_h = tree.metrics.logical_size.height;
+
+    // 2. Device frame (Android phone bezel)
+    if spec.device_mode && win_w >= 412.0 {
+        let frame_x = (win_w - 412.0) / 2.0;
+        let frame_y = ((win_h - 915.0).max(0.0)) / 2.0;
+        let chassis_rect = Rect::new(frame_x - 8.0, frame_y - 8.0, 412.0 + 16.0, 915.0 + 16.0);
+        scene.stroke_rect(
+            chassis_rect,
+            Color::rgb(71, 85, 105),
+            4.0,
+            CornerRadii::all(36.0),
+        );
+        // Punch hole camera
+        scene.fill_rect(
+            Rect::new(frame_x + 206.0 - 5.0, frame_y + 12.0, 10.0, 10.0),
+            Brush::Solid(Color::BLACK),
+            CornerRadii::all(5.0),
+        );
+        // Gesture pill at bottom
+        scene.fill_rect(
+            Rect::new(frame_x + 206.0 - 40.0, frame_y + 915.0 - 12.0, 80.0, 4.0),
+            Brush::Solid(Color::rgba(255, 255, 255, 102)),
+            CornerRadii::all(2.0),
+        );
+    }
+
+    // 3. Live Element Inspector
+    if spec.show_inspector {
+        if let Some(nid) = tree.hit_test(cursor_pos) {
+            let rect = tree.rect(nid);
+            if rect.width > 0.0 && rect.height > 0.0 {
+                scene.stroke_rect(rect, Color::rgb(6, 182, 212), 2.0, CornerRadii::all(4.0));
+                if let Some(node) = tree.nodes.get(nid) {
+                    let tag_text =
+                        format!("{}  {:.0}×{:.0}", node.debug_name, rect.width, rect.height);
+                    let tag_w = (tag_text.len() as f32) * 7.0 + 14.0;
+                    let tag_y = (rect.y - 22.0).max(4.0);
+                    let tag_rect = Rect::new(rect.x, tag_y, tag_w, 20.0);
+                    scene.fill_rect(
+                        tag_rect,
+                        Brush::Solid(Color::rgba(15, 23, 42, 242)),
+                        CornerRadii::all(4.0),
+                    );
+                    scene.stroke_rect(
+                        tag_rect,
+                        Color::rgb(6, 182, 212),
+                        1.0,
+                        CornerRadii::all(4.0),
+                    );
+                    scene.commands.push(PaintCommand::DrawText {
+                        origin: Point::new(rect.x + 6.0, tag_y + 4.0),
+                        text: tag_text,
+                        style: TextStyle {
+                            font_size: 11.0,
+                            color: Color::WHITE,
+                            ..Default::default()
+                        },
+                        max_width: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // 4. Live Diagnostic Banner (bottom of window)
+    if let Some(ref err) = spec.last_reload_error {
+        let banner_rect = Rect::new(
+            16.0,
+            (win_h - 56.0).max(10.0),
+            (win_w - 32.0).max(100.0),
+            44.0,
+        );
+        scene.drop_shadow(
+            banner_rect,
+            CornerRadii::all(8.0),
+            BoxShadow {
+                blur_radius: 12.0,
+                color: Color::rgba(0, 0, 0, 153),
+                offset_y: 4.0,
+                ..Default::default()
+            },
+        );
+        scene.fill_rect(
+            banner_rect,
+            Brush::Solid(Color::rgba(127, 29, 29, 245)),
+            CornerRadii::all(8.0),
+        );
+        scene.stroke_rect(
+            banner_rect,
+            Color::rgb(239, 68, 68),
+            1.5,
+            CornerRadii::all(8.0),
+        );
+        let err_short = if err.chars().count() > 100 {
+            format!("{}...", err.chars().take(100).collect::<String>())
+        } else {
+            err.clone()
+        };
+        let err_text = format!("⚠ Live Error: {err_short}");
+        scene.commands.push(PaintCommand::DrawText {
+            origin: Point::new(banner_rect.x + 12.0, banner_rect.y + 14.0),
+            text: err_text,
+            style: TextStyle {
+                font_size: 12.0,
+                color: Color::WHITE,
+                ..Default::default()
+            },
+            max_width: Some(banner_rect.width - 24.0),
+        });
+    }
+
+    // 5. Telemetry HUD Pill (top-right of window)
+    if spec.show_hud {
+        let hud_w = 340.0f32;
+        let hud_x = (win_w - hud_w - 16.0).max(10.0);
+        let hud_rect = Rect::new(hud_x, 12.0, hud_w, 28.0);
+        scene.drop_shadow(
+            hud_rect,
+            CornerRadii::all(14.0),
+            BoxShadow {
+                blur_radius: 8.0,
+                color: Color::rgba(0, 0, 0, 102),
+                offset_y: 2.0,
+                ..Default::default()
+            },
+        );
+        scene.fill_rect(
+            hud_rect,
+            Brush::Solid(Color::rgba(15, 23, 42, 224)),
+            CornerRadii::all(14.0),
+        );
+        scene.stroke_rect(
+            hud_rect,
+            Color::rgba(255, 255, 255, 38),
+            1.0,
+            CornerRadii::all(14.0),
+        );
+
+        let dot_color = if spec.last_reload_error.is_some() {
+            Color::rgb(239, 68, 68)
+        } else {
+            Color::rgb(34, 197, 94)
+        };
+        scene.fill_rect(
+            Rect::new(hud_x + 10.0, 22.0, 8.0, 8.0),
+            Brush::Solid(dot_color),
+            CornerRadii::all(4.0),
+        );
+
+        let reload_ms = spec.session.last_reload_duration.as_secs_f32() * 1000.0;
+        let theme_str = match tree.theme().mode {
+            ThemeMode::Amoled => "AMOLED",
+            ThemeMode::Dark => "Dark",
+            ThemeMode::Light => "Light",
+            _ => "Custom",
+        };
+        let hud_text = format!(
+            "LIVE {:.1}ms | {:.0} FPS | {} | [F1-F3]",
+            reload_ms, spec.current_fps, theme_str
+        );
+        scene.commands.push(PaintCommand::DrawText {
+            origin: Point::new(hud_x + 24.0, 18.0),
+            text: hud_text,
+            style: TextStyle {
+                font_size: 11.0,
+                color: Color::rgb(241, 245, 249),
+                ..Default::default()
+            },
+            max_width: None,
+        });
     }
 }
 
@@ -1639,6 +1874,51 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
             }
             WindowEvent::KeyboardInput { event: key_ev, .. } => {
                 let ke = translate_winit_key(&key_ev, state.modifiers);
+                #[cfg(feature = "hot-reload")]
+                if key_ev.state == ElementState::Pressed {
+                    if let Some(spec) = state.hot_reload.as_mut() {
+                        match ke.code {
+                            KeyCode::F1 => {
+                                spec.show_inspector = !spec.show_inspector;
+                                state.window.request_redraw();
+                                return;
+                            }
+                            KeyCode::F2 => {
+                                let cur = state.tree.theme().mode;
+                                let next = match cur {
+                                    ThemeMode::Amoled => ThemeTokens::dark(),
+                                    ThemeMode::Dark => ThemeTokens::light(),
+                                    _ => ThemeTokens::amoled(),
+                                };
+                                state.tree.set_theme(next);
+                                state.window.request_redraw();
+                                return;
+                            }
+                            KeyCode::F3 => {
+                                spec.device_mode = !spec.device_mode;
+                                state.window.request_redraw();
+                                return;
+                            }
+                            KeyCode::F5 => {
+                                match spec.session.reload_file(
+                                    &spec.path,
+                                    spec.component.as_deref(),
+                                    &mut state.tree,
+                                ) {
+                                    Ok(_) => {
+                                        spec.last_reload_error = None;
+                                    }
+                                    Err(e) => {
+                                        spec.last_reload_error = Some(e.to_string());
+                                    }
+                                }
+                                state.window.request_redraw();
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 if state.tree.handle_event(&UiEvent::Key(ke)) {
                     state.window.request_redraw();
                 }
@@ -1742,6 +2022,18 @@ pub fn translate_winit_key(key_ev: &winit::event::KeyEvent, modifiers: Modifiers
             Key::Named(NamedKey::End) => KeyCode::End,
             Key::Named(NamedKey::PageUp) => KeyCode::PageUp,
             Key::Named(NamedKey::PageDown) => KeyCode::PageDown,
+            Key::Named(NamedKey::F1) => KeyCode::F1,
+            Key::Named(NamedKey::F2) => KeyCode::F2,
+            Key::Named(NamedKey::F3) => KeyCode::F3,
+            Key::Named(NamedKey::F4) => KeyCode::F4,
+            Key::Named(NamedKey::F5) => KeyCode::F5,
+            Key::Named(NamedKey::F6) => KeyCode::F6,
+            Key::Named(NamedKey::F7) => KeyCode::F7,
+            Key::Named(NamedKey::F8) => KeyCode::F8,
+            Key::Named(NamedKey::F9) => KeyCode::F9,
+            Key::Named(NamedKey::F10) => KeyCode::F10,
+            Key::Named(NamedKey::F11) => KeyCode::F11,
+            Key::Named(NamedKey::F12) => KeyCode::F12,
             Key::Character(s) => KeyCode::Character(s.to_string()),
             _ => KeyCode::Unknown,
         },

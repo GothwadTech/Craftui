@@ -92,16 +92,17 @@ pub mod prelude {
     pub use craftui_a11y::{A11yMetadata, A11yRole};
     pub use craftui_core::{
         Alignment, AndroidPermissionSpec, AppLifecycleEvent, Axis, BatteryState, BlendMode, Border,
-        BoxShadow, Breakpoint, Brush, ClipboardBackend, Color, Constraints, CornerRadii,
-        CursorIcon, DeviceCapabilitiesBackend, DeviceInfo, Direction, DirtyFlags,
-        FileDialogBackend, FileDialogRequest, FileFilter, Fit, HapticStyle, HapticsBackend,
-        ImeEvent, Insets, Justify, KeyCode, KeyEvent, Length, MemorySecureStorage,
+        BoxShadow, Breakpoint, Brush, CRAFTUI_TAURI_IPC_SCRIPT, ClipboardBackend, Color,
+        Constraints, CornerRadii, CursorIcon, DeviceCapabilitiesBackend, DeviceInfo, Direction,
+        DirtyFlags, FileDialogBackend, FileDialogRequest, FileFilter, Fit, HapticStyle,
+        HapticsBackend, ImeEvent, Insets, IpcMessage, IpcResponse, IpcRouter, Justify, KeyCode,
+        KeyEvent, Length, M3Elevation, Material3Tokens, MemorySecureStorage,
         MockDeviceCapabilities, MockHaptics, MockPermissionBackend, MockShare, Modifiers,
         NetworkStatus, NodeId, NoopHaptics, NoopPermissionBackend, NoopShare, Permission,
         PermissionBackend, PermissionOutcome, PermissionStatus, PlatformServices, PlatformViewId,
         Point, PointerButton, PointerEvent, PointerId, PointerPhase, Rect, ScrollDelta,
-        SecureStorageBackend, ShareBackend, SharePayload, Size, TextureId, ThemeMode,
-        ThemeOverride, ThemeTokens, Transform2D, UiDispatcher, UiEvent, WindowMetrics,
+        SecureStorageBackend, ShareBackend, SharePayload, Size, TailwindTokens, TextureId,
+        ThemeMode, ThemeOverride, ThemeTokens, Transform2D, UiDispatcher, UiEvent, WindowMetrics,
         monotonic_ms,
     };
     pub use craftui_layout::{LayoutMode, LayoutStyle};
@@ -626,5 +627,63 @@ mod tests {
             timestamp_ms: 10,
         }));
         assert_eq!(sorted_col.get(), Some(0));
+    }
+
+    #[test]
+    fn cui_macro_supports_hybrid_html_and_material3_theming() {
+        let cx = Scope::root();
+
+        let view = cui! {
+            div(
+                id: "hybrid_card",
+                class: "flex flex-col p-4 gap-4 bg-slate-900 rounded-xl shadow-md w-full"
+            ) {
+                h1(
+                    id: "main_heading",
+                    text: "Hybrid Architecture",
+                    class: "text-2xl font-bold text-white"
+                )
+                p(
+                    id: "sub_heading",
+                    text: "Tauri 2.0 bridge with pure Rust native rendering"
+                )
+                HtmlView(
+                    id: "webview_layer",
+                    src: "https://tauri.app"
+                )
+            }
+        };
+
+        let mut tree = WidgetTree::new(cx);
+        tree.mount(cx, view);
+
+        // Apply Material 3 theme generated from seed color
+        let seed = Color::rgb(103, 80, 164);
+        let m3_theme = ThemeTokens::material3(seed, ThemeMode::Dark);
+        tree.set_theme(m3_theme);
+
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(480.0, 800.0),
+            ..Default::default()
+        });
+
+        let card_id = tree.node_by_id("hybrid_card").unwrap();
+        let card = tree.nodes.get(card_id).unwrap();
+        assert_eq!(card.layout.padding, Insets::all(16.0));
+        assert_eq!(card.layout.gap_x, 16.0);
+        assert_eq!(card.box_style.radius, CornerRadii::all(16.0));
+
+        let web_id = tree.node_by_id("webview_layer").unwrap();
+        let web = tree.nodes.get(web_id).unwrap();
+        match &web.kind {
+            WidgetKind::HtmlView { src, .. } => {
+                assert_eq!(src.get(), "https://tauri.app");
+            }
+            _ => panic!("expected HtmlView widget"),
+        }
+
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+        assert!(!scene.commands.is_empty());
     }
 }

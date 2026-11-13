@@ -385,5 +385,10 @@ pub enum WidgetKind {
     PlatformView {
         id: PlatformViewId,
     },
+    HtmlView {
+        src: ReactiveValue<String>,
+        html: ReactiveValue<String>,
+        router: Option<Rc<RefCell<craftui_core::IpcRouter>>>,
+    },
     Custom(Rc<RefCell<dyn CustomWidget>>),
 }

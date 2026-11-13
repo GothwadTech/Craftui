@@ -2,8 +2,8 @@
 
 use craftui_core::{
     Alignment, Axis, BlendMode, Border, BoxShadow, Brush, Color, CornerRadii, CraftError,
-    CursorIcon, DirtyFlags, Fit, Insets, Justify, Length, NodeId, PlatformViewId, Result,
-    TextureId, ThemeOverride, ThemeTokens, Transform2D,
+    CursorIcon, DirtyFlags, Fit, Insets, Justify, Length, NodeId, PlatformViewId, Point, Result,
+    TextureId, ThemeOverride, ThemeTokens, Transform2D, WindowMetrics,
 };
 use craftui_dsl::{
     AnimateSpec, AssignOp, BinOp, ChildItem, ComponentDecl, CuiFile, Diagnostic, ElementNode, Expr,
@@ -33,6 +33,7 @@ pub enum DynValue {
     Color(Color),
     Length(Length),
     Texture(Option<TextureId>),
+    Brush(Brush),
     List(Vec<DynValue>),
     Struct {
         name: String,
@@ -107,6 +108,7 @@ impl DynValue {
             Self::Length(Length::Auto) => "auto".to_string(),
             Self::Texture(Some(id)) => format!("{id:?}"),
             Self::Texture(None) | Self::Null => String::new(),
+            Self::Brush(_) => "brush".to_string(),
         }
     }
 
@@ -119,9 +121,19 @@ impl DynValue {
         }
     }
 
+    pub fn as_brush(&self) -> Option<Brush> {
+        match self {
+            Self::Brush(b) => Some(b.clone()),
+            Self::Color(c) => Some(Brush::Solid(*c)),
+            Self::String(s) => Color::from_hex(s).map(Brush::Solid),
+            _ => None,
+        }
+    }
+
     pub fn as_color(&self) -> Option<Color> {
         match self {
             Self::Color(c) => Some(*c),
+            Self::Brush(Brush::Solid(c)) => Some(*c),
             Self::String(s) => Color::from_hex(s),
             _ => None,
         }
@@ -169,6 +181,7 @@ impl DynValue {
             }
             Self::Texture(id) => format!("t:{id:?}"),
             Self::Length(l) => format!("len:{l:?}"),
+            Self::Brush(_) => "brush".to_string(),
             Self::Null => "null".to_string(),
         }
     }
@@ -349,9 +362,10 @@ impl HotReloadSession {
             locals: HashMap::new(),
             theme_sig: tree.theme_signal,
             theme_ov_sig: tree.theme_override_signal,
+            metrics_sig: tree.metrics_signal,
         };
 
-        // Ensure component properties exist in preserved DynamicStore
+        // First pass: ensure all component properties exist in preserved DynamicStore
         for prop in &comp.properties {
             let env_cur = DynEnv {
                 props: self.store.props.clone(),
@@ -362,9 +376,28 @@ impl HotReloadSession {
                 .as_ref()
                 .map(|e| eval_expr(e, &env_cur))
                 .unwrap_or(DynValue::Null);
-            let _ = self
-                .store
+            self.store
                 .get_or_create_prop(self.state_scope, &prop.name, init);
+        }
+
+        let full_env = DynEnv {
+            props: self.store.props.clone(),
+            ..base_env.clone()
+        };
+
+        // Second pass: install reactive Window effects with full component properties map
+        for prop in &comp.properties {
+            if let Some(ref def_expr) = prop.default_value {
+                if expr_references_window(def_expr) {
+                    let sig_c = self.store.props.get(&prop.name).copied().unwrap();
+                    let expr_c = def_expr.clone();
+                    let env_c = full_env.clone();
+                    mount_scope.effect(move || {
+                        let v = eval_expr_tracked(&expr_c, &env_c, true);
+                        sig_c.set(v);
+                    });
+                }
+            }
         }
 
         let root_env = DynEnv {
@@ -393,6 +426,7 @@ struct DynEnv {
     locals: HashMap<String, DynValue>,
     theme_sig: Signal<ThemeTokens>,
     theme_ov_sig: Signal<ThemeOverride>,
+    metrics_sig: Signal<WindowMetrics>,
 }
 
 impl DynEnv {
@@ -405,6 +439,34 @@ impl DynEnv {
         } else {
             None
         }
+    }
+}
+
+fn expr_references_window(expr: &Expr) -> bool {
+    match expr {
+        Expr::Member(base, _) => {
+            if let Expr::Ident(root) = base.as_ref() {
+                root == "Window"
+            } else {
+                expr_references_window(base)
+            }
+        }
+        Expr::UnaryNot(inner) | Expr::UnaryNeg(inner) => expr_references_window(inner),
+        Expr::Binary(l, _, r) => expr_references_window(l) || expr_references_window(r),
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            expr_references_window(cond)
+                || expr_references_window(then_expr)
+                || expr_references_window(else_expr)
+        }
+        Expr::Call(_, args) => args.iter().any(expr_references_window),
+        Expr::MethodCall(base, _, args) => {
+            expr_references_window(base) || args.iter().any(expr_references_window)
+        }
+        _ => false,
     }
 }
 
@@ -813,8 +875,8 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
             let icon_rv = find_prop(el, &["icon"])
                 .map(|p| expr_to_reactive_string(&p.value, env))
                 .unwrap_or_else(|| ReactiveValue::Static(String::new()));
-            let label_opt = find_prop(el, &["label", "text"])
-                .map(|p| expr_to_reactive_string(&p.value, env));
+            let label_opt =
+                find_prop(el, &["label", "text"]).map(|p| expr_to_reactive_string(&p.value, env));
             tree.floating_action_button(scope, icon_rv, label_opt)
         }
         "Accordion" => {
@@ -1104,6 +1166,80 @@ fn build_element(scope: Scope, el: &ElementNode, env: &DynEnv, tree: &mut Widget
                 .unwrap_or_default();
             tree.platform_view(scope, vid, LayoutStyle::column())
         }
+        "HtmlView" => {
+            let src_rv = find_prop(el, &["src", "url"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            let html_rv = find_prop(el, &["html"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            tree.html_view(scope, src_rv, html_rv, None)
+        }
+        "div" | "section" | "nav" => {
+            let class_str = find_prop(el, &["class"])
+                .map(|p| match eval_expr(&p.value, env) {
+                    DynValue::String(s) => s,
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            if class_str.contains("flex-row") {
+                tree.row(scope)
+            } else {
+                tree.column(scope)
+            }
+        }
+        "span" | "p" | "h1" | "h2" | "h3" => {
+            let (sz, wt) = match el.kind.as_str() {
+                "h1" => (28.0f32, 700.0f32),
+                "h2" => (24.0f32, 700.0f32),
+                "h3" => (20.0f32, 600.0f32),
+                _ => (15.0f32, 400.0f32),
+            };
+            let content_rv = find_prop(el, &["text", "content"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static(String::new()));
+            let st = TextStyle::default().with_size(sz).with_weight(wt);
+            tree.text(scope, content_rv, st)
+        }
+        "button" => {
+            let text_rv = find_prop(el, &["text", "title", "label"])
+                .map(|p| expr_to_reactive_string(&p.value, env))
+                .unwrap_or_else(|| ReactiveValue::Static("Button".into()));
+            tree.button(scope, text_rv, || {})
+        }
+        "input" => {
+            let text_prop = find_prop(el, &["text", "value"]);
+            let (init_s, sig_opt) = bind_string_signal(scope, text_prop, env);
+            let ph = eval_prop("placeholder")
+                .map(|v| v.as_str())
+                .unwrap_or_default();
+            let n = tree.text_input(scope, init_s, ph, sig_opt);
+            if let Some(h) = el.handlers.iter().find(|h| h.event == "on_change") {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_change(n, move |value| {
+                    let mut h_env = env_c.clone();
+                    h_env
+                        .locals
+                        .insert("value".into(), DynValue::String(value.clone()));
+                    h_env.locals.insert("text".into(), DynValue::String(value));
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            if let Some(h) = el.handlers.iter().find(|h| h.event == "on_submit") {
+                let stmts = h.body.clone();
+                let env_c = env.clone();
+                tree.set_on_submit(n, move |value| {
+                    let mut h_env = env_c.clone();
+                    h_env
+                        .locals
+                        .insert("value".into(), DynValue::String(value.clone()));
+                    h_env.locals.insert("text".into(), DynValue::String(value));
+                    run_stmts(&stmts, &h_env);
+                });
+            }
+            n
+        }
         _ => tree.column(scope),
     };
 
@@ -1124,6 +1260,33 @@ fn apply_node_layout_props(
             .find(|p| p.name == name)
             .map(|p| eval_expr(&p.value, env))
     };
+    if let Some(v) = eval_p("class") {
+        let tw = craftui_core::TailwindTokens::parse(&v.as_str());
+        if tw.is_column {
+            layout.mode = craftui_layout::LayoutMode::Column;
+            dirty = true;
+        } else if tw.is_row {
+            layout.mode = craftui_layout::LayoutMode::Row;
+            dirty = true;
+        }
+        if let Some(p) = tw.padding {
+            layout.padding = p;
+            dirty = true;
+        }
+        if let Some(g) = tw.gap {
+            layout.gap_x = g;
+            layout.gap_y = g;
+            dirty = true;
+        }
+        if let Some(w) = tw.width {
+            layout.width = w;
+            dirty = true;
+        }
+        if let Some(h) = tw.height {
+            layout.height = h;
+            dirty = true;
+        }
+    }
     if let Some(v) = eval_p("width") {
         layout.width = v.as_length();
         dirty = true;
@@ -1229,6 +1392,25 @@ fn eval_shadows_dyn(v: &DynValue) -> Vec<BoxShadow> {
     match v {
         DynValue::Bool(true) => vec![BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80))],
         DynValue::Bool(false) | DynValue::Null => Vec::new(),
+        DynValue::Struct { name, fields } if name == "BoxShadow" => {
+            let ox = fields.get("offset_x").map(|v| v.as_f32()).unwrap_or(0.0);
+            let oy = fields.get("offset_y").map(|v| v.as_f32()).unwrap_or(0.0);
+            let blur = fields.get("blur").map(|v| v.as_f32()).unwrap_or(0.0);
+            let spread = fields.get("spread").map(|v| v.as_f32()).unwrap_or(0.0);
+            let col = fields
+                .get("color")
+                .and_then(|v| v.as_color())
+                .unwrap_or(Color::rgba(0, 0, 0, 80));
+            let inset = fields.get("inset").map(|v| v.as_bool()).unwrap_or(false);
+            vec![BoxShadow {
+                offset_x: ox,
+                offset_y: oy,
+                blur_radius: blur,
+                spread,
+                color: col,
+                inset,
+            }]
+        }
         DynValue::List(items) => {
             let mut out = Vec::new();
             for chunk in items.as_chunks::<4>().0 {
@@ -1454,6 +1636,32 @@ fn apply_common_props_and_events(
         .unwrap_or_default();
     let mut box_dirty = false;
 
+    if let Some(cls_prop) = find_prop(el, &["class"]) {
+        let tw = craftui_core::TailwindTokens::parse(&eval_expr(&cls_prop.value, env).as_str());
+        if let Some(bg) = tw.background {
+            if box_style.background.is_none() {
+                box_style.background = Some(ReactiveValue::Static(Brush::Solid(bg)));
+                box_dirty = true;
+            }
+        }
+        if let Some(r) = tw.radius {
+            if box_style.radius == CornerRadii::ZERO {
+                box_style.radius = r;
+                if let Some(ref mut br) = box_style.border {
+                    br.radius = r;
+                }
+                tree.set_image_radius(node, r);
+                box_dirty = true;
+            }
+        }
+        if let Some(sh) = tw.shadow {
+            if box_style.shadow.is_none() {
+                box_style.shadow = Some(sh);
+                box_dirty = true;
+            }
+        }
+    }
+
     if el.kind != "Badge"
         && let Some(bg_prop) = find_prop(el, &["background"])
     {
@@ -1461,15 +1669,16 @@ fn apply_common_props_and_events(
             let expr = bg_prop.value.clone();
             let env_c = env.clone();
             box_style.background = Some(ReactiveValue::Dynamic(Rc::new(move || {
-                let c = eval_expr_tracked(&expr, &env_c, true)
-                    .as_color()
-                    .unwrap_or(Color::TRANSPARENT);
-                Brush::Solid(c)
+                let v = eval_expr_tracked(&expr, &env_c, true);
+                v.as_brush().unwrap_or(Brush::Solid(Color::TRANSPARENT))
             })));
             box_dirty = true;
-        } else if let Some(c) = eval_expr(&bg_prop.value, env).as_color() {
-            box_style.background = Some(ReactiveValue::Static(Brush::Solid(c)));
-            box_dirty = true;
+        } else {
+            let v = eval_expr(&bg_prop.value, env);
+            if let Some(b) = v.as_brush() {
+                box_style.background = Some(ReactiveValue::Static(b));
+                box_dirty = true;
+            }
         }
     }
     if let Some(br_prop) = find_prop(el, &["border_radius"]) {
@@ -2086,7 +2295,20 @@ fn instantiate_subcomponent(
                 .as_ref()
                 .map(|e| eval_expr(e, outer_env))
                 .unwrap_or(DynValue::Null);
-            sub_props.insert(p.name.clone(), scope.signal(v));
+            let child_sig = scope.signal(v);
+            if let Some(ref def_expr) = p.default_value {
+                if expr_references_window(def_expr) {
+                    let expr_c = def_expr.clone();
+                    let outer_c = outer_env.clone();
+                    scope.effect(move || {
+                        let nv = eval_expr_tracked(&expr_c, &outer_c, true);
+                        if child_sig.get_untracked() != nv {
+                            child_sig.set(nv);
+                        }
+                    });
+                }
+            }
+            sub_props.insert(p.name.clone(), child_sig);
         }
     }
 
@@ -2117,6 +2339,7 @@ fn instantiate_subcomponent(
         locals: HashMap::new(),
         theme_sig: outer_env.theme_sig,
         theme_ov_sig: outer_env.theme_ov_sig,
+        metrics_sig: outer_env.metrics_sig,
     };
 
     let node = if let Some(ref root) = comp.root {
@@ -2124,6 +2347,7 @@ fn instantiate_subcomponent(
     } else {
         tree.column(scope)
     };
+    build_children(scope, node, call_el, outer_env, tree);
     apply_common_props_and_events(scope, node, call_el, outer_env, tree, true);
     node
 }
@@ -2512,9 +2736,16 @@ fn eval_iterable(expr: &Expr, env: &DynEnv, track: bool) -> Vec<DynValue> {
 fn expr_has_reactivity(expr: &Expr, env: &DynEnv) -> bool {
     match expr {
         Expr::Ident(name) => env.props.contains_key(name) || env.signal_locals.contains_key(name),
-        Expr::Member(base, _) => {
-            matches!(base.as_ref(), Expr::Ident(r) if r == "Theme")
-                || expr_has_reactivity(base, env)
+        Expr::Member(base, field) => {
+            if let Expr::Ident(r) = base.as_ref() {
+                if r == "Theme" || r == "Window" {
+                    return true;
+                }
+                if r == "root" {
+                    return env.props.contains_key(field) || env.signal_locals.contains_key(field);
+                }
+            }
+            expr_has_reactivity(base, env)
         }
         Expr::Index(a, b) | Expr::Binary(a, _, b) => {
             expr_has_reactivity(a, env) || expr_has_reactivity(b, env)
@@ -2735,6 +2966,7 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
             Unit::Dp => Length::Dp(*v),
             Unit::Px => Length::Px(*v),
             Unit::Pct => Length::Pct(*v),
+            Unit::Deg | Unit::Rad => Length::Dp(*v),
         }),
         Expr::Array(items) => DynValue::List(
             items
@@ -2802,6 +3034,46 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
         }
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    if let Some(sig) = env.props.get(field) {
+                        return if track {
+                            sig.get()
+                        } else {
+                            sig.get_untracked()
+                        };
+                    }
+                }
+                if root == "Math" {
+                    return match field.as_str() {
+                        "PI" => DynValue::Float(std::f64::consts::PI),
+                        "E" => DynValue::Float(std::f64::consts::E),
+                        "LN2" => DynValue::Float(std::f64::consts::LN_2),
+                        "LN10" => DynValue::Float(std::f64::consts::LN_10),
+                        "LOG2E" => DynValue::Float(std::f64::consts::LOG2_E),
+                        "LOG10E" => DynValue::Float(std::f64::consts::LOG10_E),
+                        "SQRT2" => DynValue::Float(std::f64::consts::SQRT_2),
+                        _ => DynValue::Null,
+                    };
+                }
+                if root == "Window" {
+                    let m = if track {
+                        env.metrics_sig.get()
+                    } else {
+                        env.metrics_sig.get_untracked()
+                    };
+                    return match field.as_str() {
+                        "width" => DynValue::Float(m.logical_size.width as f64),
+                        "height" => DynValue::Float(m.logical_size.height as f64),
+                        "scale_factor" => DynValue::Float(m.scale_factor as f64),
+                        "is_compact" => DynValue::Bool(m.logical_size.width < 600.0),
+                        "is_medium" => DynValue::Bool(
+                            m.logical_size.width >= 600.0 && m.logical_size.width <= 1024.0,
+                        ),
+                        "is_expanded" => DynValue::Bool(m.logical_size.width > 1024.0),
+                        "breakpoint" => DynValue::String(format!("{:?}", m.breakpoint())),
+                        _ => DynValue::Null,
+                    };
+                }
                 if root == "Theme" {
                     let theme = if track {
                         env.theme_sig.get()
@@ -2851,6 +3123,72 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
             }
         }
         Expr::MethodCall(recv, method, args) => {
+            if let Expr::Ident(id) = recv.as_ref() {
+                if id == "Math" {
+                    let eval_args: Vec<DynValue> = args
+                        .iter()
+                        .map(|a| eval_expr_tracked(a, env, track))
+                        .collect();
+                    return match method.as_str() {
+                        "sin" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().sin() as f64)
+                        }
+                        "cos" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().cos() as f64)
+                        }
+                        "tan" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().tan() as f64)
+                        }
+                        "sqrt" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().sqrt() as f64)
+                        }
+                        "abs" if eval_args.len() == 1 => match eval_args[0] {
+                            DynValue::Int(v) => DynValue::Int(v.abs()),
+                            _ => DynValue::Float(eval_args[0].as_f32().abs() as f64),
+                        },
+                        "round" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().round() as f64)
+                        }
+                        "floor" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().floor() as f64)
+                        }
+                        "ceil" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().ceil() as f64)
+                        }
+                        "min" if eval_args.len() == 2 => {
+                            if let (DynValue::Int(a), DynValue::Int(b)) =
+                                (&eval_args[0], &eval_args[1])
+                            {
+                                DynValue::Int((*a).min(*b))
+                            } else {
+                                DynValue::Float(
+                                    eval_args[0].as_f32().min(eval_args[1].as_f32()) as f64
+                                )
+                            }
+                        }
+                        "max" if eval_args.len() == 2 => {
+                            if let (DynValue::Int(a), DynValue::Int(b)) =
+                                (&eval_args[0], &eval_args[1])
+                            {
+                                DynValue::Int((*a).max(*b))
+                            } else {
+                                DynValue::Float(
+                                    eval_args[0].as_f32().max(eval_args[1].as_f32()) as f64
+                                )
+                            }
+                        }
+                        "pow" if eval_args.len() == 2 => {
+                            DynValue::Float(eval_args[0].as_f32().powf(eval_args[1].as_f32()) as f64)
+                        }
+                        "clamp" if eval_args.len() == 3 => {
+                            let lo = eval_args[1].as_f32();
+                            let hi = eval_args[2].as_f32().max(lo);
+                            DynValue::Float(eval_args[0].as_f32().clamp(lo, hi) as f64)
+                        }
+                        _ => DynValue::Null,
+                    };
+                }
+            }
             let r = eval_expr_tracked(recv, env, track);
             let eval_args: Vec<DynValue> = args
                 .iter()
@@ -2884,6 +3222,24 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
                         .first()
                         .is_some_and(|needle| s.contains(&needle.as_str())),
                 ),
+                (DynValue::Float(v), "sin") => DynValue::Float((v as f32).sin() as f64),
+                (DynValue::Float(v), "cos") => DynValue::Float((v as f32).cos() as f64),
+                (DynValue::Float(v), "tan") => DynValue::Float((v as f32).tan() as f64),
+                (DynValue::Float(v), "sqrt") => DynValue::Float((v as f32).sqrt() as f64),
+                (DynValue::Float(v), "abs") => DynValue::Float(v.abs()),
+                (DynValue::Float(v), "round") => DynValue::Float(v.round()),
+                (DynValue::Float(v), "floor") => DynValue::Float(v.floor()),
+                (DynValue::Float(v), "ceil") => DynValue::Float(v.ceil()),
+                (DynValue::Float(v), "min") if eval_args.len() == 1 => {
+                    DynValue::Float(v.min(eval_args[0].as_f32() as f64))
+                }
+                (DynValue::Float(v), "max") if eval_args.len() == 1 => {
+                    DynValue::Float(v.max(eval_args[0].as_f32() as f64))
+                }
+                (DynValue::Float(v), "pow") if eval_args.len() == 1 => {
+                    DynValue::Float(v.powf(eval_args[0].as_f32() as f64))
+                }
+                (DynValue::Int(v), "abs") => DynValue::Int(v.abs()),
                 _ => DynValue::Null,
             }
         }
@@ -2932,6 +3288,69 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
                 }
                 "ceil" if eval_args.len() == 1 => {
                     DynValue::Float(eval_args[0].as_f32().ceil() as f64)
+                }
+                "sin" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().sin() as f64)
+                }
+                "cos" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().cos() as f64)
+                }
+                "tan" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().tan() as f64)
+                }
+                "sqrt" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().sqrt() as f64)
+                }
+                "pow" if eval_args.len() == 2 => {
+                    DynValue::Float(eval_args[0].as_f32().powf(eval_args[1].as_f32()) as f64)
+                }
+                "@linear-gradient" | "linear_gradient" if eval_args.len() >= 2 => {
+                    let angle_deg = eval_args[0].as_f32();
+                    let rad = (angle_deg - 90.0).to_radians();
+                    let dx = rad.cos();
+                    let dy = rad.sin();
+                    let start = Point::new(0.5 - 0.5 * dx, 0.5 - 0.5 * dy);
+                    let end = Point::new(0.5 + 0.5 * dx, 0.5 + 0.5 * dy);
+                    let color_args = &eval_args[1..];
+                    let count = color_args.len();
+                    let stops: Vec<craftui_core::ColorStop> = color_args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let offset = if count > 1 {
+                                i as f32 / (count - 1) as f32
+                            } else {
+                                0.0
+                            };
+                            let color = a.as_color().unwrap_or(Color::BLACK);
+                            craftui_core::ColorStop { offset, color }
+                        })
+                        .collect();
+                    DynValue::Brush(Brush::LinearGradient { start, end, stops })
+                }
+                "@radial-gradient" | "radial_gradient" if eval_args.len() >= 2 => {
+                    let radius = eval_args[0].as_f32().max(0.01);
+                    let center = Point::new(0.5, 0.5);
+                    let color_args = &eval_args[1..];
+                    let count = color_args.len();
+                    let stops: Vec<craftui_core::ColorStop> = color_args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let offset = if count > 1 {
+                                i as f32 / (count - 1) as f32
+                            } else {
+                                0.0
+                            };
+                            let color = a.as_color().unwrap_or(Color::BLACK);
+                            craftui_core::ColorStop { offset, color }
+                        })
+                        .collect();
+                    DynValue::Brush(Brush::RadialGradient {
+                        center,
+                        radius,
+                        stops,
+                    })
                 }
                 "rgb" if eval_args.len() == 3 => DynValue::Color(Color::rgb(
                     eval_args[0].as_i64().clamp(0, 255) as u8,
@@ -3760,5 +4179,240 @@ export component ShowcasePhase3 {
             }
             _ => panic!("expected DataTable widget"),
         }
+    }
+
+    #[test]
+    fn hybrid_html_and_tailwind_elements_in_cui() {
+        let mut session = HotReloadSession::new(Scope::root());
+        let mut tree = WidgetTree::new(session.state_scope);
+        let src = r#"export component HybridApp {
+    in-out property <string> username: "alice";
+    div {
+        id: "main_card";
+        class: "flex flex-col p-4 gap-4 bg-slate-900 rounded-xl shadow-md w-full";
+        h1 {
+            id: "title";
+            text: "Welcome to Hybrid CraftUI";
+            class: "text-2xl font-bold text-white";
+        }
+        p {
+            id: "desc";
+            text: "Fast like Rust, easy like HTML";
+            class: "text-sm text-slate-400";
+        }
+        input {
+            id: "user_input";
+            value <=> username;
+            placeholder: "Enter username";
+        }
+        HtmlView {
+            id: "embedded_web";
+            src: "https://tauri.app";
+        }
+    }
+}
+"#;
+        session.reload(src, Some("HybridApp"), &mut tree).unwrap();
+        let metrics = WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            ..Default::default()
+        };
+        tree.layout(metrics);
+
+        // Verify div element has Tailwind padding, background, radius, shadow
+        let card_id = tree.node_by_id("main_card").unwrap();
+        let card_node = tree.nodes.get(card_id).unwrap();
+        assert_eq!(card_node.layout.padding, Insets::all(16.0));
+        assert_eq!(card_node.layout.gap_x, 16.0);
+        assert_eq!(card_node.layout.gap_y, 16.0);
+        assert_eq!(card_node.box_style.radius, CornerRadii::all(16.0));
+        assert!(card_node.box_style.background.is_some());
+        assert!(card_node.box_style.shadow.is_some());
+
+        // Verify h1 and p text widgets exist
+        let title_id = tree.node_by_id("title").unwrap();
+        let title_node = tree.nodes.get(title_id).unwrap();
+        assert!(matches!(title_node.kind, WidgetKind::Text { .. }));
+
+        // Verify input widget exists and is bound to username
+        let input_id = tree.node_by_id("user_input").unwrap();
+        let input_node = tree.nodes.get(input_id).unwrap();
+        assert!(matches!(input_node.kind, WidgetKind::TextInput { .. }));
+
+        // Verify HtmlView widget exists with src
+        let web_id = tree.node_by_id("embedded_web").unwrap();
+        let web_node = tree.nodes.get(web_id).unwrap();
+        match &web_node.kind {
+            WidgetKind::HtmlView { src, .. } => {
+                assert_eq!(src.get(), "https://tauri.app");
+            }
+            _ => panic!("expected HtmlView widget"),
+        }
+    }
+
+    #[test]
+    fn test_runtime_math_and_gradient_interpretation() {
+        let mut session = HotReloadSession::new(Scope::root());
+        let mut tree = WidgetTree::new(session.state_scope);
+        let src = r#"export component RuntimeMathAndGradients {
+    in property <float> angle: 90.0;
+    in property <float> half_pi: Math.PI / 2.0;
+    in property <float> calc_sin: Math.sin(0.0);
+    in property <float> calc_sqrt: Math.sqrt(25.0);
+
+    Container {
+        id: "grad_box";
+        width: 300dp;
+        height: 200dp;
+        background: @linear-gradient(90deg, #6750A4, #D0BCFF);
+        border_radius: 12dp;
+
+        Container {
+            id: "radial_box";
+            width: 100dp;
+            height: 100dp;
+            background: @radial-gradient(50.0, #FFD8E4, #6750A4);
+        }
+    }
+}"#;
+        session
+            .reload(src, Some("RuntimeMathAndGradients"), &mut tree)
+            .unwrap();
+
+        // Check props in dynamic store
+        let half_pi = session.store.props.get("half_pi").unwrap().get().as_f32();
+        assert!((half_pi - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+
+        let calc_sin = session.store.props.get("calc_sin").unwrap().get().as_f32();
+        assert!(calc_sin.abs() < 1e-4);
+
+        let calc_sqrt = session.store.props.get("calc_sqrt").unwrap().get().as_f32();
+        assert!((calc_sqrt - 5.0).abs() < 1e-4);
+
+        // Check grad_box has Brush::LinearGradient
+        let grad_id = tree.node_by_id("grad_box").unwrap();
+        let grad_node = tree.nodes.get(grad_id).unwrap();
+        let bg = grad_node.box_style.background.as_ref().unwrap().get();
+        match bg {
+            Brush::LinearGradient { start, end, stops } => {
+                assert_eq!(stops.len(), 2);
+                assert!((start.x - 0.0).abs() < 0.01);
+                assert!((end.x - 1.0).abs() < 0.01);
+            }
+            _ => panic!("expected LinearGradient, got {:?}", bg),
+        }
+
+        // Check radial_box has Brush::RadialGradient
+        let rad_id = tree.node_by_id("radial_box").unwrap();
+        let rad_node = tree.nodes.get(rad_id).unwrap();
+        let bg_rad = rad_node.box_style.background.as_ref().unwrap().get();
+        match bg_rad {
+            Brush::RadialGradient { radius, stops, .. } => {
+                assert_eq!(stops.len(), 2);
+                assert!((radius - 50.0).abs() < 0.01);
+            }
+            _ => panic!("expected RadialGradient, got {:?}", bg_rad),
+        }
+    }
+
+    #[test]
+    fn test_runtime_std_material_suite_with_children() {
+        let mut session = HotReloadSession::new(Scope::root());
+        let mut tree = WidgetTree::new(session.state_scope);
+        let src = r#"
+import { Card, ElevatedCard, SearchBar, Chip, FloatingActionButton } from "std/material.cui"
+
+export component RuntimeMaterialDemo {
+    in-out property <string> search_term: "Initial Query";
+    in-out property <bool> is_filtered: true;
+
+    ElevatedCard {
+        id: "main_card";
+        width: 360dp;
+        padding: 16dp;
+
+        SearchBar {
+            id: "search_bar";
+            text <=> search_term;
+        }
+
+        Chip {
+            id: "chip_filter";
+            label: "Material 3 Tag";
+            selected <=> is_filtered;
+        }
+
+        FloatingActionButton {
+            id: "fab_btn";
+            icon: "add";
+            label: "Create New";
+        }
+    }
+}"#;
+        session
+            .reload(src, Some("RuntimeMaterialDemo"), &mut tree)
+            .unwrap();
+
+        let card_id = tree.node_by_id("main_card").unwrap();
+        let card_node = tree.nodes.get(card_id).unwrap();
+        assert!(card_node.box_style.background.is_some());
+        assert!(card_node.box_style.shadow.is_some() || !card_node.box_style.shadows.is_empty());
+        // Verify children were mounted into the subcomponent root!
+        assert!(
+            !card_node.children.is_empty(),
+            "Card must have child elements"
+        );
+
+        let search_id = tree.node_by_id("search_bar").unwrap();
+        assert!(tree.nodes.contains_key(search_id));
+
+        let chip_id = tree.node_by_id("chip_filter").unwrap();
+        assert!(tree.nodes.contains_key(chip_id));
+
+        let fab_id = tree.node_by_id("fab_btn").unwrap();
+        assert!(tree.nodes.contains_key(fab_id));
+    }
+
+    #[test]
+    fn test_runtime_window_responsive_breakpoints() {
+        use craftui_core::Size;
+        let root_scope = Scope::root();
+        let mut session = HotReloadSession::new(root_scope);
+        let mut tree = WidgetTree::new(session.state_scope);
+
+        let src = r#"
+            component ResponsiveApp {
+                in-out property <bool> mobile: Window.is_compact;
+                in-out property <bool> desktop: Window.is_expanded;
+                Column {
+                    Text { text: root.mobile ? "Mobile Layout" : "Desktop Layout"; }
+                }
+            }
+        "#;
+
+        // 1. Initial layout at mobile width (400x800)
+        tree.set_metrics(WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            ..Default::default()
+        });
+        let root = session.reload(src, Some("ResponsiveApp"), &mut tree).unwrap();
+        tree.set_root(root);
+        tree.layout(tree.metrics);
+
+        let mobile_sig = session.store.props.get("mobile").unwrap();
+        let desktop_sig = session.store.props.get("desktop").unwrap();
+        assert_eq!(mobile_sig.get(), DynValue::Bool(true));
+        assert_eq!(desktop_sig.get(), DynValue::Bool(false));
+
+        // 2. Resize to desktop (1280x800)
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(1280.0, 800.0),
+            scale_factor: 1.0,
+            safe_area: Insets::ZERO,
+            keyboard_inset: 0.0,
+        });
+
+        assert_eq!(mobile_sig.get(), DynValue::Bool(false));
+        assert_eq!(desktop_sig.get(), DynValue::Bool(true));
     }
 }

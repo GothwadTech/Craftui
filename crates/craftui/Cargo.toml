@@ -21,7 +21,12 @@ android = ["dep:craftui-platform-android"]
 ios = ["dep:craftui-platform-ios"]
 web = ["dep:craftui-platform-web"]
 dsl = ["dep:craftui-dsl"]
-hot-reload = ["dsl", "dep:craftui-runtime", "craftui-platform-desktop?/hot-reload"]
+hot-reload = [
+    "dsl",
+    "dep:craftui-runtime",
+    "craftui-platform-desktop?/hot-reload",
+    "craftui-platform-android?/hot-reload",
+]
 embedded-fallback-font = ["craftui-text/embedded-fallback-font"]
 gpu-sdf = [
     "craftui-render/gpu-sdf",

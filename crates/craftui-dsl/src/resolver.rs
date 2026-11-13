@@ -1,5 +1,7 @@
 use crate::ast::*;
 use crate::parser::parse;
+use crate::std_icons::{STD_ICONS_EXPORTS, STD_ICONS_SOURCE};
+use crate::std_material::{STD_MATERIAL_EXPORTS, STD_MATERIAL_SOURCE};
 use crate::validator::{BUILTIN_WIDGETS, validate_file_with_symbols};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -8,7 +10,14 @@ use std::path::{Component, Path, PathBuf};
 pub fn is_virtual_module(path: &str) -> bool {
     matches!(
         path,
-        "std/widgets.cui" | "std/widgets" | "theme/tokens.cui" | "theme/tokens"
+        "std/widgets.cui"
+            | "std/widgets"
+            | "theme/tokens.cui"
+            | "theme/tokens"
+            | "std/material.cui"
+            | "std/material"
+            | "std/icons.cui"
+            | "std/icons"
     )
 }
 
@@ -20,7 +29,17 @@ fn virtual_exports(path: &str) -> HashSet<&'static str> {
                 .into_iter()
                 .collect()
         }
+        "std/material.cui" | "std/material" => STD_MATERIAL_EXPORTS.iter().copied().collect(),
+        "std/icons.cui" | "std/icons" => STD_ICONS_EXPORTS.iter().copied().collect(),
         _ => HashSet::new(),
+    }
+}
+
+pub fn virtual_module_source(path: &str) -> Option<&'static str> {
+    match path {
+        "std/material.cui" | "std/material" => Some(STD_MATERIAL_SOURCE),
+        "std/icons.cui" | "std/icons" => Some(STD_ICONS_SOURCE),
+        _ => None,
     }
 }
 
@@ -186,7 +205,7 @@ fn resolve_source_internal(
         state.merged_components.push(comp.clone());
     }
 
-    let merged = CuiFile {
+    let mut merged = CuiFile {
         imports: parsed.file.imports.clone(),
         structs: state.merged_structs,
         enums: state.merged_enums,
@@ -199,6 +218,8 @@ fn resolve_source_internal(
         &merged,
         &extra_known_symbols,
     ));
+
+    crate::passes::run_optimization_passes(&mut merged);
 
     ResolvedCuiUnit {
         merged,
@@ -243,6 +264,39 @@ fn process_import(
                 });
             }
             extra_known_symbols.insert(sym.clone());
+        }
+        if let Some(v_src) = virtual_module_source(&imp.from_path) {
+            let parsed_v = parse(v_src);
+            for d in parsed_v.diagnostics {
+                state.diagnostics.push(Diagnostic {
+                    span: imp.span,
+                    severity: d.severity,
+                    message: format!(
+                        "in embedded module '{}': {}",
+                        imp.from_path, d.message
+                    ),
+                });
+            }
+            for st in parsed_v.file.structs {
+                if !state.seen_structs.contains(&st.name) {
+                    state.seen_structs.insert(st.name.clone());
+                    state.merged_structs.push(st);
+                }
+            }
+            for en in parsed_v.file.enums {
+                if !state.seen_enums.contains(&en.name) {
+                    state.seen_enums.insert(en.name.clone());
+                    state.merged_enums.push(en);
+                }
+            }
+            for comp in parsed_v.file.components {
+                if (imp.symbols.is_empty() || imp.symbols.iter().any(|s| s == &comp.name))
+                    && !state.seen_components.contains(&comp.name)
+                {
+                    state.seen_components.insert(comp.name.clone());
+                    state.merged_components.push(comp);
+                }
+            }
         }
         return;
     }

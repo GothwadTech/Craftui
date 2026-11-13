@@ -362,7 +362,12 @@ impl TextEngine {
     }
 
     /// Truncate text with ellipsis `...` so that its rendered width fits strictly within `max_width`.
-    pub fn truncate_with_ellipsis(&mut self, text: &str, style: &TextStyle, max_width: f32) -> String {
+    pub fn truncate_with_ellipsis(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: f32,
+    ) -> String {
         let max_w = max_width.max(0.0);
         if text.is_empty() || max_w <= 0.0 {
             return String::new();

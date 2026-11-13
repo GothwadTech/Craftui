@@ -496,6 +496,8 @@ impl Parser {
         let mut props = Vec::new();
         let mut handlers = Vec::new();
         let mut animations = Vec::new();
+        let mut states = Vec::new();
+        let mut transitions = Vec::new();
         let mut children = Vec::new();
 
         while let Some(pk) = self.peek() {
@@ -515,6 +517,18 @@ impl Parser {
                         && matches!(self.peek_nth(2), Some(TokenKind::Comma | TokenKind::LBrace))
                     {
                         animations.extend(self.parse_animate_block());
+                        continue;
+                    }
+                    if self.peek_text() == Some("states")
+                        && self.peek_nth(1) == Some(TokenKind::LBracket)
+                    {
+                        states.extend(self.parse_states_block());
+                        continue;
+                    }
+                    if self.peek_text() == Some("transitions")
+                        && self.peek_nth(1) == Some(TokenKind::LBracket)
+                    {
+                        transitions.extend(self.parse_transitions_block());
                         continue;
                     }
                     match self.peek_nth(1) {
@@ -567,9 +581,121 @@ impl Parser {
             props,
             handlers,
             animations,
+            states,
+            transitions,
             children,
             span: Span::new(start, end),
         }
+    }
+
+    fn parse_states_block(&mut self) -> Vec<StateDecl> {
+        self.builder.start_node(SyntaxKind::StatesBlock.into());
+        let _ = self.bump(); // 'states'
+        self.expect(TokenKind::LBracket, "expected '[' after 'states'");
+        let mut result = Vec::new();
+        while let Some(pk) = self.peek() {
+            if pk == TokenKind::RBracket {
+                break;
+            }
+            if pk == TokenKind::Ident {
+                let start = self.current_offset();
+                let name = self.bump().unwrap().text;
+                if self.peek_text() == Some("when") {
+                    self.bump();
+                }
+                let condition = self.parse_expr();
+                self.eat_if(TokenKind::Colon);
+                self.expect(TokenKind::LBrace, "expected '{' after state condition");
+                let mut property_overrides = Vec::new();
+                while let Some(inner) = self.peek() {
+                    if inner == TokenKind::RBrace {
+                        break;
+                    }
+                    if inner == TokenKind::Ident {
+                        property_overrides.push(self.parse_prop_binding(false));
+                    } else {
+                        let _ = self.bump();
+                    }
+                }
+                self.expect(TokenKind::RBrace, "expected '}' closing state declaration");
+                let end = self.current_offset();
+                result.push(StateDecl {
+                    name,
+                    condition,
+                    property_overrides,
+                    span: Span::new(start, end),
+                });
+            } else {
+                let _ = self.bump();
+            }
+        }
+        self.expect(TokenKind::RBracket, "expected ']' closing states block");
+        self.builder.finish_node();
+        result
+    }
+
+    fn parse_transitions_block(&mut self) -> Vec<TransitionSpec> {
+        self.builder.start_node(SyntaxKind::TransitionsBlock.into());
+        let _ = self.bump(); // 'transitions'
+        self.expect(TokenKind::LBracket, "expected '[' after 'transitions'");
+        let mut result = Vec::new();
+        while let Some(pk) = self.peek() {
+            if pk == TokenKind::RBracket {
+                break;
+            }
+            let start = self.current_offset();
+            let mut from_state = None;
+            let mut to_state = None;
+            if self.peek_text() == Some("in") {
+                self.bump();
+                if self.peek() == Some(TokenKind::Ident) {
+                    to_state = Some(self.bump().unwrap().text);
+                }
+            } else if self.peek_text() == Some("out") {
+                self.bump();
+                if self.peek() == Some(TokenKind::Ident) {
+                    from_state = Some(self.bump().unwrap().text);
+                }
+            } else if self.peek_text() == Some("from") {
+                self.bump();
+                if self.peek() == Some(TokenKind::Ident) {
+                    from_state = Some(self.bump().unwrap().text);
+                }
+                if self.peek_text() == Some("to") {
+                    self.bump();
+                    if self.peek() == Some(TokenKind::Ident) {
+                        to_state = Some(self.bump().unwrap().text);
+                    }
+                }
+            }
+            self.eat_if(TokenKind::Colon);
+            self.expect(TokenKind::LBrace, "expected '{' opening transition block");
+            let mut animations = Vec::new();
+            while let Some(inner) = self.peek() {
+                if inner == TokenKind::RBrace {
+                    break;
+                }
+                if self.peek_text() == Some("animate") {
+                    animations.extend(self.parse_animate_block());
+                } else {
+                    let _ = self.bump();
+                }
+            }
+            self.expect(TokenKind::RBrace, "expected '}' closing transition block");
+            let end = self.current_offset();
+            result.push(TransitionSpec {
+                from_state,
+                to_state,
+                animations,
+                span: Span::new(start, end),
+            });
+        }
+        self.expect(
+            TokenKind::RBracket,
+            "expected ']' closing transitions block",
+        );
+        self.builder.finish_node();
+        result
     }
 
     fn parse_animate_block(&mut self) -> Vec<AnimateSpec> {
@@ -830,6 +956,8 @@ impl Parser {
                     props: Vec::new(),
                     handlers: Vec::new(),
                     animations: Vec::new(),
+                    states: Vec::new(),
+                    transitions: Vec::new(),
                     children: vec![nested_if],
                     span: Span::new(start, self.current_offset()),
                 }))
@@ -1115,6 +1243,38 @@ impl Parser {
                 self.expect(TokenKind::RParen, "expected ')'");
                 e
             }
+            Some(TokenKind::AtLinearGradient) => {
+                self.bump();
+                self.expect(TokenKind::LParen, "expected '(' after @linear-gradient");
+                let args = self.parse_call_args();
+                Expr::Call("@linear-gradient".to_string(), args)
+            }
+            Some(TokenKind::AtRadialGradient) => {
+                self.bump();
+                self.expect(TokenKind::LParen, "expected '(' after @radial-gradient");
+                let args = self.parse_call_args();
+                Expr::Call("@radial-gradient".to_string(), args)
+            }
+            Some(TokenKind::At) => {
+                self.bump();
+                if self.peek() == Some(TokenKind::Ident) {
+                    let name = format!("@{}", self.bump().unwrap().text);
+                    if self.eat_if(TokenKind::LParen) {
+                        let args = self.parse_call_args();
+                        Expr::Call(name, args)
+                    } else {
+                        Expr::Ident(name)
+                    }
+                } else {
+                    let off = self.current_offset();
+                    self.diagnostics.push(Diagnostic {
+                        span: Span::new(off, off + 1),
+                        severity: Severity::Error,
+                        message: "expected macro or builtin name after '@'".into(),
+                    });
+                    Expr::Bool(false)
+                }
+            }
             _ => {
                 let off = self.current_offset();
                 self.diagnostics.push(Diagnostic {
@@ -1145,6 +1305,10 @@ fn parse_dimension(s: &str) -> Expr {
         Expr::Length(num.parse().unwrap_or(0.0), Unit::Dp)
     } else if let Some(num) = s.strip_suffix("px") {
         Expr::Length(num.parse().unwrap_or(0.0), Unit::Px)
+    } else if let Some(num) = s.strip_suffix("deg") {
+        Expr::Length(num.parse().unwrap_or(0.0), Unit::Deg)
+    } else if let Some(num) = s.strip_suffix("rad") {
+        Expr::Length(num.parse().unwrap_or(0.0), Unit::Rad)
     } else if let Some(num) = s.strip_suffix('%') {
         Expr::Length(num.parse().unwrap_or(0.0), Unit::Pct)
     } else {

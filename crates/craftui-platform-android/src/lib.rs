@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "android")]
 pub use android_activity;
 
+pub mod remote_preview;
+
 /// Android manifest permission entry (`0 = PERMISSION_GRANTED`, `-1 = PERMISSION_DENIED`).
 pub const ANDROID_PERMISSION_GRANTED: i32 = 0;
 
@@ -892,6 +894,9 @@ pub struct AndroidHost {
     last_synced_ime_state: Option<SyncedImeSnapshot>,
     needs_redraw: bool,
     last_error: Option<String>,
+    pub remote_preview: Option<remote_preview::RemotePreviewClient>,
+    #[cfg(feature = "hot-reload")]
+    pub hot_reload_session: Option<craftui_runtime::HotReloadSession>,
 }
 
 impl AndroidHost {
@@ -927,11 +932,48 @@ impl AndroidHost {
             last_synced_ime_state: None,
             needs_redraw: true,
             last_error: None,
+            remote_preview: None,
+            #[cfg(feature = "hot-reload")]
+            hot_reload_session: None,
         }
     }
 
     pub fn bridge(&self) -> Arc<AndroidBridgeState> {
         self.bridge.clone()
+    }
+
+    /// Enable background TCP remote live preview client connecting to host via ADB reverse tunnel.
+    pub fn enable_remote_preview(&mut self, port: u16) {
+        self.remote_preview = Some(remote_preview::RemotePreviewClient::start(
+            "127.0.0.1",
+            port,
+            self.dispatcher.clone(),
+        ));
+    }
+
+    /// Apply an incoming in-memory `.cui` source payload directly into the live widget tree.
+    pub fn apply_hot_reload_source(
+        &mut self,
+        source: &str,
+        component: Option<&str>,
+    ) -> craftui_core::Result<craftui_core::NodeId> {
+        #[cfg(feature = "hot-reload")]
+        {
+            let session = self
+                .hot_reload_session
+                .get_or_insert_with(|| craftui_runtime::HotReloadSession::new(self.scope));
+            let root = session.reload(source, component, &mut self.tree)?;
+            self.tree.set_root(root);
+            self.needs_redraw = true;
+            Ok(root)
+        }
+        #[cfg(not(feature = "hot-reload"))]
+        {
+            let _ = (source, component);
+            Err(craftui_core::CraftError::Runtime(
+                "craftui-platform-android compiled without hot-reload feature".into(),
+            ))
+        }
     }
 
     pub fn set_permission_wait_timeout(&self, timeout: Duration) {
@@ -1311,6 +1353,31 @@ impl AndroidHost {
         let now_ms = craftui_core::monotonic_ms();
         let timers = craftui_reactive::tick_timers();
         let jobs = self.dispatcher.drain();
+        let pending_reload = self
+            .remote_preview
+            .as_ref()
+            .and_then(|c| c.take_pending_reload());
+        if let Some(reload) = pending_reload {
+            let t0 = Instant::now();
+            let res = self.apply_hot_reload_source(&reload.source, reload.component.as_deref());
+            if let Some(client) = self.remote_preview.as_ref() {
+                match res {
+                    Ok(_) => {
+                        let dur = t0.elapsed().as_secs_f64() * 1000.0;
+                        tracing::info!(
+                            "Remote live preview reloaded {} in {:.2}ms",
+                            reload.path,
+                            dur
+                        );
+                        client.send_ack(reload.path, dur);
+                    }
+                    Err(err) => {
+                        tracing::warn!("Remote live preview reload error: {err}");
+                        client.send_error(reload.path, err.to_string());
+                    }
+                }
+            }
+        }
         let blink = self.tree.tick_blink_timers(now_ms);
         let anim_tick = self.tree.tick_animations(dt_sec);
         let dirty = self.tree.layout(self.tree.metrics);
@@ -1546,6 +1613,8 @@ pub mod android_runtime {
             .unwrap_or(2.0);
 
         let mut host = AndroidHost::new(dispatcher.clone(), 1080, 1920, density);
+        #[cfg(feature = "hot-reload")]
+        host.enable_remote_preview(craftui_core::DEFAULT_REMOTE_PREVIEW_PORT);
         let root = build_ui(host.scope, &mut host.tree, &mut host.textures, &dispatcher);
         host.tree.set_root(root);
 
@@ -2268,5 +2337,38 @@ mod tests {
             picked.lock().unwrap().clone(),
             Some(Some(PathBuf::from("/sdcard/Download/report.json")))
         );
+    }
+
+    #[test]
+    #[cfg(feature = "hot-reload")]
+    fn test_android_remote_preview_hot_reload_pipeline() {
+        let disp = UiDispatcher::new();
+        let mut host = AndroidHost::new(disp, 1080, 2400, 2.625);
+
+        let cui_source = r#"
+            import { Card } from "std/material.cui";
+
+            component LiveScreen {
+                in-out property <string> header: "CraftUI Remote Preview";
+                Column {
+                    Text { text: root.header; }
+                    Card {
+                        Text { text: "Live content rendered on Android!"; }
+                    }
+                }
+            }
+        "#;
+
+        let root_id = host
+            .apply_hot_reload_source(cui_source, Some("LiveScreen"))
+            .expect("remote hot reload source must parse and mount");
+
+        assert_eq!(host.tree.root, Some(root_id));
+        assert!(host.needs_redraw);
+
+        let (animating, did_paint, _) = host.step_frame_with_redraw(0.016);
+        assert!(!animating);
+        assert!(did_paint);
+        assert!(!host.needs_redraw);
     }
 }

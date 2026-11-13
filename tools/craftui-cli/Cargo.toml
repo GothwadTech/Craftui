@@ -23,4 +23,6 @@ craftui-runtime.workspace = true
 craftui-platform-desktop = { path = "../../crates/craftui-platform-desktop", features = ["hot-reload", "gpu-sdf", "cpu-vello", "cpu-tiny-skia"] }
 clap.workspace = true
 notify.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tracing.workspace = true

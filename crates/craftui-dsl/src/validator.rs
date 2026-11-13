@@ -46,9 +46,26 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "Modal",
     "BottomSheet",
     "PlatformView",
+    "HtmlView",
+    "div",
+    "span",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "button",
+    "input",
+    "nav",
+    "section",
+    "header",
+    "footer",
+    "main",
+    "article",
+    "aside",
 ];
 
 pub const COMMON_PROPS: &[&str] = &[
+    "class",
     "width",
     "height",
     "min_width",
@@ -230,6 +247,16 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "SplitPane"
             | "Accordion"
             | "Button"
+            | "div"
+            | "section"
+            | "nav"
+            | "header"
+            | "footer"
+            | "main"
+            | "article"
+            | "aside"
+            | "span"
+            | "button"
     )
 }
 
@@ -263,7 +290,16 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         }
         "Button" => {
             out.extend_from_slice(CONTAINER_PROPS);
-            out.extend_from_slice(&["text", "title", "label", "foreground", "color"]);
+            out.extend_from_slice(&[
+                "text",
+                "title",
+                "label",
+                "foreground",
+                "color",
+                "font_size",
+                "font_weight",
+                "disabled",
+            ]);
         }
         "Modal" | "BottomSheet" => {
             out.extend_from_slice(CONTAINER_PROPS);
@@ -327,7 +363,13 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "FloatingActionButton" => {
             out.extend_from_slice(CONTAINER_PROPS);
             out.extend_from_slice(&[
-                "icon", "label", "text", "disabled", "foreground", "background", "color",
+                "icon",
+                "label",
+                "text",
+                "disabled",
+                "foreground",
+                "background",
+                "color",
             ]);
         }
         "Accordion" => {
@@ -389,6 +431,21 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "PlatformView" => {
             out.push("view_id");
         }
+        "HtmlView" => {
+            out.extend_from_slice(&["src", "html", "url"]);
+        }
+        "div" | "section" | "nav" | "header" | "footer" | "main" | "article" | "aside" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+        }
+        "span" | "p" | "h1" | "h2" | "h3" => {
+            out.extend_from_slice(&["text", "content", "color", "font_size", "font_weight"]);
+        }
+        "button" => {
+            out.extend_from_slice(&["text", "label", "disabled", "foreground", "color"]);
+        }
+        "input" => {
+            out.extend_from_slice(&["text", "value", "placeholder"]);
+        }
         _ => {}
     }
     out
@@ -398,8 +455,9 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
     let mut out = COMMON_EVENTS.to_vec();
     match kind {
         "Slider" | "Checkbox" | "Switch" | "SplitPane" => out.push("on_change"),
-        "TextInput" | "TextArea" => out.extend_from_slice(&["on_change", "on_submit"]),
-        "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" | "Select" | "Dropdown" | "RadioGroup" => {
+        "TextInput" | "TextArea" | "input" => out.extend_from_slice(&["on_change", "on_submit"]),
+        "Tabs" | "TabBar" | "SegmentedControl" | "BottomNavBar" | "Select" | "Dropdown"
+        | "RadioGroup" => {
             out.extend_from_slice(&["on_change", "on_select"]);
         }
         "Accordion" => out.extend_from_slice(&["on_change", "on_toggle"]),
@@ -414,7 +472,7 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
 
 fn widget_supports_two_way(kind: &str, prop: &str) -> bool {
     match kind {
-        "TextInput" | "TextArea" => matches!(prop, "value" | "text"),
+        "TextInput" | "TextArea" | "input" => matches!(prop, "value" | "text"),
         "Slider" => prop == "value",
         "SplitPane" => prop == "ratio",
         "Checkbox" | "Switch" => matches!(prop, "checked" | "value"),
@@ -649,12 +707,6 @@ fn validate_element(el: &ElementNode, ctx: &ScopeCtx<'_>, diags: &mut Vec<Diagno
                 severity: Severity::Error,
                 message: format!("leaf widget '{}' cannot contain child elements", el.kind),
             });
-        } else if !is_builtin {
-            diags.push(Diagnostic {
-                span: el.span,
-                severity: Severity::Error,
-                message: format!("component '{}' does not accept child elements", el.kind),
-            });
         }
     }
 
@@ -793,6 +845,19 @@ fn validate_element(el: &ElementNode, ctx: &ScopeCtx<'_>, diags: &mut Vec<Diagno
 
     for spec in &el.animations {
         validate_animate_spec(spec, ctx, diags);
+    }
+
+    for state in &el.states {
+        validate_expr(&state.condition, Some(&state.name), state.span, ctx, diags);
+        for prop in &state.property_overrides {
+            validate_expr(&prop.value, Some(prop.name.as_str()), prop.span, ctx, diags);
+        }
+    }
+
+    for tr in &el.transitions {
+        for anim in &tr.animations {
+            validate_animate_spec(anim, ctx, diags);
+        }
     }
 
     for child in &el.children {
@@ -1271,6 +1336,12 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
             .or_else(|| ctx.comp_props.get(id.as_str()).map(|(t, _)| (*t).clone())),
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    return ctx
+                        .comp_props
+                        .get(field.as_str())
+                        .map(|(t, _)| (*t).clone());
+                }
                 if root == "Theme" {
                     return Some(TypeExpr::Named("color".into()));
                 }
@@ -1282,6 +1353,18 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
                 }
                 if root == "SafeArea" {
                     return Some(TypeExpr::Named("Insets".into()));
+                }
+                if root == "Window" {
+                    return match field.as_str() {
+                        "width" | "height" | "scale_factor" => {
+                            Some(TypeExpr::Named("float".into()))
+                        }
+                        "is_compact" | "is_medium" | "is_expanded" => {
+                            Some(TypeExpr::Named("bool".into()))
+                        }
+                        "breakpoint" => Some(TypeExpr::Named("string".into())),
+                        _ => None,
+                    };
                 }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return Some(TypeExpr::Named(root.clone()));
@@ -1349,16 +1432,34 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
             else_expr,
             ..
         } => infer_expr_type(then_expr, ctx).or_else(|| infer_expr_type(else_expr, ctx)),
-        Expr::MethodCall(_, m, _) => match m.as_str() {
-            "len" => Some(TypeExpr::Named("uint".into())),
-            "is_empty" | "contains" | "starts_with" | "ends_with" => {
-                Some(TypeExpr::Named("bool".into()))
+        Expr::MethodCall(recv, m, _) => {
+            if let Expr::Ident(root) = recv.as_ref() {
+                if root == "Math" {
+                    return match m.as_str() {
+                        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sqrt" | "abs"
+                        | "round" | "floor" | "ceil" | "min" | "max" | "clamp" | "pow"
+                        | "atan2" => Some(TypeExpr::Named("float".into())),
+                        _ => None,
+                    };
+                }
             }
-            "to_lowercase" | "to_uppercase" | "trim" => Some(TypeExpr::Named("string".into())),
-            _ => None,
-        },
+            match m.as_str() {
+                "len" => Some(TypeExpr::Named("uint".into())),
+                "is_empty" | "contains" | "starts_with" | "ends_with" => {
+                    Some(TypeExpr::Named("bool".into()))
+                }
+                "to_lowercase" | "to_uppercase" | "trim" => Some(TypeExpr::Named("string".into())),
+                "sin" | "cos" | "tan" | "sqrt" | "abs" | "round" | "floor" | "ceil" | "min"
+                | "max" | "clamp" | "pow" => Some(TypeExpr::Named("float".into())),
+                _ => None,
+            }
+        }
         Expr::Call(name, args) => match name.as_str() {
             "rgb" | "rgba" => Some(TypeExpr::Named("color".into())),
+            "@linear-gradient" | "linear_gradient" | "@radial-gradient" | "radial_gradient" => {
+                Some(TypeExpr::Named("brush".into()))
+            }
+            "sin" | "cos" | "tan" | "sqrt" | "pow" => Some(TypeExpr::Named("float".into())),
             "abs" | "round" | "floor" | "ceil" | "min" | "max" | "clamp" => {
                 args.first().and_then(|a| infer_expr_type(a, ctx))
             }
@@ -1385,7 +1486,13 @@ fn validate_expr(
             }
         }
         Expr::Ident(id) => {
-            if id == "Theme" || id == "ThemeMode" || id == "ToastSeverity" || id == "SafeArea" {
+            if id == "Theme"
+                || id == "ThemeMode"
+                || id == "ToastSeverity"
+                || id == "SafeArea"
+                || id == "Math"
+                || id == "Window"
+            {
                 diags.push(Diagnostic {
                     span,
                     severity: Severity::Error,
@@ -1407,6 +1514,16 @@ fn validate_expr(
         }
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    if !ctx.comp_props.contains_key(field.as_str()) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown property '{field}' on 'root'"),
+                        });
+                    }
+                    return;
+                }
                 if root == "Theme" {
                     return;
                 }
@@ -1437,6 +1554,52 @@ fn validate_expr(
                             severity: Severity::Error,
                             message: format!(
                                 "unknown SafeArea member '{field}' (expected 'insets')"
+                            ),
+                        });
+                    }
+                    return;
+                }
+                if root == "Window" {
+                    if !matches!(
+                        field.as_str(),
+                        "width"
+                            | "height"
+                            | "scale_factor"
+                            | "is_compact"
+                            | "is_medium"
+                            | "is_expanded"
+                            | "breakpoint"
+                    ) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!(
+                                "unknown Window property '{field}' (expected width, height, scale_factor, is_compact, is_medium, is_expanded, breakpoint)"
+                            ),
+                        });
+                    }
+                    return;
+                }
+                if root == "root" {
+                    if !ctx.comp_props.contains_key(field.as_str()) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown property '{field}' on 'root'"),
+                        });
+                    }
+                    return;
+                }
+                if root == "Math" {
+                    if !matches!(
+                        field.as_str(),
+                        "PI" | "E" | "LN2" | "LN10" | "LOG2E" | "LOG10E" | "SQRT2" | "SQRT1_2"
+                    ) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!(
+                                "unknown Math constant '{field}' (expected PI, E, LN2, etc.)"
                             ),
                         });
                     }
@@ -1543,10 +1706,15 @@ fn validate_expr(
         Expr::Call(name, args) => {
             let valid_builtin = match name.as_str() {
                 "Some" => args.len() == 1,
-                "min" | "max" => args.len() == 2,
+                "min" | "max" | "pow" => args.len() == 2,
                 "clamp" | "rgb" => args.len() == 3,
                 "rgba" => args.len() == 4,
-                "abs" | "round" | "floor" | "ceil" => args.len() == 1,
+                "abs" | "round" | "floor" | "ceil" | "sin" | "cos" | "tan" | "sqrt" => {
+                    args.len() == 1
+                }
+                "@linear-gradient" | "linear_gradient" | "@radial-gradient" | "radial_gradient" => {
+                    args.len() >= 2
+                }
                 _ => false,
             };
             if !valid_builtin {
@@ -1565,10 +1733,41 @@ fn validate_expr(
             }
         }
         Expr::MethodCall(recv, method, args) => {
+            if let Expr::Ident(root) = recv.as_ref() {
+                if root == "Math" {
+                    let known_math = match method.as_str() {
+                        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sqrt" | "abs"
+                        | "round" | "floor" | "ceil" => args.len() == 1,
+                        "min" | "max" | "pow" | "atan2" => args.len() == 2,
+                        "clamp" => args.len() == 3,
+                        _ => false,
+                    };
+                    if !known_math {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!(
+                                "unknown or invalid Math function 'Math.{}({} args)'",
+                                method,
+                                args.len()
+                            ),
+                        });
+                    }
+                    for a in args {
+                        validate_expr(a, None, span, ctx, diags);
+                    }
+                    return;
+                }
+            }
             validate_expr(recv, None, span, ctx, diags);
             let known_ok = match method.as_str() {
                 "len" | "is_empty" | "to_lowercase" | "to_uppercase" | "trim" => args.is_empty(),
                 "contains" | "starts_with" | "ends_with" => args.len() == 1,
+                "sin" | "cos" | "tan" | "sqrt" | "abs" | "round" | "floor" | "ceil" => {
+                    args.is_empty()
+                }
+                "min" | "max" | "pow" => args.len() == 1,
+                "clamp" => args.len() == 2,
                 _ => false,
             };
             if !known_ok {

@@ -1,4 +1,5 @@
 mod manifest;
+mod remote_server;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use craftui_core::{CraftError, Permission, Result, Size, WindowMetrics};
@@ -18,7 +19,7 @@ use std::io::{Read, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -118,13 +119,33 @@ enum Commands {
         #[arg(long, default_value = "ui")]
         dir: PathBuf,
     },
-    /// Open a live hot-reloading desktop preview window for a .cui file
+    /// Open an interactive live preview canvas for a .cui file with telemetry HUD, device frame, and inspector
     Preview {
         file: PathBuf,
         #[arg(long)]
         component: Option<String>,
         #[arg(long)]
         cpu: bool,
+        #[arg(long, help = "Render inside mobile device frame (Android 412x915)")]
+        device: bool,
+        #[arg(long, help = "Enable element inspection overlay")]
+        inspector: bool,
+        #[arg(
+            long,
+            help = "Broadcast live preview to connected Android devices over TCP/ADB"
+        )]
+        remote: bool,
+        #[arg(
+            long,
+            default_value_t = 9876,
+            help = "TCP port for remote live preview server (default: 9876)"
+        )]
+        remote_port: u16,
+        #[arg(
+            long,
+            help = "Run remote live preview server headlessly without opening desktop window"
+        )]
+        no_desktop: bool,
     },
     /// Parse, validate, and optionally emit AOT Rust code for .cui files
     Check {
@@ -228,15 +249,76 @@ fn run() -> Result<()> {
             file,
             component,
             cpu,
-        } => craftui_platform_desktop::run_hot_reload_cui(
-            craftui_platform_desktop::WindowConfig {
-                title: format!("CraftUI Preview — {}", file.display()),
-                force_cpu: cpu,
-                ..Default::default()
-            },
-            file,
-            component,
-        ),
+            device,
+            inspector,
+            remote,
+            remote_port,
+            no_desktop,
+        } => {
+            let _remote_srv = if remote {
+                let srv = Arc::new(remote_server::RemotePreviewServer::start(remote_port));
+                srv.broadcast_file(&file, component.as_deref());
+
+                let watch_target = file
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."));
+
+                let s_clone = srv.clone();
+                let f_clone = file.clone();
+                let c_clone = component.clone();
+
+                std::thread::Builder::new()
+                    .name("craftui-remote-watcher".into())
+                    .spawn(move || {
+                        let (tx, rx) = mpsc::channel();
+                        if let Ok(mut watcher) = notify::recommended_watcher(tx) {
+                            let _ = watcher.watch(&watch_target, RecursiveMode::Recursive);
+                            for event in rx.into_iter().flatten() {
+                                let touches = event
+                                    .paths
+                                    .iter()
+                                    .any(|p| p.extension().and_then(|e| e.to_str()) == Some("cui"));
+                                if touches {
+                                    s_clone.broadcast_file(&f_clone, c_clone.as_deref());
+                                }
+                            }
+                        }
+                    })
+                    .ok();
+
+                Some(srv)
+            } else {
+                None
+            };
+
+            if no_desktop {
+                if !remote {
+                    return Err(CraftError::Platform(
+                        "--no-desktop flag requires --remote to be passed".into(),
+                    ));
+                }
+                println!("[craftui-remote] Running headlessly. Press Ctrl+C to stop.");
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            } else {
+                craftui_platform_desktop::run_live_preview_cui(
+                    craftui_platform_desktop::WindowConfig {
+                        title: format!("CraftUI Live Preview — {}", file.display()),
+                        force_cpu: cpu,
+                        width: if device { 460.0 } else { 800.0 },
+                        height: if device { 960.0 } else { 600.0 },
+                        ..Default::default()
+                    },
+                    file,
+                    component,
+                    device,
+                    inspector,
+                )
+            }
+        }
         Commands::Check { path, emit_rust } => {
             let stats = check_cui_paths(&path, emit_rust)?;
             println!(
@@ -2191,11 +2273,112 @@ class MainActivity : GameActivity() {{
         init {{
             System.loadLibrary("{rust_lib_name}")
         }}
+        var instance: MainActivity? = null
+
+        @JvmStatic
+        fun launchCameraFromNative() {{
+            instance?.launchCameraWithPermission()
+        }}
+
+        @JvmStatic
+        fun launchGalleryFromNative() {{
+            instance?.launchGalleryWithPermission()
+        }}
+
+        @JvmStatic
+        fun showTauriWebViewNative() {{
+            instance?.showWebView()
+        }}
+
+        @JvmStatic
+        fun hideTauriWebViewNative() {{
+            instance?.hideWebView()
+        }}
     }}
 
     private var pendingPermRequestId: Long = 0L
     private var pendingFileRequestId: Long = 0L
     private var lastReportedInsetsKey: String = ""
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {{ isGranted ->
+        if (isGranted) {{
+            openCameraIntent()
+        }}
+    }}
+
+    private val galleryPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {{ isGranted ->
+        if (isGranted) {{
+            openGalleryIntent()
+        }}
+    }}
+
+    private val takePictureLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) {{ _ ->
+    }}
+
+    private val pickImageLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) {{ _ ->
+    }}
+
+    fun launchCameraWithPermission() {{
+        runOnUiThread {{
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {{
+                openCameraIntent()
+            }} else {{
+                cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+            }}
+        }}
+    }}
+
+    fun launchGalleryWithPermission() {{
+        runOnUiThread {{
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {{
+                openGalleryIntent()
+            }} else if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {{
+                openGalleryIntent()
+            }} else {{
+                galleryPermissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            }}
+        }}
+    }}
+
+    fun showWebView() {{
+        runOnUiThread {{
+            // Activate overlay WebView on demand
+        }}
+    }}
+
+    fun hideWebView() {{
+        runOnUiThread {{
+            // Deactivate overlay WebView
+        }}
+    }}
+
+    private fun openCameraIntent() {{
+        try {{
+            takePictureLauncher.launch(null)
+        }} catch (_: Exception) {{
+            val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+            if (intent.resolveActivity(packageManager) != null) {{
+                startActivity(intent)
+            }}
+        }}
+    }}
+
+    private fun openGalleryIntent() {{
+        try {{
+            pickImageLauncher.launch("image/*")
+        }} catch (_: Exception) {{
+            val intent = Intent(Intent.ACTION_PICK, android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            startActivity(intent)
+        }}
+    }}
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -2220,6 +2403,7 @@ class MainActivity : GameActivity() {{
 
     override fun onCreate(savedInstanceState: Bundle?) {{
         super.onCreate(savedInstanceState)
+        instance = this
         WindowCompat.setDecorFitsSystemWindows(window, false)
         ViewCompat.setOnApplyWindowInsetsListener(window.decorView) {{ _, insets ->
             val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
@@ -2994,7 +3178,22 @@ fn run_build(
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("dist").join(default_sub))
     };
-    let manifest_opt = load_active_manifest(Path::new("."))?;
+    let mut manifest_opt = load_active_manifest(Path::new("."))?;
+    if manifest_opt.is_none() {
+        if let Some(pkg) = package {
+            let candidate1 = Path::new("examples").join(pkg).join("craftui.toml");
+            let candidate2 = Path::new("examples")
+                .join(pkg.trim_start_matches("craftui-example-"))
+                .join("craftui.toml");
+            let candidate3 = Path::new("packages").join(pkg).join("craftui.toml");
+            for cand in [candidate1, candidate2, candidate3] {
+                if cand.is_file() {
+                    manifest_opt = Some(AppManifest::load_file(&cand)?);
+                    break;
+                }
+            }
+        }
+    }
     let app_display = manifest_opt
         .as_ref()
         .map(|m| m.app.name.clone())

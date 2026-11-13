@@ -1,0 +1,325 @@
+import { Card, ElevatedCard, OutlinedCard, SearchBar, FloatingActionButton, NavigationBar, Switch, Chip } from "std/material.cui";
+import { IconSearch, IconAdd, IconSettings, IconShare, IconRefresh, IconCheck } from "std/icons.cui";
+
+component ResponsiveShowcase {
+    in-out property <string> search_query: "";
+    in-out property <bool> ocr_enabled: true;
+    in-out property <bool> auto_crop: true;
+    in-out property <int> active_tab: 0;
+    in-out property <int> filter_idx: 0;
+    in-out property <bool> is_phone: Window.is_compact;
+
+    Column {
+        width: 100%;
+        height: 100%;
+        background: #000000;
+
+        // Top Header
+        Row {
+            width: 100%;
+            padding: 16dp;
+            justify: SpaceBetween;
+            align: Center;
+            background: #141218;
+
+            Row {
+                gap: 12dp;
+                align: Center;
+
+                Text {
+                    text: "ScanCraft Pro";
+                    font_size: 22;
+                    font_weight: 700;
+                    color: #E6E1E5;
+                }
+
+                Row {
+                    padding: 4dp;
+                    border_radius: 12dp;
+                    background: @linear-gradient(90deg, #6750A4, #D0BCFF);
+
+                    Text {
+                        text: root.is_phone ? "AMOLED Mobile (120 FPS)" : "Desktop Pro (Adaptive)";
+                        font_size: 11;
+                        font_weight: 600;
+                        color: #FFFFFF;
+                    }
+                }
+            }
+
+            Row {
+                gap: 16dp;
+                align: Center;
+
+                Text {
+                    text: root.is_phone ? "Width: " + Window.width + "dp" : "Breakpoint: " + Window.breakpoint + " (" + Window.width + "x" + Window.height + "dp)";
+                    font_size: 12;
+                    color: #CAC4D0;
+                }
+            }
+        }
+
+        // Search Bar & Filter Controls
+        Column {
+            width: 100%;
+            padding: 12dp;
+            gap: 10dp;
+            background: #1D1B20;
+
+            SearchBar {
+                text <=> search_query;
+            }
+
+            Row {
+                gap: 8dp;
+                align: Center;
+
+                Chip {
+                    label: "All Scans";
+                    selected: root.filter_idx == 0;
+                }
+                Chip {
+                    label: "Invoices";
+                    selected: root.filter_idx == 1;
+                }
+                Chip {
+                    label: "ID Cards";
+                    selected: root.filter_idx == 2;
+                }
+                Chip {
+                    label: "Receipts";
+                    selected: root.filter_idx == 3;
+                }
+            }
+        }
+
+        // Main Content Area: Responsive Split (Desktop Rail vs Mobile Column)
+        Row {
+            width: 100%;
+            height: 100%;
+
+            // Desktop Navigation Rail (Only shown when not compact phone)
+            if !root.is_phone : Column {
+                width: 220dp;
+                height: 100%;
+                padding: 16dp;
+                gap: 8dp;
+                background: #141218;
+
+                Row {
+                    width: 100%;
+                    padding: 12dp;
+                    border_radius: 12dp;
+                    background: root.active_tab == 0 ? #4A4458 : #00000000;
+                    gap: 12dp;
+                    align: Center;
+
+                    IconSearch { size: 20dp; color: #D0BCFF; }
+                    Text { text: "Documents"; font_size: 14; font_weight: 600; color: #E6E1E5; }
+                }
+
+                Row {
+                    width: 100%;
+                    padding: 12dp;
+                    border_radius: 12dp;
+                    background: root.active_tab == 1 ? #4A4458 : #00000000;
+                    gap: 12dp;
+                    align: Center;
+
+                    IconAdd { size: 20dp; color: #CAC4D0; }
+                    Text { text: "Batch Scan"; font_size: 14; color: #CAC4D0; }
+                }
+
+                Row {
+                    width: 100%;
+                    padding: 12dp;
+                    border_radius: 12dp;
+                    background: root.active_tab == 2 ? #4A4458 : #00000000;
+                    gap: 12dp;
+                    align: Center;
+
+                    IconShare { size: 20dp; color: #CAC4D0; }
+                    Text { text: "Cloud Sync"; font_size: 14; color: #CAC4D0; }
+                }
+
+                Row { width: 100%; height: 1dp; background: #49454F; }
+
+                // Settings Toggle in Rail
+                Column {
+                    width: 100%;
+                    padding: 8dp;
+                    gap: 10dp;
+
+                    Row {
+                        width: 100%;
+                        justify: SpaceBetween;
+                        align: Center;
+                        Text { text: "Neural OCR"; font_size: 13; color: #CAC4D0; }
+                        Switch { checked <=> ocr_enabled; }
+                    }
+
+                    Row {
+                        width: 100%;
+                        justify: SpaceBetween;
+                        align: Center;
+                        Text { text: "Auto-Crop"; font_size: 13; color: #CAC4D0; }
+                        Switch { checked <=> auto_crop; }
+                    }
+                }
+            }
+
+            // Cards Scroll Area
+            ScrollView {
+                width: 100%;
+                height: 100%;
+                padding: 16dp;
+
+                Column {
+                    width: 100%;
+                    gap: 12dp;
+
+                    // Document Card 1: ElevatedCard
+                    ElevatedCard {
+                        width: 100%;
+
+                        Row {
+                            width: 100%;
+                            justify: SpaceBetween;
+                            align: Center;
+
+                            Row {
+                                gap: 14dp;
+                                align: Center;
+
+                                // Thumbnail Badge with Gradient
+                                Row {
+                                    width: 52dp;
+                                    height: 52dp;
+                                    border_radius: 10dp;
+                                    align: Center;
+                                    justify: Center;
+                                    background: @linear-gradient(135deg, #1B5E20, #4CAF50);
+
+                                    Text { text: "PDF"; font_size: 13; font_weight: 700; color: #FFFFFF; }
+                                }
+
+                                Column {
+                                    gap: 4dp;
+                                    Text { text: "Tax_Invoice_2026_Q3.pdf"; font_size: 15; font_weight: 600; color: #E6E1E5; }
+                                    Text { text: "Scanned Today • 3 Pages • 1.4 MB • OCR Ready"; font_size: 12; color: #938F99; }
+                                }
+                            }
+
+                            Row {
+                                gap: 8dp;
+                                align: Center;
+                                IconShare { size: 22dp; color: #D0BCFF; }
+                            }
+                        }
+                    }
+
+                    // Document Card 2: OutlinedCard
+                    OutlinedCard {
+                        width: 100%;
+
+                        Row {
+                            width: 100%;
+                            justify: SpaceBetween;
+                            align: Center;
+
+                            Row {
+                                gap: 14dp;
+                                align: Center;
+
+                                Row {
+                                    width: 52dp;
+                                    height: 52dp;
+                                    border_radius: 10dp;
+                                    align: Center;
+                                    justify: Center;
+                                    background: @linear-gradient(135deg, #0D47A1, #2196F3);
+
+                                    Text { text: "ID"; font_size: 13; font_weight: 700; color: #FFFFFF; }
+                                }
+
+                                Column {
+                                    gap: 4dp;
+                                    Text { text: "Passport_Verification_Scan.png"; font_size: 15; font_weight: 600; color: #E6E1E5; }
+                                    Text { text: "Color Photo • 600 DPI • Ultra HD AMOLED"; font_size: 12; color: #938F99; }
+                                }
+                            }
+
+                            Row {
+                                gap: 8dp;
+                                align: Center;
+                                IconCheck { size: 22dp; color: #D0BCFF; }
+                            }
+                        }
+                    }
+
+                    // Document Card 3: Card
+                    Card {
+                        width: 100%;
+
+                        Row {
+                            width: 100%;
+                            justify: SpaceBetween;
+                            align: Center;
+
+                            Row {
+                                gap: 14dp;
+                                align: Center;
+
+                                Row {
+                                    width: 52dp;
+                                    height: 52dp;
+                                    border_radius: 10dp;
+                                    align: Center;
+                                    justify: Center;
+                                    background: @linear-gradient(135deg, #B71C1C, #F44336);
+
+                                    Text { text: "DOC"; font_size: 13; font_weight: 700; color: #FFFFFF; }
+                                }
+
+                                Column {
+                                    gap: 4dp;
+                                    Text { text: "Contract_Agreement_Signed.pdf"; font_size: 15; font_weight: 600; color: #E6E1E5; }
+                                    Text { text: "Multi-page • Signed with e-Stylus • 4.8 MB"; font_size: 12; color: #938F99; }
+                                }
+                            }
+
+                            Row {
+                                gap: 8dp;
+                                align: Center;
+                                IconRefresh { size: 22dp; color: #D0BCFF; }
+                            }
+                        }
+                    }
+
+                    // Quick Tool Banner
+                    Row {
+                        width: 100%;
+                        padding: 16dp;
+                        border_radius: 16dp;
+                        background: @linear-gradient(90deg, #381E72, #4F378B);
+                        justify: SpaceBetween;
+                        align: Center;
+
+                        Column {
+                            gap: 4dp;
+                            Text { text: "Live Remote Hot-Reload Active"; font_size: 14; font_weight: 700; color: #FFFFFF; }
+                            Text { text: "Sub-5ms AST synchronization over ADB reverse tcp:9876"; font_size: 12; color: #EADDFF; }
+                        }
+
+                        IconCheck { size: 24dp; color: #D0BCFF; }
+                    }
+                }
+            }
+        }
+
+        // Mobile Docked Bottom Navigation Bar (Only on Compact Screens)
+        if root.is_phone : NavigationBar {
+            selected_index <=> active_tab;
+        }
+    }
+}

@@ -1,7 +1,14 @@
 use craftui::prelude::*;
 
 pub mod aot_ui {
-    include!(concat!(env!("OUT_DIR"), "/scancraft.rs"));
+    pub mod scancraft {
+        include!(concat!(env!("OUT_DIR"), "/scancraft.rs"));
+    }
+    pub mod html_style {
+        include!(concat!(env!("OUT_DIR"), "/scanapp_html_style.rs"));
+    }
+    pub use html_style::ScanAppHtmlView;
+    pub use scancraft::ScanCraftApp;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,6 +179,12 @@ pub fn mount_scancraft_app_with_services(
         let c_count = capture_count;
         screen.set_on_capture_photo(move || {
             let _ = svc.trigger_haptic(HapticStyle::Medium);
+            #[cfg(target_os = "android")]
+            launch_android_camera();
+
+            // Note: On Android, launch_android_camera() is invoked asynchronously.
+            // Until asynchronous JNI result hooks are registered to deliver the raw image buffer,
+            // we initialize a synthetic document entry so the preview and enhancement studio remain interactive.
             let next_cnt = c_count.get_untracked() + 1;
             c_count.set(next_cnt);
 
@@ -192,7 +205,7 @@ pub fn mount_scancraft_app_with_services(
             scr.doc_title.set(new_name);
             scr.active_tab.set(1); // Jump to filter tab for immediate editing
             scr.status_message
-                .set("Photo captured with haptics! Now in enhancement studio.".into());
+                .set("Photo captured! Camera session opened, now in enhancement studio.".into());
         });
     }
 
@@ -203,6 +216,12 @@ pub fn mount_scancraft_app_with_services(
         let docs = documents;
         let c_count = capture_count;
         screen.set_on_import_gallery(move || {
+            let _ = svc.trigger_haptic(HapticStyle::Light);
+            #[cfg(target_os = "android")]
+            launch_android_gallery();
+
+            // Note: On Android, launch_android_gallery() is invoked asynchronously.
+            // Synthetic entry provides immediate interaction in desktop testing and visual studio.
             let next_cnt = c_count.get_untracked() + 1;
             c_count.set(next_cnt);
 
@@ -223,8 +242,7 @@ pub fn mount_scancraft_app_with_services(
             scr.doc_title.set(new_name);
             scr.active_tab.set(1);
             scr.status_message
-                .set("Imported photo from device gallery into editor.".into());
-            let _ = svc.trigger_haptic(HapticStyle::Light);
+                .set("Opening device photo gallery...".into());
         });
     }
 
@@ -351,6 +369,30 @@ pub fn mount_scancraft_app_with_services(
         });
     }
 
+    if let Ok(mut guard) = SCANAPP_TAB.lock() {
+        *guard = Some(screen.active_tab);
+    }
+
+    // Reactively switch Tauri Android WebView on tab 4
+    cx.effect({
+        let scr = screen.clone();
+        move || {
+            let tab = scr.active_tab.get();
+            #[cfg(target_os = "android")]
+            {
+                if tab == 4 {
+                    call_activity_static_method("showTauriWebViewNative");
+                } else {
+                    call_activity_static_method("hideTauriWebViewNative");
+                }
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = tab;
+            }
+        }
+    });
+
     let root_node = screen.clone().build(cx, tree);
 
     let state = ScanCraftAppState {
@@ -363,8 +405,135 @@ pub fn mount_scancraft_app_with_services(
     (root_node, state)
 }
 
+static SCANAPP_TAB: std::sync::Mutex<Option<Signal<i32>>> = std::sync::Mutex::new(None);
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_craftui_app_MainActivity_nativeExitTauriMode(
+    _env: *mut jni::sys::JNIEnv,
+    _class: jni::sys::jclass,
+) {
+}
+
+#[cfg(not(target_os = "android"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_dev_craftui_app_MainActivity_nativeExitTauriMode() {}
+
 pub fn mount_scancraft_app(cx: Scope, tree: &mut WidgetTree) -> (NodeId, ScanCraftAppState) {
-    mount_scancraft_app_with_services(cx, tree, PlatformServices::in_memory())
+    mount_scancraft_app_with_services(cx, tree, tree.services.clone())
+}
+
+#[cfg(target_os = "android")]
+fn call_activity_static_method(method: &str) {
+    unsafe {
+        let ctx = ndk_context::android_context();
+        let vm = ctx.vm() as *mut jni::sys::JavaVM;
+        let app_ctx = ctx.context() as jni::sys::jobject;
+        if vm.is_null() || app_ctx.is_null() {
+            return;
+        }
+        let mut env: *mut jni::sys::JNIEnv = std::ptr::null_mut();
+        let attach_fn = (**vm).v1_4.AttachCurrentThread;
+        if attach_fn(
+            vm,
+            &mut env as *mut _ as *mut *mut std::ffi::c_void,
+            std::ptr::null_mut(),
+        ) != 0
+            || env.is_null()
+        {
+            return;
+        }
+        let clear_fn = (**env).v1_4.ExceptionClear;
+        clear_fn(env);
+
+        // 1. Get ClassLoader from application context
+        let get_obj_class = (**env).v1_4.GetObjectClass;
+        let app_cls = get_obj_class(env, app_ctx);
+        if app_cls.is_null() {
+            return;
+        }
+
+        let Ok(c_get_cl) = std::ffi::CString::new("getClassLoader") else {
+            return;
+        };
+        let Ok(c_get_cl_sig) = std::ffi::CString::new("()Ljava/lang/ClassLoader;") else {
+            return;
+        };
+        let get_method = (**env).v1_4.GetMethodID;
+        let get_cl_method = get_method(env, app_cls, c_get_cl.as_ptr(), c_get_cl_sig.as_ptr());
+        if get_cl_method.is_null() {
+            return;
+        }
+
+        let call_obj_method = (**env).v1_4.CallObjectMethod;
+        let class_loader = call_obj_method(env, app_ctx, get_cl_method);
+        if class_loader.is_null() {
+            return;
+        }
+
+        // 2. Load dev.craftui.app.MainActivity via classLoader.loadClass(...)
+        let cl_cls = get_obj_class(env, class_loader);
+        let Ok(c_load_cls) = std::ffi::CString::new("loadClass") else {
+            return;
+        };
+        let Ok(c_load_cls_sig) = std::ffi::CString::new("(Ljava/lang/String;)Ljava/lang/Class;")
+        else {
+            return;
+        };
+        let load_cls_method = get_method(env, cl_cls, c_load_cls.as_ptr(), c_load_cls_sig.as_ptr());
+        if load_cls_method.is_null() {
+            return;
+        }
+
+        let Ok(c_act_name) = std::ffi::CString::new("dev.craftui.app.MainActivity") else {
+            return;
+        };
+        let new_string_utf = (**env).v1_4.NewStringUTF;
+        let act_name_str = new_string_utf(env, c_act_name.as_ptr());
+        if act_name_str.is_null() {
+            return;
+        }
+
+        let main_act_cls =
+            call_obj_method(env, class_loader, load_cls_method, act_name_str) as jni::sys::jclass;
+        if main_act_cls.is_null() {
+            return;
+        }
+
+        // 3. Invoke MainActivity.<method>()
+        let Ok(c_method) = std::ffi::CString::new(method) else {
+            return;
+        };
+        let Ok(c_sig) = std::ffi::CString::new("()V") else {
+            return;
+        };
+        let get_static_method = (**env).v1_4.GetStaticMethodID;
+        let method_id = get_static_method(env, main_act_cls, c_method.as_ptr(), c_sig.as_ptr());
+        if !method_id.is_null() {
+            let call_static_void = (**env).v1_4.CallStaticVoidMethod;
+            call_static_void(env, main_act_cls, method_id);
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn launch_android_camera() {
+    call_activity_static_method("launchCameraFromNative");
+}
+
+#[cfg(target_os = "android")]
+pub fn launch_android_gallery() {
+    call_activity_static_method("launchGalleryFromNative");
+}
+
+#[cfg(target_os = "android")]
+pub fn show_android_tauri_webview() {
+    call_activity_static_method("showTauriWebViewNative");
+}
+
+#[cfg(target_os = "android")]
+pub fn hide_android_tauri_webview() {
+    call_activity_static_method("hideTauriWebViewNative");
 }
 
 #[cfg(target_os = "android")]
@@ -548,5 +717,46 @@ mod tests {
         assert_eq!(rgba.len(), 1024 * 720 * 4);
         // Ensure non-blank buffer
         assert!(rgba.iter().any(|&b| b > 0));
+    }
+
+    #[test]
+    fn scanapp_mobile_portrait_scene_render_and_png_snapshot() {
+        reset_runtime();
+        let cx = Scope::root();
+        let mut tree = WidgetTree::new(cx);
+        let (root, _) = mount_scancraft_app(cx, &mut tree);
+        tree.set_root(root);
+
+        let w = 412;
+        let h = 915;
+        let metrics = WindowMetrics {
+            logical_size: Size::new(w as f32, h as f32),
+            safe_area: Insets::new(48.0, 0.0, 34.0, 0.0),
+            ..Default::default()
+        };
+
+        tree.layout(metrics);
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+
+        let textures = TextureRegistry::new();
+        let mut text_engine = craftui::text::TextEngine::new();
+
+        let rgba = render_scene_to_rgba(
+            BackendKind::VelloCpu,
+            &scene,
+            w,
+            h,
+            1.0,
+            Color::BLACK,
+            &textures,
+            &mut text_engine,
+        );
+
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        assert!(rgba.iter().any(|&b| b > 0));
+
+        let out_path = std::env::temp_dir().join("scanapp_mobile_render.png");
+        let _ = craftui::render::write_rgba_png(&out_path, w, h, &rgba);
     }
 }

@@ -121,7 +121,7 @@ pub enum TokenKind {
     #[regex(r"#[0-9a-fA-F]{3,8}")]
     ColorHex,
 
-    #[regex(r"[0-9]+(\.[0-9]+)?(dp|px|%)")]
+    #[regex(r"[0-9]+(\.[0-9]+)?(dp|px|%|deg|rad)")]
     Dimension,
 
     #[regex(r"[0-9]+(\.[0-9]+)?(ms|s)")]
@@ -138,6 +138,15 @@ pub enum TokenKind {
 
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
+
+    #[token("@linear-gradient")]
+    AtLinearGradient,
+
+    #[token("@radial-gradient")]
+    AtRadialGradient,
+
+    #[token("@")]
+    At,
 
     Error,
 }
