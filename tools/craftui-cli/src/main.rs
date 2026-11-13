@@ -3230,6 +3230,9 @@ fn run_build(
                 if release {
                     cmd.arg("--release");
                 }
+                if pkg != "craftui-platform-web" {
+                    cmd.arg("--no-default-features");
+                }
                 let status = cmd
                     .status()
                     .map_err(|e| CraftError::Platform(format!("failed spawning cargo: {e}")))?;
