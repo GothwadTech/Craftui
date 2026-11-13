@@ -2625,13 +2625,8 @@ impl WidgetTree {
         if let Some(fab) = floating_action_button {
             if let Some(fab_node) = self.nodes.get_mut(fab) {
                 fab_node.layout.absolute = true;
-                fab_node.layout.use_inset = true;
-                fab_node.layout.inset = Insets {
-                    bottom: 24.0,
-                    right: 24.0,
-                    top: 0.0,
-                    left: 0.0,
-                };
+                fab_node.layout.inset_bottom = Some(24.0);
+                fab_node.layout.inset_right = Some(24.0);
             }
             self.append_child(root, fab);
         }

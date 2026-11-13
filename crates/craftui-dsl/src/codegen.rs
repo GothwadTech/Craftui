@@ -1727,19 +1727,19 @@ fn layout_stmt_for_prop(p: &PropBinding, ctx: &EmitCtx<'_>, tracked: bool) -> Op
         "clip" => Some(format!("ls.clip_overflow = {};", b(&p.value))),
         "top" => {
             let v = f(&p.value);
-            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.top = {v};"))
+            Some(format!("ls.absolute = true; ls.inset_top = Some({v});"))
         }
         "bottom" => {
             let v = f(&p.value);
-            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.bottom = {v};"))
+            Some(format!("ls.absolute = true; ls.inset_bottom = Some({v});"))
         }
         "left" => {
             let v = f(&p.value);
-            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.left = {v};"))
+            Some(format!("ls.absolute = true; ls.inset_left = Some({v});"))
         }
         "right" => {
             let v = f(&p.value);
-            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.right = {v};"))
+            Some(format!("ls.absolute = true; ls.inset_right = Some({v});"))
         }
         "absolute" => Some(format!("ls.absolute = {};", b(&p.value))),
         _ => None,

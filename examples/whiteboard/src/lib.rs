@@ -22,6 +22,10 @@ pub fn mount_whiteboard_app(
     tree: &mut WidgetTree,
     services: Option<Arc<PlatformServices>>,
 ) -> NodeId {
+    // Set crisp Excalidraw light theme by default
+    tree.set_theme(ThemeTokens::light());
+    cx.provide_context(tree.theme_signal);
+
     let ctrl = WhiteboardController::new(cx);
 
     // Instantiate declarative Whiteboard screen compiled from ui/whiteboard.cui
@@ -127,8 +131,15 @@ pub fn mount_whiteboard_app(
 
     // 6. Theme Toggle (Light <-> Dark)
     let dark_sig = screen.is_dark;
+    let theme_sig = tree.theme_signal;
     screen.set_on_toggle_theme(move || {
-        dark_sig.set(!dark_sig.get());
+        let is_d = !dark_sig.get();
+        dark_sig.set(is_d);
+        if is_d {
+            theme_sig.set(ThemeTokens::dark());
+        } else {
+            theme_sig.set(ThemeTokens::light());
+        }
     });
 
     // 7. Share Action (Exports SVG & copies to clipboard / shares natively)
@@ -257,6 +268,7 @@ pub fn mount_whiteboard_app(
 
     // Build the complete widget tree from the compiled .cui component!
     let root = screen.build(cx, tree);
+    tree.set_root(root);
 
     // Attach high-performance canvas painting & pointer interactions to the declarative Canvas node
     if let Some(canvas_node) = tree.node_by_id("whiteboard_canvas") {
@@ -264,6 +276,20 @@ pub fn mount_whiteboard_app(
     }
 
     root
+}
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn start() -> Result<(), JsValue> {
+    craftui_platform_web::start_web_app(
+        craftui_platform_web::WebBridgeConfig::default(),
+        |cx, tree, _textures, _dispatcher| {
+            mount_whiteboard_app(cx, tree, None)
+        },
+    )
 }
 
 #[cfg(test)]
@@ -409,6 +435,32 @@ mod tests {
         let root = mount_whiteboard_app(cx, &mut tree, Some(services));
         assert!(tree.nodes.contains_key(root));
         // Verify canvas was mounted and attached
-        assert!(tree.node_by_id("whiteboard_canvas").is_some());
+        let canvas_node = tree.node_by_id("whiteboard_canvas").expect("canvas must exist");
+        
+        // Compute layout at 1200x800 desktop viewport
+        let metrics = WindowMetrics {
+            logical_size: Size::new(1200.0, 800.0),
+            scale_factor: 1.0,
+            ..Default::default()
+        };
+        tree.layout(metrics);
+        let canvas_rect = tree.layout_engine.rect(canvas_node);
+        assert_eq!(canvas_rect.width, 1200.0);
+        assert_eq!(canvas_rect.height, 800.0);
+
+        let root_node = tree.nodes.get(root).unwrap();
+        for (i, &c) in root_node.children.iter().enumerate() {
+            let r = tree.layout_engine.rect(c);
+            let name = &tree.nodes.get(c).unwrap().debug_name;
+            println!("Child {i} {name}: rect = {r:?}");
+        }
+
+        let top_nav = root_node.children[1];
+        let top_nav_node = tree.nodes.get(top_nav).unwrap();
+        for (i, &c) in top_nav_node.children.iter().enumerate() {
+            let r = tree.layout_engine.rect(c);
+            let name = &tree.nodes.get(c).unwrap().debug_name;
+            println!("  TopNav Child {i} {name}: rect = {r:?}");
+        }
     }
 }

@@ -34,6 +34,10 @@ craftui = { workspace = true, default-features = false, features = [
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+craftui-platform-web = { workspace = true }
+wasm-bindgen = { workspace = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
 craftui = { workspace = true, default-features = false, features = ["android", "hot-reload"] }
 jni.workspace = true

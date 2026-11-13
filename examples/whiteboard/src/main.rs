@@ -6,7 +6,7 @@ use craftui_example_whiteboard::mount_whiteboard_app;
 fn main() -> craftui::core::Result<()> {
     run_app(
         WindowConfig {
-            title: "CraftUI Whiteboard (Excalidraw Multiplatform)".to_string(),
+            title: "Whiteboard".to_string(),
             width: 1200.0,
             height: 800.0,
             ..Default::default()

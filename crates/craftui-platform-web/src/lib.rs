@@ -2268,6 +2268,9 @@ pub mod wasm_runner {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub use wasm_runner::{mount_web_app, start_web_app, WebRunnerHandle};
+
 #[cfg(test)]
 mod tests {
     use super::*;
