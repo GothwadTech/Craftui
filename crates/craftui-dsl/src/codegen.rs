@@ -1248,6 +1248,108 @@ fn emit_element(
                 "{indent}let {var} = {tr}.html_view({cx}, {src_rv}, {html_rv}, None);"
             );
         }
+        "Card" => {
+            let variant = find_prop(el, &["variant"])
+                .and_then(|p| match &p.value {
+                    Expr::String(s) => match s.to_lowercase().as_str() {
+                        "filled" => Some("CardVariant::Filled"),
+                        "outlined" => Some("CardVariant::Outlined"),
+                        _ => Some("CardVariant::Elevated"),
+                    },
+                    _ => None,
+                })
+                .unwrap_or("CardVariant::Elevated");
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.card({cx}, {variant});"
+            );
+        }
+        "ListTile" => {
+            let title_rv = find_prop(el, &["title"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let sub_rv = find_prop(el, &["subtitle"])
+                .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
+                .unwrap_or_else(|| "None".into());
+            let lead_rv = find_prop(el, &["leading"])
+                .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
+                .unwrap_or_else(|| "None".into());
+            let trail_rv = find_prop(el, &["trailing"])
+                .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
+                .unwrap_or_else(|| "None".into());
+            let on_tap = find_handler(el, &["on_tap", "on_click", "onClick", "onTap"])
+                .map(|h| {
+                    let captures = emit_signal_captures(ctx, &[]);
+                    let body = emit_handler_body(&h.body, ctx);
+                    format!("Some(move || {{ {captures} {body} }})")
+                })
+                .unwrap_or_else(|| "None::<fn()>".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.list_tile({cx}, {title_rv}, {sub_rv}, {lead_rv}, {trail_rv}, {on_tap});"
+            );
+        }
+        "Chip" => {
+            let label_rv = find_prop(el, &["label"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let sel_prop = find_prop(el, &["selected"]);
+            let sel_sig = emit_bool_signal_adapter(sel_prop, cx, ctx);
+            let icon_rv = find_prop(el, &["icon"])
+                .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
+                .unwrap_or_else(|| "None".into());
+            let on_tap = find_handler(el, &["on_tap", "on_click", "onClick", "onTap"])
+                .map(|h| {
+                    let captures = emit_signal_captures(ctx, &[]);
+                    let body = emit_handler_body(&h.body, ctx);
+                    format!("Some(move || {{ {captures} {body} }})")
+                })
+                .unwrap_or_else(|| "None::<fn()>".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.chip({cx}, {label_rv}, {sel_sig}, {icon_rv}, {on_tap});"
+            );
+        }
+        "AppBar" => {
+            let title_rv = find_prop(el, &["title"])
+                .map(|p| expr_to_reactive_string(&p.value, ctx))
+                .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
+            let lead_rv = find_prop(el, &["leading", "leading_icon"])
+                .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
+                .unwrap_or_else(|| "None".into());
+            let elev = find_prop(el, &["elevation"])
+                .map(|p| expr_to_typed_rust(&p.value, "f32", ctx))
+                .unwrap_or_else(|| "4.0".into());
+            let on_lead = find_handler(el, &["on_leading_tap", "on_menu_tap"])
+                .map(|h| {
+                    let captures = emit_signal_captures(ctx, &[]);
+                    let body = emit_handler_body(&h.body, ctx);
+                    format!("Some(move || {{ {captures} {body} }})")
+                })
+                .unwrap_or_else(|| "None::<fn()>".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.app_bar({cx}, {title_rv}, {lead_rv}, {elev}, {on_lead});"
+            );
+        }
+        "Drawer" => {
+            let open_prop = find_prop(el, &["open"]);
+            let open_sig = emit_bool_signal_adapter(open_prop, cx, ctx);
+            let width = find_prop(el, &["width"])
+                .map(|p| expr_to_typed_rust(&p.value, "f32", ctx))
+                .unwrap_or_else(|| "304.0".into());
+            let on_close = find_handler(el, &["on_close"])
+                .map(|h| {
+                    let captures = emit_signal_captures(ctx, &[]);
+                    let body = emit_handler_body(&h.body, ctx);
+                    format!("Some(move || {{ {captures} {body} }})")
+                })
+                .unwrap_or_else(|| "None::<fn()>".into());
+            let _ = writeln!(
+                out,
+                "{indent}let {var} = {tr}.drawer({cx}, {open_sig}, {width}, {on_close});"
+            );
+        }
         "div" | "section" | "nav" | "header" | "footer" | "main" | "article" | "aside" => {
             let class_str = find_prop(el, &["class"])
                 .and_then(|p| match &p.value {

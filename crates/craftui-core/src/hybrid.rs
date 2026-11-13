@@ -1,6 +1,9 @@
 //! Tauri 2.0-style Hybrid Web + CUI runtime bridge, IPC command router, and Tailwind/HTML utility parser.
 
-use crate::{BoxShadow, Color, CornerRadii, Insets, Length};
+use crate::{
+    BoxShadow, Color, CornerRadii, HapticStyle, Insets, Length, Permission, PlatformServices,
+    SharePayload,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -55,10 +58,31 @@ pub const CRAFTUI_TAURI_IPC_SCRIPT: &str = r#"
             for (var i = 0; i < list.length; i++) {
                 try { list[i](payload); } catch (e) { console.error(e); }
             }
+        },
+        permissions: {
+            check: function(perm) { return window.craftui.invoke("check_permission", { permission: perm }); },
+            request: function(perm) { return window.craftui.invoke("request_permission", { permission: perm }); },
+            requestMany: function(perms) { return window.craftui.invoke("request_permissions", { permissions: perms }); },
+            isAdmin: function() { return window.craftui.invoke("is_admin_active"); },
+            requestAdmin: function() { return window.craftui.invoke("request_admin_privileges"); },
+            openAdminSettings: function() { return window.craftui.invoke("open_admin_settings"); },
+            isAccessibilityEnabled: function() { return window.craftui.invoke("is_accessibility_enabled"); },
+            openAccessibilitySettings: function() { return window.craftui.invoke("open_accessibility_settings"); },
+            openAppSettings: function() { return window.craftui.invoke("open_app_settings"); }
+        },
+        clipboard: {
+            readText: function() { return window.craftui.invoke("clipboard_get").then(function(r) { return r.text; }); },
+            writeText: function(text) { return window.craftui.invoke("clipboard_set", { text: text }); }
+        },
+        device: {
+            info: function() { return window.craftui.invoke("device_info"); },
+            battery: function() { return window.craftui.invoke("battery_state"); },
+            haptic: function(style) { return window.craftui.invoke("haptic", { style: style || "medium" }); },
+            share: function(payload) { return window.craftui.invoke("share", payload || {}); }
         }
     };
 
-    // Official Tauri 2.0 compatibility layer so unmodified Tauri frontends run inside CraftUI
+    // Official compatibility layer so unmodified web frontends run inside CraftUI
     window.__TAURI__ = {
         core: {
             invoke: window.craftui.invoke
@@ -66,7 +90,10 @@ pub const CRAFTUI_TAURI_IPC_SCRIPT: &str = r#"
         event: {
             listen: window.craftui.listen,
             emit: window.craftui.emit
-        }
+        },
+        permissions: window.craftui.permissions,
+        clipboard: window.craftui.clipboard,
+        device: window.craftui.device
     };
 })();
 "#;
@@ -201,6 +228,210 @@ impl IpcRouter {
 
         serde_json::to_string(&resp).unwrap_or_default()
     }
+
+    /// Automatically registers all standard native platform services (permissions, admin/root, accessibility, clipboard, file dialogs, haptics, battery, device info, share) into IPC.
+    pub fn register_platform_services(&mut self, services: PlatformServices) {
+        let svc = services.clone();
+        self.register("check_permission", move |args| {
+            let perm_str = args
+                .get("permission")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let perm = Permission::from_key(perm_str);
+            let status = svc.check_permission(&perm);
+            Ok(serde_json::json!({
+                "permission": perm.key(),
+                "status": format!("{:?}", status).to_lowercase(),
+                "granted": status.is_granted()
+            }))
+        });
+
+        let svc = services.clone();
+        self.register("request_permission", move |args| {
+            let perm_str = args
+                .get("permission")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let perm = Permission::from_key(perm_str);
+            let status = svc.request_permission(&perm);
+            let rationale = svc.should_show_permission_rationale(&perm);
+            Ok(serde_json::json!({
+                "permission": perm.key(),
+                "status": format!("{:?}", status).to_lowercase(),
+                "granted": status.is_granted(),
+                "should_show_rationale": rationale
+            }))
+        });
+
+        let svc = services.clone();
+        self.register("request_permissions", move |args| {
+            let list = args
+                .get("permissions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let perms: Vec<Permission> = list
+                .iter()
+                .filter_map(|v| v.as_str().map(Permission::from_key))
+                .collect();
+            let outcomes = svc.request_permissions(&perms);
+            let res: Vec<serde_json::Value> = outcomes
+                .iter()
+                .map(|o| {
+                    serde_json::json!({
+                        "permission": o.permission.key(),
+                        "status": format!("{:?}", o.status).to_lowercase(),
+                        "granted": o.is_granted(),
+                        "should_show_rationale": o.should_show_rationale
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!(res))
+        });
+
+        let svc = services.clone();
+        self.register("is_accessibility_enabled", move |_| {
+            Ok(serde_json::json!({ "enabled": svc.is_accessibility_enabled() }))
+        });
+
+        let svc = services.clone();
+        self.register("open_accessibility_settings", move |_| {
+            Ok(serde_json::json!({ "success": svc.open_accessibility_settings() }))
+        });
+
+        let svc = services.clone();
+        self.register("is_admin_active", move |_| {
+            Ok(serde_json::json!({ "active": svc.is_admin_active() }))
+        });
+
+        let svc = services.clone();
+        self.register("request_admin_privileges", move |_| {
+            Ok(serde_json::json!({ "success": svc.request_admin_privileges() }))
+        });
+
+        let svc = services.clone();
+        self.register("open_admin_settings", move |_| {
+            Ok(serde_json::json!({ "success": svc.open_admin_settings() }))
+        });
+
+        let svc = services.clone();
+        self.register("open_app_settings", move |_| {
+            Ok(serde_json::json!({ "success": svc.open_app_settings() }))
+        });
+
+        let svc = services.clone();
+        self.register("clipboard_get", move |_| {
+            Ok(serde_json::json!({ "text": svc.read_clipboard().unwrap_or_default() }))
+        });
+
+        let svc = services.clone();
+        self.register("clipboard_set", move |args| {
+            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(serde_json::json!({ "success": svc.write_clipboard(text) }))
+        });
+
+        let svc = services.clone();
+        self.register("device_info", move |_| {
+            let info = svc.device_info();
+            Ok(serde_json::json!({
+                "os": info.os,
+                "model": info.model,
+                "os_version": info.os_version,
+                "sdk_int": info.sdk_int,
+                "app_version": info.app_version
+            }))
+        });
+
+        let svc = services.clone();
+        self.register("battery_state", move |_| {
+            let bat = svc.battery_state();
+            Ok(serde_json::json!({
+                "level_pct": bat.level_pct,
+                "charging": bat.charging
+            }))
+        });
+
+        let svc = services.clone();
+        self.register("haptic", move |args| {
+            let style = match args.get("style").and_then(|v| v.as_str()).unwrap_or("medium") {
+                "light" => HapticStyle::Light,
+                "heavy" => HapticStyle::Heavy,
+                "success" => HapticStyle::Success,
+                "warning" => HapticStyle::Warning,
+                "error" => HapticStyle::Error,
+                _ => HapticStyle::Medium,
+            };
+            Ok(serde_json::json!({ "success": svc.trigger_haptic(style) }))
+        });
+
+        let svc = services.clone();
+        self.register("share", move |args| {
+            let title = args.get("title").and_then(|v| v.as_str()).map(ToString::to_string);
+            let text = args.get("text").and_then(|v| v.as_str()).map(ToString::to_string);
+            let url = args.get("url").and_then(|v| v.as_str()).map(ToString::to_string);
+            let payload = SharePayload {
+                title,
+                text,
+                url,
+                files: Vec::new(),
+            };
+            Ok(serde_json::json!({ "success": svc.share(&payload) }))
+        });
+    }
+}
+
+/// Source of web content for a WebView screen or embedded component.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebViewSource {
+    /// Inline HTML string.
+    Html(String),
+    /// URL (remote http/https, local custom scheme `craftui://app/...`, or `file://`).
+    Url(String),
+    /// Path to bundled static assets in local filesystem or app bundle.
+    Asset(String),
+}
+
+impl Default for WebViewSource {
+    fn default() -> Self {
+        Self::Html(String::new())
+    }
+}
+
+impl From<&str> for WebViewSource {
+    fn from(s: &str) -> Self {
+        let trimmed = s.trim();
+        if trimmed.starts_with("http://")
+            || trimmed.starts_with("https://")
+            || trimmed.starts_with("craftui://")
+            || trimmed.starts_with("file://")
+        {
+            Self::Url(trimmed.to_string())
+        } else if trimmed.starts_with('<') || trimmed.contains("<!DOCTYPE") {
+            Self::Html(trimmed.to_string())
+        } else {
+            Self::Asset(trimmed.to_string())
+        }
+    }
+}
+
+impl From<String> for WebViewSource {
+    fn from(s: String) -> Self {
+        Self::from(s.as_str())
+    }
+}
+
+/// Unified screen presentation mode enabling any screen to be rendered natively in CUI or as a WebView.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScreenKind<R: Clone + PartialEq> {
+    /// Native CraftUI CUI widget screen route.
+    Native(R),
+    /// Dedicated WebView screen loaded from HTML, URL, or bundled web assets.
+    Web(WebViewSource),
+    /// Hybrid split composition combining a native CUI frame with an embedded WebView.
+    Hybrid {
+        native_route: R,
+        web_source: WebViewSource,
+    },
 }
 
 /// Parsed Tailwind CSS utility classes into native CraftUI layout and styling properties.
@@ -509,6 +740,83 @@ mod tests {
         );
 
         assert_eq!(progress.load(Ordering::SeqCst), 75);
+    }
+
+    #[test]
+    fn test_ipc_router_platform_services_permissions_and_admin() {
+        use crate::platform::{MockPermissionBackend, PermissionBackend, PlatformServices};
+        use std::sync::Arc;
+
+        let mock_backend = Arc::new(MockPermissionBackend::default());
+        let services = PlatformServices::in_memory().with_permissions(mock_backend.clone());
+
+        let mut router = IpcRouter::new();
+        router.register_platform_services(services);
+
+        // 1. Check permission via IPC
+        let raw_req = serde_json::json!({
+            "id": "perm-1",
+            "cmd": "check_permission",
+            "args": { "permission": "device_admin" }
+        })
+        .to_string();
+        let resp: IpcResponse = serde_json::from_str(&router.handle_invoke_json(&raw_req)).unwrap();
+        assert_eq!(resp.id, "perm-1");
+        assert_eq!(resp.result.unwrap()["status"], "notdetermined");
+
+        // 2. Request permission via IPC
+        let req_raw = serde_json::json!({
+            "id": "perm-2",
+            "cmd": "request_permission",
+            "args": { "permission": "device_admin" }
+        })
+        .to_string();
+        let resp2: IpcResponse = serde_json::from_str(&router.handle_invoke_json(&req_raw)).unwrap();
+        assert_eq!(resp2.id, "perm-2");
+        assert_eq!(resp2.result.unwrap()["status"], "granted");
+
+        // 3. Admin active check & request
+        let admin_check = serde_json::json!({
+            "id": "admin-1",
+            "cmd": "is_admin_active",
+            "args": {}
+        })
+        .to_string();
+        let resp_admin: IpcResponse = serde_json::from_str(&router.handle_invoke_json(&admin_check)).unwrap();
+        assert_eq!(resp_admin.result.unwrap()["active"], false);
+
+        let admin_req = serde_json::json!({
+            "id": "admin-2",
+            "cmd": "request_admin_privileges",
+            "args": {}
+        })
+        .to_string();
+        let resp_req_admin: IpcResponse = serde_json::from_str(&router.handle_invoke_json(&admin_req)).unwrap();
+        assert_eq!(resp_req_admin.result.unwrap()["success"], true);
+
+        // Verify that is_admin_active is now true
+        assert!(mock_backend.is_admin_active());
+
+        // 4. Open settings
+        let open_admin = serde_json::json!({
+            "id": "admin-3",
+            "cmd": "open_admin_settings",
+            "args": {}
+        })
+        .to_string();
+        let resp_open: IpcResponse = serde_json::from_str(&router.handle_invoke_json(&open_admin)).unwrap();
+        assert_eq!(resp_open.result.unwrap()["success"], true);
+        assert_eq!(mock_backend.admin_settings_open_count(), 1);
+
+        let open_a11y = serde_json::json!({
+            "id": "a11y-1",
+            "cmd": "open_accessibility_settings",
+            "args": {}
+        })
+        .to_string();
+        let resp_a11y: IpcResponse = serde_json::from_str(&router.handle_invoke_json(&open_a11y)).unwrap();
+        assert_eq!(resp_a11y.result.unwrap()["success"], true);
+        assert_eq!(mock_backend.accessibility_settings_open_count(), 1);
     }
 
     #[test]

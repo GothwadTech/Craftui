@@ -47,6 +47,12 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "BottomSheet",
     "PlatformView",
     "HtmlView",
+    "Card",
+    "ListTile",
+    "Chip",
+    "AppBar",
+    "Drawer",
+    "Scaffold",
     "div",
     "span",
     "p",
@@ -257,6 +263,9 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "aside"
             | "span"
             | "button"
+            | "Card"
+            | "Drawer"
+            | "Scaffold"
     )
 }
 
@@ -434,6 +443,29 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "HtmlView" => {
             out.extend_from_slice(&["src", "html", "url"]);
         }
+        "Card" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.push("variant");
+        }
+        "ListTile" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["title", "subtitle", "leading", "trailing", "selected"]);
+        }
+        "Chip" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["label", "text", "selected", "icon"]);
+        }
+        "AppBar" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["title", "leading", "leading_icon", "elevation"]);
+        }
+        "Drawer" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["open", "width"]);
+        }
+        "Scaffold" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+        }
         "div" | "section" | "nav" | "header" | "footer" | "main" | "article" | "aside" => {
             out.extend_from_slice(CONTAINER_PROPS);
         }
@@ -464,7 +496,8 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
         "DataTable" => out.extend_from_slice(&["on_select", "on_change", "on_sort"]),
         "PopupMenu" => out.extend_from_slice(&["on_select", "on_change", "on_close"]),
         "ToastHost" => out.push("on_dismiss"),
-        "Modal" | "BottomSheet" => out.push("on_close"),
+        "Modal" | "BottomSheet" | "Drawer" => out.push("on_close"),
+        "AppBar" => out.push("on_leading_tap"),
         _ => {}
     }
     out
@@ -482,7 +515,8 @@ fn widget_supports_two_way(kind: &str, prop: &str) -> bool {
         "Accordion" => matches!(prop, "expanded" | "open"),
         "DataTable" => prop == "selected",
         "Select" | "Dropdown" | "RadioGroup" => matches!(prop, "selected" | "value"),
-        "Modal" | "BottomSheet" | "PopupMenu" => matches!(prop, "open" | "visible"),
+        "Modal" | "BottomSheet" | "PopupMenu" | "Drawer" => matches!(prop, "open" | "visible"),
+        "Chip" => prop == "selected",
         _ => false,
     }
 }

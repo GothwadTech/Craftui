@@ -100,10 +100,10 @@ pub mod prelude {
         MockDeviceCapabilities, MockHaptics, MockPermissionBackend, MockShare, Modifiers,
         NetworkStatus, NodeId, NoopHaptics, NoopPermissionBackend, NoopShare, Permission,
         PermissionBackend, PermissionOutcome, PermissionStatus, PlatformServices, PlatformViewId,
-        Point, PointerButton, PointerEvent, PointerId, PointerPhase, Rect, ScrollDelta,
+        Point, PointerButton, PointerEvent, PointerId, PointerPhase, Rect, ScreenKind, ScrollDelta,
         SecureStorageBackend, ShareBackend, SharePayload, Size, TailwindTokens, TextureId,
-        ThemeMode, ThemeOverride, ThemeTokens, Transform2D, UiDispatcher, UiEvent, WindowMetrics,
-        monotonic_ms,
+        ThemeMode, ThemeOverride, ThemeTokens, Transform2D, UiDispatcher, UiEvent, WebViewSource,
+        WindowMetrics, monotonic_ms,
     };
     pub use craftui_layout::{LayoutMode, LayoutStyle};
     pub use craftui_macros::{component, cui};

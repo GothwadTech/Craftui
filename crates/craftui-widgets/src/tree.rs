@@ -4,7 +4,7 @@ use crate::inspector::InspectorState;
 use crate::router::{Router, RouterTransition};
 use crate::toast::{ToastItem, ToastManager, ToastSeverity};
 use crate::widgets::{
-    BoolCallback, BoxStyle, CanvasPointerFn, CustomWidget, FloatCallback, HoverCallback,
+    BoolCallback, BoxStyle, CanvasPointerFn, CardVariant, CustomWidget, FloatCallback, HoverCallback,
     IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, ToastDismissCallback,
     WidgetKind,
 };
@@ -991,6 +991,80 @@ impl WidgetTree {
                         mark_node_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
                     });
                 }
+            }
+            WidgetKind::ListTile {
+                title,
+                subtitle,
+                leading,
+                trailing,
+                selected,
+                ..
+            } => {
+                let selected = selected.clone();
+                let title = title.clone();
+                let subtitle = subtitle.clone();
+                let leading = leading.clone();
+                let trailing = trailing.clone();
+                if selected.is_dynamic()
+                    || title.is_dynamic()
+                    || subtitle.as_ref().is_some_and(|s| s.is_dynamic())
+                    || leading.as_ref().is_some_and(|l| l.is_dynamic())
+                    || trailing.as_ref().is_some_and(|t| t.is_dynamic())
+                {
+                    scope.effect(move || {
+                        let _ = selected.get();
+                        let _ = title.get();
+                        if let Some(ref s) = subtitle {
+                            let _ = s.get();
+                        }
+                        if let Some(ref l) = leading {
+                            let _ = l.get();
+                        }
+                        if let Some(ref t) = trailing {
+                            let _ = t.get();
+                        }
+                        mark_node_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::A11Y);
+                    });
+                }
+            }
+            WidgetKind::Chip {
+                label,
+                icon,
+                selected,
+                ..
+            } => {
+                selected.bind_node(id, DirtyFlags::PAINT | DirtyFlags::A11Y);
+                let label = label.clone();
+                let icon = icon.clone();
+                if label.is_dynamic() || icon.as_ref().is_some_and(|i| i.is_dynamic()) {
+                    scope.effect(move || {
+                        let _ = label.get();
+                        if let Some(ref i) = icon {
+                            let _ = i.get();
+                        }
+                        mark_node_dirty(id, DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::A11Y);
+                    });
+                }
+            }
+            WidgetKind::AppBar {
+                title,
+                leading_icon,
+                ..
+            } => {
+                let title = title.clone();
+                let leading_icon = leading_icon.clone();
+                if title.is_dynamic() || leading_icon.as_ref().is_some_and(|i| i.is_dynamic()) {
+                    scope.effect(move || {
+                        let _ = title.get();
+                        if let Some(ref i) = leading_icon {
+                            let _ = i.get();
+                        }
+                        mark_node_dirty(id, DirtyFlags::PAINT | DirtyFlags::A11Y);
+                    });
+                }
+            }
+            WidgetKind::Drawer { open, .. } => {
+                open.bind_node(id, DirtyFlags::PAINT | DirtyFlags::A11Y);
             }
             _ => {}
         }
@@ -2367,6 +2441,209 @@ impl WidgetTree {
             n.a11y.role = A11yRole::Container;
         }
         id
+    }
+
+    /// Mount a Material 3 Card panel container matching Flutter's `Card` (`Elevated`, `Filled`, `Outlined`).
+    pub fn card(&mut self, scope: Scope, variant: CardVariant) -> NodeId {
+        let layout = LayoutStyle::column().with_padding(Insets::all(16.0));
+        let mut box_style = BoxStyle::default();
+        box_style.radius = CornerRadii::all(12.0);
+        let id = self.spawn_node(
+            "Card",
+            WidgetKind::Card { variant },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.box_style = box_style;
+            n.a11y.role = A11yRole::Container;
+        }
+        id
+    }
+
+    /// Mount a Material 3 item row matching Flutter's `ListTile`.
+    pub fn list_tile(
+        &mut self,
+        scope: Scope,
+        title: impl Into<ReactiveValue<String>>,
+        subtitle: Option<impl Into<ReactiveValue<String>>>,
+        leading: Option<impl Into<ReactiveValue<String>>>,
+        trailing: Option<impl Into<ReactiveValue<String>>>,
+        on_tap: Option<impl FnMut() + 'static>,
+    ) -> NodeId {
+        let title_rv = title.into();
+        let subtitle_rv = subtitle.map(|s| s.into());
+        let leading_rv = leading.map(|l| l.into());
+        let trailing_rv = trailing.map(|t| t.into());
+        let h = if subtitle_rv.is_some() { 72.0 } else { 56.0 };
+        let layout = LayoutStyle::row()
+            .with_size(Length::Pct(100.0), Length::Dp(h))
+            .with_align(Alignment::Center);
+        let id = self.spawn_node(
+            "ListTile",
+            WidgetKind::ListTile {
+                leading: leading_rv,
+                title: title_rv.clone(),
+                subtitle: subtitle_rv,
+                trailing: trailing_rv,
+                on_tap: on_tap.map(|cb| Rc::new(RefCell::new(cb)) as TapHandler),
+                hovered: false,
+                pressed: false,
+                selected: ReactiveValue::Static(false),
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::ListItem;
+            n.a11y.label = Some(title_rv.get());
+            n.a11y.focusable = true;
+        }
+        id
+    }
+
+    /// Mount a Material 3 selectable or action chip matching Flutter's `Chip` / `FilterChip`.
+    pub fn chip(
+        &mut self,
+        scope: Scope,
+        label: impl Into<ReactiveValue<String>>,
+        selected: Signal<bool>,
+        icon: Option<impl Into<ReactiveValue<String>>>,
+        on_tap: Option<impl FnMut() + 'static>,
+    ) -> NodeId {
+        let label_rv = label.into();
+        let icon_rv = icon.map(|i| i.into());
+        let layout = LayoutStyle::row()
+            .with_size(Length::Auto, Length::Dp(32.0))
+            .with_padding(Insets::symmetric(12.0, 4.0))
+            .with_align(Alignment::Center);
+        let id = self.spawn_node(
+            "Chip",
+            WidgetKind::Chip {
+                label: label_rv.clone(),
+                icon: icon_rv,
+                selected,
+                on_tap: on_tap.map(|cb| Rc::new(RefCell::new(cb)) as TapHandler),
+                hovered: false,
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.box_style.radius = CornerRadii::all(8.0);
+            n.a11y.role = A11yRole::CheckBox;
+            n.a11y.label = Some(label_rv.get());
+            n.a11y.focusable = true;
+        }
+        id
+    }
+
+    /// Mount a Material 3 Top App Bar header matching Flutter's `AppBar`.
+    pub fn app_bar(
+        &mut self,
+        scope: Scope,
+        title: impl Into<ReactiveValue<String>>,
+        leading_icon: Option<impl Into<ReactiveValue<String>>>,
+        elevation: f32,
+        on_leading_tap: Option<impl FnMut() + 'static>,
+    ) -> NodeId {
+        let title_rv = title.into();
+        let leading_rv = leading_icon.map(|l| l.into());
+        let layout = LayoutStyle::row()
+            .with_size(Length::Pct(100.0), Length::Dp(64.0))
+            .with_padding(Insets::symmetric(16.0, 8.0))
+            .with_align(Alignment::Center);
+        let id = self.spawn_node(
+            "AppBar",
+            WidgetKind::AppBar {
+                title: title_rv.clone(),
+                leading_icon: leading_rv,
+                elevation,
+                on_leading_tap: on_leading_tap.map(|cb| Rc::new(RefCell::new(cb)) as TapHandler),
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::Container;
+            n.a11y.label = Some(title_rv.get());
+        }
+        id
+    }
+
+    /// Mount a slide-out navigation drawer panel matching Flutter's `Drawer`.
+    pub fn drawer(
+        &mut self,
+        scope: Scope,
+        open: Signal<bool>,
+        width: f32,
+        on_close: Option<impl FnMut() + 'static>,
+    ) -> NodeId {
+        let mut layout = LayoutStyle::column().with_size(Length::Pct(100.0), Length::Pct(100.0));
+        layout.absolute = true;
+        layout.use_inset = true;
+        layout.inset = Insets::ZERO;
+        let id = self.spawn_node(
+            "Drawer",
+            WidgetKind::Drawer {
+                open,
+                width,
+                on_close: on_close.map(|cb| Rc::new(RefCell::new(cb)) as TapHandler),
+            },
+            layout,
+            scope,
+        );
+        if let Some(n) = self.nodes.get_mut(id) {
+            n.a11y.role = A11yRole::Dialog;
+            n.a11y.label = Some("Navigation Drawer".to_string());
+        }
+        id
+    }
+
+    /// Compose a Flutter-style Scaffold layout managing app bar, body, bottom nav, FAB, and drawer.
+    pub fn scaffold(
+        &mut self,
+        scope: Scope,
+        app_bar: Option<NodeId>,
+        body: NodeId,
+        bottom_nav_bar: Option<NodeId>,
+        floating_action_button: Option<NodeId>,
+        drawer: Option<NodeId>,
+    ) -> NodeId {
+        let root_layout = LayoutStyle::column().with_size(Length::Pct(100.0), Length::Pct(100.0));
+        let root = self.container(scope, root_layout, BoxStyle::default());
+        if let Some(ab) = app_bar {
+            self.append_child(root, ab);
+        }
+        if let Some(body_node) = self.nodes.get_mut(body) {
+            body_node.layout.flex_grow = 1.0;
+        }
+        self.append_child(root, body);
+        if let Some(bnb) = bottom_nav_bar {
+            self.append_child(root, bnb);
+        }
+        if let Some(fab) = floating_action_button {
+            if let Some(fab_node) = self.nodes.get_mut(fab) {
+                fab_node.layout.absolute = true;
+                fab_node.layout.use_inset = true;
+                fab_node.layout.inset = Insets {
+                    bottom: 24.0,
+                    right: 24.0,
+                    top: 0.0,
+                    left: 0.0,
+                };
+            }
+            self.append_child(root, fab);
+        }
+        if let Some(dr) = drawer {
+            if let Some(dr_node) = self.nodes.get_mut(dr) {
+                dr_node.layout.absolute = true;
+                dr_node.layout.use_inset = true;
+                dr_node.layout.inset = Insets::ZERO;
+            }
+            self.append_child(root, dr);
+        }
+        root
     }
 
     /// Mount any custom user-defined widget implementing [`CustomWidget`].
@@ -4193,6 +4470,38 @@ impl WidgetTree {
                         };
                         Size::new(measured.width + icon_w, measured.height.max(16.0))
                     }
+                    WidgetKind::ListTile { subtitle, .. } => {
+                        let w = if constraints.max_width.is_finite() {
+                            constraints.max_width
+                        } else {
+                            320.0
+                        };
+                        let h = if subtitle.is_some() { 72.0 } else { 56.0 };
+                        Size::new(w, h)
+                    }
+                    WidgetKind::Chip { label, icon, .. } => {
+                        let txt = label.get();
+                        let st = TextStyle::default().with_size(13.0).with_weight(500.0);
+                        let measured = text_engine.measure(&txt, &st, None);
+                        let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
+                        Size::new((measured.width + icon_w + 24.0).max(48.0), 32.0)
+                    }
+                    WidgetKind::AppBar { .. } => {
+                        let w = if constraints.max_width.is_finite() {
+                            constraints.max_width
+                        } else {
+                            360.0
+                        };
+                        Size::new(w, 64.0)
+                    }
+                    WidgetKind::Drawer { width, .. } => {
+                        let h = if constraints.max_height.is_finite() {
+                            constraints.max_height
+                        } else {
+                            800.0
+                        };
+                        Size::new(*width, h)
+                    }
                     WidgetKind::Custom(cw) => {
                         if let Ok(mut guard) = cw.try_borrow_mut() {
                             guard.measure(constraints, text_engine, &theme)
@@ -4760,6 +5069,9 @@ impl WidgetTree {
             WidgetKind::Overlay { open, .. } | WidgetKind::PopupMenu { open, .. }
                 if !open.get() =>
             {
+                return;
+            }
+            WidgetKind::Drawer { open, .. } if !open.get() => {
                 return;
             }
             _ => {}
@@ -6456,6 +6768,282 @@ impl WidgetTree {
                     rect,
                 });
             }
+            WidgetKind::Card { variant } => {
+                let radius = if box_style.radius == CornerRadii::ZERO {
+                    CornerRadii::all(12.0)
+                } else {
+                    box_style.radius
+                };
+                match variant {
+                    CardVariant::Elevated => {
+                        scene.drop_shadow(
+                            rect,
+                            radius,
+                            BoxShadow::drop(0.0, 1.5, 4.0, 0.0, Color::rgba(0, 0, 0, 45)),
+                        );
+                        let bg = box_style
+                            .background
+                            .as_ref()
+                            .map(|b| b.get())
+                            .unwrap_or(Brush::Solid(theme.surface));
+                        let adapted = Self::adapt_brush_to_rect(&bg, rect);
+                        scene.fill_rect(rect, adapted, radius);
+                    }
+                    CardVariant::Filled => {
+                        let bg = box_style
+                            .background
+                            .as_ref()
+                            .map(|b| b.get())
+                            .unwrap_or(Brush::Solid(theme.surface_variant));
+                        let adapted = Self::adapt_brush_to_rect(&bg, rect);
+                        scene.fill_rect(rect, adapted, radius);
+                    }
+                    CardVariant::Outlined => {
+                        let bg = box_style
+                            .background
+                            .as_ref()
+                            .map(|b| b.get())
+                            .unwrap_or(Brush::Solid(theme.surface));
+                        let adapted = Self::adapt_brush_to_rect(&bg, rect);
+                        scene.fill_rect(rect, adapted, radius);
+                        let border_c = box_style
+                            .border_color
+                            .as_ref()
+                            .map(|c| c.get())
+                            .unwrap_or(theme.border);
+                        scene.stroke_rect(rect, border_c, 1.0, radius);
+                    }
+                }
+            }
+            WidgetKind::ListTile {
+                leading,
+                title,
+                subtitle,
+                trailing,
+                hovered,
+                pressed,
+                selected,
+                ..
+            } => {
+                let is_sel = selected.get();
+                let bg = if pressed {
+                    Some(theme.primary.with_alpha(0.18))
+                } else if hovered {
+                    Some(theme.surface_variant.with_alpha(0.6))
+                } else if is_sel {
+                    Some(theme.primary.with_alpha(0.10))
+                } else {
+                    None
+                };
+                if let Some(c) = bg {
+                    scene.fill_rect(rect, c, box_style.radius);
+                }
+
+                let pad_x = 16.0;
+                let mut cur_x = rect.x + pad_x;
+
+                if let Some(lead) = leading {
+                    let lead_str = lead.get();
+                    if !lead_str.is_empty() {
+                        let lead_st = TextStyle::default().with_size(20.0).with_color(
+                            if is_sel {
+                                theme.primary
+                            } else {
+                                theme.text_secondary
+                            },
+                        );
+                        let lsz = self.text_engine.measure(&lead_str, &lead_st, None);
+                        let icon_y = rect.y + (rect.height - lsz.height) * 0.5;
+                        scene.draw_text(Point::new(cur_x, icon_y), lead_str, lead_st, None);
+                        cur_x += lsz.width + 16.0;
+                    }
+                }
+
+                let mut trailing_w = 0.0;
+                if let Some(trail) = trailing {
+                    let trail_str = trail.get();
+                    if !trail_str.is_empty() {
+                        let trail_st =
+                            TextStyle::default().with_size(18.0).with_color(theme.text_secondary);
+                        let tsz = self.text_engine.measure(&trail_str, &trail_st, None);
+                        trailing_w = tsz.width + 16.0;
+                        let trail_x = rect.x + rect.width - pad_x - tsz.width;
+                        let trail_y = rect.y + (rect.height - tsz.height) * 0.5;
+                        scene.draw_text(Point::new(trail_x, trail_y), trail_str, trail_st, None);
+                    }
+                }
+
+                let title_str = title.get();
+                let avail_w = (rect.x + rect.width - cur_x - trailing_w - pad_x).max(10.0);
+                let title_col = if is_sel {
+                    theme.primary
+                } else {
+                    theme.text_primary
+                };
+                let title_st = TextStyle::default()
+                    .with_size(15.0)
+                    .with_weight(500.0)
+                    .with_color(title_col);
+
+                if let Some(sub) = subtitle {
+                    let sub_str = sub.get();
+                    let sub_st = TextStyle::default()
+                        .with_size(13.0)
+                        .with_color(theme.text_secondary);
+                    let t_sz = self.text_engine.measure(&title_str, &title_st, Some(avail_w));
+                    let s_sz = self.text_engine.measure(&sub_str, &sub_st, Some(avail_w));
+                    let total_h = t_sz.height + s_sz.height + 2.0;
+                    let start_y = rect.y + (rect.height - total_h) * 0.5;
+
+                    scene.draw_text(Point::new(cur_x, start_y), title_str, title_st, Some(avail_w));
+                    scene.draw_text(
+                        Point::new(cur_x, start_y + t_sz.height + 2.0),
+                        sub_str,
+                        sub_st,
+                        Some(avail_w),
+                    );
+                } else {
+                    let t_sz = self.text_engine.measure(&title_str, &title_st, Some(avail_w));
+                    let start_y = rect.y + (rect.height - t_sz.height) * 0.5;
+                    scene.draw_text(Point::new(cur_x, start_y), title_str, title_st, Some(avail_w));
+                }
+            }
+            WidgetKind::Chip {
+                label,
+                icon,
+                selected,
+                hovered,
+                ..
+            } => {
+                let is_sel = selected.get();
+                let rad = CornerRadii::all(8.0);
+                let bg = if is_sel {
+                    theme.primary.with_alpha(0.2)
+                } else if hovered {
+                    theme.surface_variant.with_alpha(0.6)
+                } else {
+                    theme.surface
+                };
+                scene.fill_rect(rect, bg, rad);
+                let border_color = if is_sel {
+                    theme.primary
+                } else {
+                    theme.border
+                };
+                scene.stroke_rect(rect, border_color, 1.0, rad);
+
+                let mut cur_x = rect.x + 10.0;
+                if is_sel && icon.is_none() {
+                    let check_st = TextStyle::default().with_size(14.0).with_color(theme.primary);
+                    let csz = self.text_engine.measure("✓", &check_st, None);
+                    let cy = rect.y + (rect.height - csz.height) * 0.5;
+                    scene.draw_text(Point::new(cur_x, cy), "✓", check_st, None);
+                    cur_x += csz.width + 6.0;
+                } else if let Some(ic) = icon {
+                    let ic_str = ic.get();
+                    if !ic_str.is_empty() {
+                        let ic_st = TextStyle::default().with_size(14.0).with_color(
+                            if is_sel {
+                                theme.primary
+                            } else {
+                                theme.text_secondary
+                            },
+                        );
+                        let isz = self.text_engine.measure(&ic_str, &ic_st, None);
+                        let iy = rect.y + (rect.height - isz.height) * 0.5;
+                        scene.draw_text(Point::new(cur_x, iy), ic_str, ic_st, None);
+                        cur_x += isz.width + 6.0;
+                    }
+                }
+
+                let lbl_str = label.get();
+                let lbl_col = if is_sel {
+                    theme.primary
+                } else {
+                    theme.text_primary
+                };
+                let lbl_st = TextStyle::default()
+                    .with_size(13.0)
+                    .with_weight(500.0)
+                    .with_color(lbl_col);
+                let lsz = self.text_engine.measure(&lbl_str, &lbl_st, None);
+                let ly = rect.y + (rect.height - lsz.height) * 0.5;
+                scene.draw_text(Point::new(cur_x, ly), lbl_str, lbl_st, None);
+            }
+            WidgetKind::AppBar {
+                title,
+                leading_icon,
+                elevation,
+                ..
+            } => {
+                let bg = box_style
+                    .background
+                    .as_ref()
+                    .map(|b| b.get())
+                    .unwrap_or(Brush::Solid(theme.surface));
+                let adapted = Self::adapt_brush_to_rect(&bg, rect);
+                scene.fill_rect(rect, adapted, CornerRadii::ZERO);
+
+                if elevation > 0.0 {
+                    scene.drop_shadow(
+                        rect,
+                        CornerRadii::ZERO,
+                        BoxShadow::drop(
+                            0.0,
+                            elevation * 1.5,
+                            elevation * 4.0,
+                            0.0,
+                            Color::rgba(0, 0, 0, 45),
+                        ),
+                    );
+                }
+
+                let mut cur_x = rect.x + 16.0;
+                if let Some(lead) = leading_icon {
+                    let lead_str = lead.get();
+                    if !lead_str.is_empty() {
+                        let lead_st =
+                            TextStyle::default().with_size(22.0).with_color(theme.text_primary);
+                        let lsz = self.text_engine.measure(&lead_str, &lead_st, None);
+                        let ly = rect.y + (rect.height - lsz.height) * 0.5;
+                        scene.draw_text(Point::new(cur_x, ly), lead_str, lead_st, None);
+                        cur_x += lsz.width + 16.0;
+                    }
+                }
+
+                let title_str = title.get();
+                let title_st = TextStyle::default()
+                    .with_size(18.0)
+                    .with_weight(600.0)
+                    .with_color(theme.text_primary);
+                let tsz = self.text_engine.measure(&title_str, &title_st, None);
+                let ty = rect.y + (rect.height - tsz.height) * 0.5;
+                scene.draw_text(Point::new(cur_x, ty), title_str, title_st, None);
+            }
+            WidgetKind::Drawer { open, width, .. } => {
+                if !open.get() {
+                    paint_children = false;
+                } else {
+                    scene.fill_rect(rect, Color::rgba(0, 0, 0, 120), CornerRadii::ZERO);
+
+                    let drawer_w = width.min(rect.width * 0.85).max(240.0);
+                    let drawer_r = Rect::new(rect.x, rect.y, drawer_w, rect.height);
+
+                    scene.drop_shadow(
+                        drawer_r,
+                        CornerRadii::new(0.0, 16.0, 16.0, 0.0),
+                        BoxShadow::drop(4.0, 0.0, 16.0, 0.0, Color::rgba(0, 0, 0, 60)),
+                    );
+
+                    let bg = box_style
+                        .background
+                        .as_ref()
+                        .map(|b| b.get())
+                        .unwrap_or(Brush::Solid(theme.surface));
+                    let adapted = Self::adapt_brush_to_rect(&bg, drawer_r);
+                    scene.fill_rect(drawer_r, adapted, CornerRadii::new(0.0, 16.0, 16.0, 0.0));
+                }
+            }
             WidgetKind::Custom(cw) => {
                 if let Ok(mut guard) = cw.try_borrow_mut() {
                     guard.paint(rect, scene, &mut self.text_engine, theme, is_focused);
@@ -6599,6 +7187,9 @@ impl WidgetTree {
             {
                 return None;
             }
+            WidgetKind::Drawer { open, .. } if !open.get() => {
+                return None;
+            }
             _ => {}
         }
 
@@ -6714,6 +7305,10 @@ impl WidgetTree {
                     | WidgetKind::SegmentedControl { .. }
                     | WidgetKind::BottomNavBar { .. }
                     | WidgetKind::FloatingActionButton { .. }
+                    | WidgetKind::ListTile { .. }
+                    | WidgetKind::Chip { .. }
+                    | WidgetKind::AppBar { .. }
+                    | WidgetKind::Drawer { .. }
                     | WidgetKind::Accordion { .. }
                     | WidgetKind::DataTable { .. }
                     | WidgetKind::Select { .. }
@@ -6806,7 +7401,9 @@ impl WidgetTree {
                     let mut unhover = false;
                     match &mut n.kind {
                         WidgetKind::Button { hovered, .. }
-                        | WidgetKind::FloatingActionButton { hovered, .. } => {
+                        | WidgetKind::FloatingActionButton { hovered, .. }
+                        | WidgetKind::ListTile { hovered, .. }
+                        | WidgetKind::Chip { hovered, .. } => {
                             if *hovered {
                                 *hovered = false;
                                 unhover = true;
@@ -6843,7 +7440,9 @@ impl WidgetTree {
                     let mut do_hover = false;
                     match &mut n.kind {
                         WidgetKind::Button { hovered, .. }
-                        | WidgetKind::FloatingActionButton { hovered, .. } => {
+                        | WidgetKind::FloatingActionButton { hovered, .. }
+                        | WidgetKind::ListTile { hovered, .. }
+                        | WidgetKind::Chip { hovered, .. } => {
                             if !*hovered {
                                 *hovered = true;
                                 do_hover = true;
@@ -6930,7 +7529,8 @@ impl WidgetTree {
             if let Some(n) = self.nodes.get_mut(h) {
                 match &mut n.kind {
                     WidgetKind::Button { pressed, .. }
-                    | WidgetKind::FloatingActionButton { pressed, .. } => {
+                    | WidgetKind::FloatingActionButton { pressed, .. }
+                    | WidgetKind::ListTile { pressed, .. } => {
                         *pressed = true;
                         n.dirty |= DirtyFlags::PAINT;
                         changed = true;
@@ -6981,6 +7581,7 @@ impl WidgetTree {
                 match &mut node.kind {
                     WidgetKind::Button { pressed, .. }
                     | WidgetKind::FloatingActionButton { pressed, .. }
+                    | WidgetKind::ListTile { pressed, .. }
                         if *pressed =>
                     {
                         *pressed = false;
@@ -7402,6 +8003,38 @@ impl WidgetTree {
                             }
                             node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
                             break;
+                        }
+                    }
+                }
+                WidgetKind::ListTile { on_tap, .. } => {
+                    action = on_tap.clone();
+                }
+                WidgetKind::Chip {
+                    selected,
+                    on_tap,
+                    ..
+                } => {
+                    let next = !selected.get_untracked();
+                    selected.set(next);
+                    node.dirty |= DirtyFlags::PAINT | DirtyFlags::A11Y;
+                    action = on_tap.clone();
+                }
+                WidgetKind::AppBar {
+                    on_leading_tap, ..
+                } => {
+                    action = on_leading_tap.clone();
+                }
+                WidgetKind::Drawer {
+                    open,
+                    width,
+                    on_close,
+                } => {
+                    if open.get_untracked() {
+                        let drawer_w = (*width).min(rect.width * 0.85).max(240.0);
+                        if local_pos.x > rect.x + drawer_w {
+                            open.set(false);
+                            node.dirty |= DirtyFlags::PAINT;
+                            action = on_close.clone();
                         }
                     }
                 }
@@ -7859,6 +8492,9 @@ impl WidgetTree {
             {
                 return;
             }
+            WidgetKind::Drawer { open, .. } if !open.get() => {
+                return;
+            }
             WidgetKind::Accordion { expanded, .. } if !expanded.get() => {
                 out.push(id);
                 return;
@@ -8076,7 +8712,9 @@ impl WidgetTree {
                 WidgetKind::Button { .. }
                 | WidgetKind::Checkbox { .. }
                 | WidgetKind::Switch { .. }
-                | WidgetKind::Accordion { .. } => {
+                | WidgetKind::Accordion { .. }
+                | WidgetKind::ListTile { .. }
+                | WidgetKind::Chip { .. } => {
                     if matches!(ke.code, KeyCode::Enter | KeyCode::Space) {
                         activated = true;
                     }
@@ -8451,11 +9089,14 @@ impl WidgetTree {
         if node.layout.hidden || node.taffy_hidden_by_parent {
             return;
         }
-        let is_collapsed_accordion = matches!(
+        let is_collapsed = matches!(
             &node.kind,
             WidgetKind::Accordion { expanded, .. } if !expanded.get()
+        ) || matches!(
+            &node.kind,
+            WidgetKind::Drawer { open, .. } if !open.get()
         );
-        let child_ids: Vec<NodeId> = if is_collapsed_accordion {
+        let child_ids: Vec<NodeId> = if is_collapsed {
             Vec::new()
         } else {
             node.children

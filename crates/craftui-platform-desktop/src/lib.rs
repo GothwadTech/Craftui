@@ -421,7 +421,34 @@ impl DesktopPermissionBackend {
             | Permission::ScheduleExactAlarm
             | Permission::InstallPackages
             | Permission::Vibrate
+            | Permission::DeviceAdmin
+            | Permission::WriteSettings
+            | Permission::PackageUsageStats
+            | Permission::IgnoreBatteryOptimizations
+            | Permission::NotificationListener
+            | Permission::VpnService
             | Permission::Custom(_) => PermissionStatus::Unsupported,
+            Permission::AccessibilityService => PermissionStatus::Granted,
+            Permission::AdminPrivileges => {
+                #[cfg(target_os = "windows")]
+                {
+                    PermissionStatus::Denied
+                }
+                #[cfg(unix)]
+                {
+                    if std::env::var("USER").map(|u| u == "root").unwrap_or(false)
+                        || std::env::var("SUDO_USER").is_ok()
+                    {
+                        PermissionStatus::Granted
+                    } else {
+                        PermissionStatus::Denied
+                    }
+                }
+                #[cfg(not(any(target_os = "windows", unix)))]
+                {
+                    PermissionStatus::Denied
+                }
+            }
         }
     }
 }
@@ -468,6 +495,115 @@ impl PermissionBackend for DesktopPermissionBackend {
                 .arg("settings://privacy")
                 .spawn()
                 .is_ok()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", all(unix, not(target_os = "macos")))))]
+        {
+            false
+        }
+    }
+
+    fn open_accessibility_settings(&self) -> bool {
+        if !self.launch_os_settings || cfg!(test) || !has_unix_display() {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                .spawn()
+                .is_ok()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", "ms-settings:easeofaccess"])
+                .spawn()
+                .is_ok()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("gnome-control-center")
+                .arg("universal-access")
+                .spawn()
+                .or_else(|_| {
+                    std::process::Command::new("xdg-open")
+                        .arg("settings://accessibility")
+                        .spawn()
+                })
+                .is_ok()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", all(unix, not(target_os = "macos")))))]
+        {
+            false
+        }
+    }
+
+    fn open_admin_settings(&self) -> bool {
+        if !self.launch_os_settings || cfg!(test) || !has_unix_display() {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security")
+                .spawn()
+                .is_ok()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", "ms-settings:privacy"])
+                .spawn()
+                .is_ok()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("gnome-control-center")
+                .arg("user-accounts")
+                .spawn()
+                .is_ok()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", all(unix, not(target_os = "macos")))))]
+        {
+            false
+        }
+    }
+
+    fn is_accessibility_enabled(&self) -> bool {
+        self.check(&Permission::AccessibilityService) == PermissionStatus::Granted
+    }
+
+    fn is_admin_active(&self) -> bool {
+        self.check(&Permission::AdminPrivileges) == PermissionStatus::Granted
+    }
+
+    fn request_admin_privileges(&self) -> bool {
+        if self.is_admin_active() {
+            return true;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("osascript")
+                .args(["-e", "do shell script \"echo admin\" with administrator privileges"])
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            false
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("pkexec")
+                .args(["echo", "admin"])
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", all(unix, not(target_os = "macos")))))]
+        {
+            false
         }
     }
 }
