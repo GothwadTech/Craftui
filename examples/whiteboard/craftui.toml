@@ -1,0 +1,13 @@
+[app]
+name = "Whiteboard"
+id = "dev.craftui.whiteboard"
+version = "0.1.0"
+
+[android]
+min_sdk = 26
+target_sdk = 35
+version_code = 1
+
+[permissions]
+storage_read = "Required to import images and diagrams into the whiteboard."
+storage_write = "Required to export whiteboard canvas as PNG or SVG."

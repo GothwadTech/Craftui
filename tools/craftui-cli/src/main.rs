@@ -1808,12 +1808,15 @@ fn configure_android_ndk_env(cmd: &mut Command, ndk_root: &Path) -> Option<(Path
     let ar = bin.join("llvm-ar");
     if std::env::var_os("CC_aarch64_linux_android").is_none() {
         cmd.env("CC_aarch64_linux_android", &cc);
+        cmd.env("CC_aarch64-linux-android", &cc);
     }
     if std::env::var_os("CXX_aarch64_linux_android").is_none() {
         cmd.env("CXX_aarch64_linux_android", &cxx);
+        cmd.env("CXX_aarch64-linux-android", &cxx);
     }
     if ar.is_file() && std::env::var_os("AR_aarch64_linux_android").is_none() {
         cmd.env("AR_aarch64_linux_android", &ar);
+        cmd.env("AR_aarch64-linux-android", &ar);
     }
     if std::env::var_os("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER").is_none() {
         cmd.env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", &cc);
@@ -3269,21 +3272,22 @@ fn run_build(
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("dist").join(default_sub))
     };
-    let mut manifest_opt = load_active_manifest(Path::new("."))?;
-    if manifest_opt.is_none() {
-        if let Some(pkg) = package {
-            let candidate1 = Path::new("examples").join(pkg).join("craftui.toml");
-            let candidate2 = Path::new("examples")
-                .join(pkg.trim_start_matches("craftui-example-"))
-                .join("craftui.toml");
-            let candidate3 = Path::new("packages").join(pkg).join("craftui.toml");
-            for cand in [candidate1, candidate2, candidate3] {
-                if cand.is_file() {
-                    manifest_opt = Some(AppManifest::load_file(&cand)?);
-                    break;
-                }
+    let mut manifest_opt = None;
+    if let Some(pkg) = package {
+        let candidate1 = Path::new("examples").join(pkg).join("craftui.toml");
+        let candidate2 = Path::new("examples")
+            .join(pkg.trim_start_matches("craftui-example-"))
+            .join("craftui.toml");
+        let candidate3 = Path::new("packages").join(pkg).join("craftui.toml");
+        for cand in [candidate1, candidate2, candidate3] {
+            if cand.is_file() {
+                manifest_opt = Some(AppManifest::load_file(&cand)?);
+                break;
             }
         }
+    }
+    if manifest_opt.is_none() {
+        manifest_opt = load_active_manifest(Path::new("."))?;
     }
     let app_display = manifest_opt
         .as_ref()

@@ -464,3 +464,15 @@ mod tests {
         }
     }
 }
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub fn android_main(app: craftui::platform_android::android_activity::AndroidApp) {
+    craftui::platform_android::android_runtime::run_android_app(
+        app,
+        |cx, tree, _textures, _disp| {
+            mount_whiteboard_app(cx, tree, None)
+        },
+    );
+}
+
