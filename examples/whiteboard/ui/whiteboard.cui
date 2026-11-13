@@ -1,0 +1,397 @@
+export component WhiteboardScreen {
+    in-out property <string> active_tool: "Select";
+    in-out property <string> zoom_level: "100%";
+    in-out property <string> status_text: "5 shapes";
+    in-out property <string> mode_name: "Native CUI";
+    in-out property <bool> is_hybrid: false;
+    in-out property <bool> drawer_open: false;
+    in-out property <bool> can_undo: true;
+    in-out property <bool> can_redo: false;
+    in-out property <bool> is_dark: false;
+
+    callback on_select_tool(string);
+    callback on_pick_color(string);
+    callback on_zoom_in();
+    callback on_zoom_out();
+    callback on_zoom_reset();
+    callback on_undo();
+    callback on_redo();
+    callback on_toggle_mode();
+    callback on_toggle_theme();
+    callback on_share();
+    callback on_new_canvas();
+    callback on_export_svg();
+    callback on_export_json();
+    callback on_import_json();
+    callback on_open_admin();
+    callback on_open_accessibility();
+    callback on_open_settings();
+    callback on_toggle_drawer();
+
+    Column {
+        width: 100%;
+        height: 100%;
+        background: Theme.background;
+
+        // 1. Top Ribbon: Hamburger + Excalidraw Tool Island + Top Actions
+        Row {
+            width: 100%;
+            padding_x: 12dp;
+            padding_y: 8dp;
+            align: Center;
+            justify: SpaceBetween;
+            background: Theme.surface;
+            border_width: 1;
+            border_color: Theme.border;
+
+            // Hamburger menu button
+            Button {
+                text: "☰";
+                font_size: 18;
+                background: Theme.surface_variant;
+                foreground: Theme.text_primary;
+                border_radius: 8dp;
+                padding_x: 10dp;
+                padding_y: 6dp;
+                on_tap => { on_toggle_drawer(); }
+            }
+
+            // Excalidraw Center Tool Island
+            Row {
+                gap: 4dp;
+                align: Center;
+                background: Theme.surface_variant;
+                border_radius: 10dp;
+                padding_x: 8dp;
+                padding_y: 4dp;
+
+                Button {
+                    text: "🔒";
+                    background: Theme.surface;
+                    border_radius: 6dp;
+                }
+                Button {
+                    text: "✋ H";
+                    background: active_tool == "Hand" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Hand" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Hand"); }
+                }
+                Button {
+                    text: "↖ V";
+                    background: active_tool == "Select" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Select" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Select"); }
+                }
+                Button {
+                    text: "▭ R";
+                    background: active_tool == "Rectangle" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Rectangle" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Rectangle"); }
+                }
+                Button {
+                    text: "◇ D";
+                    background: active_tool == "Diamond" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Diamond" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Diamond"); }
+                }
+                Button {
+                    text: "◯ O";
+                    background: active_tool == "Ellipse" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Ellipse" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Ellipse"); }
+                }
+                Button {
+                    text: "➔ A";
+                    background: active_tool == "Arrow" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Arrow" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Arrow"); }
+                }
+                Button {
+                    text: "— L";
+                    background: active_tool == "Line" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Line" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Line"); }
+                }
+                Button {
+                    text: "✏ P";
+                    background: active_tool == "Pen" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Pen" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Pen"); }
+                }
+                Button {
+                    text: "T T";
+                    background: active_tool == "Text" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Text" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Text"); }
+                }
+                Button {
+                    text: "⌫ E";
+                    background: active_tool == "Eraser" ? Theme.primary_container : Theme.surface;
+                    foreground: active_tool == "Eraser" ? Theme.primary : Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_select_tool("Eraser"); }
+                }
+
+                Text {
+                    text: "|";
+                    color: Theme.border;
+                }
+
+                // Quick Color Swatches
+                Button {
+                    text: "●";
+                    foreground: Theme.text_primary;
+                    background: Theme.surface;
+                    on_tap => { on_pick_color("black"); }
+                }
+                Button {
+                    text: "●";
+                    foreground: Theme.danger;
+                    background: Theme.surface;
+                    on_tap => { on_pick_color("red"); }
+                }
+                Button {
+                    text: "●";
+                    foreground: Theme.success;
+                    background: Theme.surface;
+                    on_tap => { on_pick_color("green"); }
+                }
+                Button {
+                    text: "●";
+                    foreground: Theme.primary;
+                    background: Theme.surface;
+                    on_tap => { on_pick_color("blue"); }
+                }
+            }
+
+            // Top-Right Actions
+            Row {
+                gap: 8dp;
+                align: Center;
+
+                Button {
+                    text: mode_name;
+                    font_size: 12;
+                    background: is_hybrid ? Theme.secondary : Theme.primary;
+                    foreground: Theme.on_primary;
+                    border_radius: 14dp;
+                    padding_x: 10dp;
+                    on_tap => { on_toggle_mode(); }
+                }
+
+                Button {
+                    text: is_dark ? "☀" : "☾";
+                    font_size: 16;
+                    background: Theme.surface_variant;
+                    foreground: Theme.text_primary;
+                    border_radius: 8dp;
+                    on_tap => { on_toggle_theme(); }
+                }
+
+                Button {
+                    text: "Share ↗";
+                    font_size: 13;
+                    background: Theme.primary;
+                    foreground: Theme.on_primary;
+                    border_radius: 8dp;
+                    padding_x: 12dp;
+                    on_tap => { on_share(); }
+                }
+            }
+        }
+
+        // 2. Center Whiteboard Canvas
+        Canvas {
+            id: "whiteboard_canvas";
+            width: 100%;
+            flex_grow: 1.0;
+        }
+
+        // 3. Bottom Bar: Zoom Island + Status Island
+        Row {
+            width: 100%;
+            padding_x: 14dp;
+            padding_y: 8dp;
+            align: Center;
+            justify: SpaceBetween;
+            background: Theme.surface;
+            border_width: 1;
+            border_color: Theme.border;
+
+            // Zoom & History Island
+            Row {
+                gap: 6dp;
+                align: Center;
+                background: Theme.surface_variant;
+                border_radius: 8dp;
+                padding_x: 8dp;
+                padding_y: 4dp;
+
+                Button {
+                    text: "-";
+                    font_size: 16;
+                    background: Theme.surface;
+                    foreground: Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_zoom_out(); }
+                }
+                Button {
+                    text: zoom_level;
+                    font_size: 12;
+                    background: Theme.surface;
+                    foreground: Theme.text_primary;
+                    on_tap => { on_zoom_reset(); }
+                }
+                Button {
+                    text: "+";
+                    font_size: 16;
+                    background: Theme.surface;
+                    foreground: Theme.text_primary;
+                    border_radius: 6dp;
+                    on_tap => { on_zoom_in(); }
+                }
+
+                Text {
+                    text: "|";
+                    color: Theme.border;
+                }
+
+                Button {
+                    text: "↶";
+                    font_size: 15;
+                    background: Theme.surface;
+                    foreground: can_undo ? Theme.text_primary : Theme.text_secondary;
+                    border_radius: 6dp;
+                    on_tap => { on_undo(); }
+                }
+                Button {
+                    text: "↷";
+                    font_size: 15;
+                    background: Theme.surface;
+                    foreground: can_redo ? Theme.text_primary : Theme.text_secondary;
+                    border_radius: 6dp;
+                    on_tap => { on_redo(); }
+                }
+            }
+
+            // Status Island
+            Row {
+                gap: 8dp;
+                align: Center;
+
+                Text {
+                    text: "🛡 Sandboxed";
+                    font_size: 12;
+                    color: Theme.success;
+                }
+                Text {
+                    text: "• " + status_text;
+                    font_size: 12;
+                    color: Theme.text_secondary;
+                }
+            }
+        }
+
+        // 4. Flutter-Style Navigation Drawer
+        Drawer {
+            open <=> drawer_open;
+            width: 320dp;
+
+            Column {
+                width: 100%;
+                height: 100%;
+                background: Theme.surface;
+                padding: 16dp;
+                gap: 12dp;
+
+                Text {
+                    text: "CraftUI Whiteboard";
+                    font_size: 20;
+                    font_weight: Bold;
+                    color: Theme.text_primary;
+                }
+                Text {
+                    text: "Excalidraw-Style Vector Canvas";
+                    font_size: 12;
+                    color: Theme.text_secondary;
+                }
+
+                Card {
+                    width: 100%;
+                    padding: 8dp;
+                    gap: 4dp;
+
+                    ListTile {
+                        title: "New Canvas";
+                        subtitle: "Start fresh with a clean board";
+                        leading: "📄";
+                        on_tap => { on_new_canvas(); }
+                    }
+                    ListTile {
+                        title: "Export as SVG";
+                        subtitle: "Vector graphic to clipboard";
+                        leading: "🖼";
+                        on_tap => { on_export_svg(); }
+                    }
+                    ListTile {
+                        title: "Export as JSON";
+                        subtitle: "Whiteboard document format";
+                        leading: "💾";
+                        on_tap => { on_export_json(); }
+                    }
+                    ListTile {
+                        title: "Import from Clipboard";
+                        subtitle: "Load document JSON";
+                        leading: "📋";
+                        on_tap => { on_import_json(); }
+                    }
+                }
+
+                Card {
+                    width: 100%;
+                    padding: 8dp;
+                    gap: 4dp;
+
+                    ListTile {
+                        title: "Admin Privileges";
+                        subtitle: "Elevated platform settings";
+                        leading: "🔑";
+                        trailing: "Open";
+                        on_tap => { on_open_admin(); }
+                    }
+                    ListTile {
+                        title: "Accessibility Settings";
+                        subtitle: "System access & reader";
+                        leading: "♿";
+                        trailing: "Open";
+                        on_tap => { on_open_accessibility(); }
+                    }
+                    ListTile {
+                        title: "System App Settings";
+                        subtitle: "Manage permissions";
+                        leading: "⚙";
+                        trailing: "Open";
+                        on_tap => { on_open_settings(); }
+                    }
+                }
+
+                Button {
+                    text: "Close Menu";
+                    background: Theme.surface_variant;
+                    foreground: Theme.text_primary;
+                    border_radius: 8dp;
+                    on_tap => { drawer_open = false; }
+                }
+            }
+        }
+    }
+}

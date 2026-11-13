@@ -25,7 +25,7 @@ pub fn generate_rust(file: &CuiFile) -> String {
     let _ = writeln!(out, "#[allow(unused_imports)]");
     let _ = writeln!(
         out,
-        "use ::craftui::widgets::{{AnimatableProp, BoxStyle, Easing, ReactiveValue, ToastItem, ToastSeverity, TransitionCurve, WidgetTree}};"
+        "use ::craftui::widgets::{{AnimatableProp, BoxStyle, CardVariant, Easing, ReactiveValue, ToastItem, ToastSeverity, TransitionCurve, WidgetTree}};"
     );
     let _ = writeln!(out);
 
@@ -1270,18 +1270,22 @@ fn emit_element(
                 .unwrap_or_else(|| "ReactiveValue::Static(String::new())".into());
             let sub_rv = find_prop(el, &["subtitle"])
                 .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
-                .unwrap_or_else(|| "None".into());
+                .unwrap_or_else(|| "None::<String>".into());
             let lead_rv = find_prop(el, &["leading"])
                 .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
-                .unwrap_or_else(|| "None".into());
+                .unwrap_or_else(|| "None::<String>".into());
             let trail_rv = find_prop(el, &["trailing"])
                 .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
-                .unwrap_or_else(|| "None".into());
+                .unwrap_or_else(|| "None::<String>".into());
+            let lt_ctx = EmitCtx {
+                use_self: false,
+                ..*ctx
+            };
             let on_tap = find_handler(el, &["on_tap", "on_click", "onClick", "onTap"])
                 .map(|h| {
                     let captures = emit_signal_captures(ctx, &[]);
-                    let body = emit_handler_body(&h.body, ctx);
-                    format!("Some(move || {{ {captures} {body} }})")
+                    let body = emit_handler_body(&h.body, &lt_ctx);
+                    format!("{{ {captures} Some(move || {{ {body} }}) }}")
                 })
                 .unwrap_or_else(|| "None::<fn()>".into());
             let _ = writeln!(
@@ -1298,11 +1302,15 @@ fn emit_element(
             let icon_rv = find_prop(el, &["icon"])
                 .map(|p| format!("Some({})", expr_to_reactive_string(&p.value, ctx)))
                 .unwrap_or_else(|| "None".into());
+            let lt_ctx = EmitCtx {
+                use_self: false,
+                ..*ctx
+            };
             let on_tap = find_handler(el, &["on_tap", "on_click", "onClick", "onTap"])
                 .map(|h| {
                     let captures = emit_signal_captures(ctx, &[]);
-                    let body = emit_handler_body(&h.body, ctx);
-                    format!("Some(move || {{ {captures} {body} }})")
+                    let body = emit_handler_body(&h.body, &lt_ctx);
+                    format!("{{ {captures} Some(move || {{ {body} }}) }}")
                 })
                 .unwrap_or_else(|| "None::<fn()>".into());
             let _ = writeln!(
@@ -1338,11 +1346,15 @@ fn emit_element(
             let width = find_prop(el, &["width"])
                 .map(|p| expr_to_typed_rust(&p.value, "f32", ctx))
                 .unwrap_or_else(|| "304.0".into());
+            let dr_ctx = EmitCtx {
+                use_self: false,
+                ..*ctx
+            };
             let on_close = find_handler(el, &["on_close"])
                 .map(|h| {
                     let captures = emit_signal_captures(ctx, &[]);
-                    let body = emit_handler_body(&h.body, ctx);
-                    format!("Some(move || {{ {captures} {body} }})")
+                    let body = emit_handler_body(&h.body, &dr_ctx);
+                    format!("{{ {captures} Some(move || {{ {body} }}) }}")
                 })
                 .unwrap_or_else(|| "None::<fn()>".into());
             let _ = writeln!(
@@ -2217,8 +2229,8 @@ fn emit_common_props_and_events(
         let _ = writeln!(out, "{indent}{tr}.set_disabled({var}, {drv});");
     }
 
-    // 7. Gesture & pointer handlers supported on all nodes (skip Button's primary on_tap unless subcomponent)
-    if (is_subcomponent || (el.kind != "Button" && el.kind != "button"))
+    // 7. Gesture & pointer handlers supported on all nodes (skip Button's and ListTile's primary on_tap unless subcomponent)
+    if (is_subcomponent || (el.kind != "Button" && el.kind != "button" && el.kind != "ListTile" && el.kind != "list_tile"))
         && let Some(h) = find_handler(el, &["on_tap", "on_click"])
         && (!is_subcomponent
             || !ctx
