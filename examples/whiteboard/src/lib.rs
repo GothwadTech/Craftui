@@ -226,6 +226,35 @@ pub fn mount_whiteboard_app(
         d_sig5.set(!d_sig5.get());
     });
 
+    // 14. Tool Lock Toggle
+    let ctrl_lock = ctrl.clone();
+    let lock_sig = screen.tool_locked;
+    screen.set_on_toggle_lock(move || {
+        let next = !lock_sig.get();
+        lock_sig.set(next);
+        ctrl_lock.tool_locked.set(next);
+    });
+
+    // 15. Reactive sync of active tool back to UI
+    let at_sig2 = screen.active_tool;
+    let ctrl_t_sig = ctrl.tool;
+    cx.effect(move || {
+        let t = ctrl_t_sig.get();
+        let name = match t {
+            Tool::Hand => "Hand",
+            Tool::Select => "Select",
+            Tool::Rectangle => "Rectangle",
+            Tool::Diamond => "Diamond",
+            Tool::Ellipse => "Ellipse",
+            Tool::Arrow => "Arrow",
+            Tool::Line => "Line",
+            Tool::Pen => "Pen",
+            Tool::Text => "Text",
+            Tool::Eraser => "Eraser",
+        };
+        at_sig2.set(name.to_string());
+    });
+
     // Build the complete widget tree from the compiled .cui component!
     let root = screen.build(cx, tree);
 

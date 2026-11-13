@@ -14,37 +14,99 @@ pub const WHITEBOARD_HTML: &str = r#"<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>CraftUI Hybrid Whiteboard</title>
+<title>CraftUI Excalidraw</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
-  body, html { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #fafafa; }
+  body, html { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #ffffff; }
   #app { position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; }
+  
+  /* Top-Left Hamburger */
+  #hamburger {
+    position: absolute; top: 14px; left: 14px; width: 40px; height: 40px;
+    background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center; font-size: 18px;
+    cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.06); z-index: 100;
+  }
+  
+  /* Top Floating Island */
   #toolbar {
     position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-    display: flex; gap: 4px; padding: 4px 8px; background: #ffffff;
-    border: 1px solid #e0e0e0; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-    z-index: 100;
+    display: flex; gap: 2px; padding: 4px 6px; background: #ffffff;
+    border: 1px solid #e0e0e0; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    z-index: 100; align-items: center;
   }
   .tool-btn {
-    width: 38px; height: 38px; border: none; border-radius: 8px; background: transparent;
-    font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
-    color: #333333; transition: all 0.15s ease;
+    width: 36px; height: 36px; border: none; border-radius: 8px; background: transparent;
+    font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    color: #333333; transition: all 0.12s ease;
   }
-  .tool-btn:hover { background: #f0f0f5; }
+  .tool-btn:hover { background: #f1f1f5; }
   .tool-btn.active { background: #e0dfff; color: #4338ca; font-weight: bold; }
-  #canvas { width: 100%; height: 100%; display: block; touch-action: none; }
-  #status-bar {
-    position: absolute; bottom: 12px; left: 16px; display: flex; gap: 8px;
-    background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;
-    padding: 6px 12px; font-size: 12px; color: #555555; box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  .divider { width: 1px; height: 20px; background: #e0e0e0; margin: 0 4px; }
+  
+  /* Hint banner below top island */
+  #hint-banner {
+    position: absolute; top: 62px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 4px; font-size: 12px; color: #868e96;
+    z-index: 90; pointer-events: none;
+  }
+  .key-badge {
+    background: #ffffff; border: 1px solid #ced4da; border-radius: 4px;
+    padding: 1px 5px; font-size: 11px; color: #495057;
+  }
+
+  /* Top-Right Actions */
+  #top-right {
+    position: absolute; top: 14px; right: 14px; display: flex; gap: 10px; align-items: center;
     z-index: 100;
   }
-  .badge { background: #eef2ff; color: #4f46e5; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+  .try-plus-btn {
+    padding: 8px 12px; background: #f5f3ff; border: 1px solid #c7d2fe; border-radius: 10px;
+    color: #4f46e5; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; gap: 6px; align-items: center;
+  }
+  .share-btn {
+    padding: 8px 14px; background: #4f46e5; border: none; border-radius: 8px;
+    color: #ffffff; font-size: 13px; font-weight: 500; cursor: pointer; display: flex; gap: 6px; align-items: center;
+  }
+  
+  /* Canvas */
+  #canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+  
+  /* Bottom-Left Zoom & Undo/Redo */
+  #bottom-left {
+    position: absolute; bottom: 16px; left: 16px; display: flex; gap: 8px; z-index: 100;
+  }
+  .island-pill {
+    background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;
+    padding: 4px 6px; display: flex; gap: 4px; align-items: center; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .pill-btn {
+    border: none; background: transparent; font-size: 12px; color: #333333;
+    padding: 4px 6px; border-radius: 4px; cursor: pointer;
+  }
+  .pill-btn:hover { background: #f0f0f5; }
+
+  /* Bottom-Right Badges */
+  #bottom-right {
+    position: absolute; bottom: 16px; right: 16px; display: flex; gap: 10px; align-items: center;
+    z-index: 100;
+  }
+  .round-btn {
+    width: 32px; height: 32px; background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
 </style>
 </head>
 <body>
 <div id="app">
+  <!-- Top-Left Hamburger -->
+  <button id="hamburger" title="Menu">☰</button>
+
+  <!-- Top-Center Floating Island -->
   <div id="toolbar">
+    <button class="tool-btn" data-tool="lock" title="Lock Tool">🔓</button>
+    <button class="tool-btn" data-tool="hand" title="Hand (H)">✋</button>
     <button class="tool-btn active" data-tool="select" title="Selection (V)">↖</button>
     <button class="tool-btn" data-tool="rectangle" title="Rectangle (R)">▭</button>
     <button class="tool-btn" data-tool="diamond" title="Diamond (D)">◇</button>
@@ -52,15 +114,43 @@ pub const WHITEBOARD_HTML: &str = r#"<!DOCTYPE html>
     <button class="tool-btn" data-tool="arrow" title="Arrow (A)">➔</button>
     <button class="tool-btn" data-tool="line" title="Line (L)">—</button>
     <button class="tool-btn" data-tool="pen" title="Draw (P)">✏</button>
-    <button class="tool-btn" data-tool="clear" title="Clear Canvas" style="color:#dc2626;">⌫</button>
+    <button class="tool-btn" data-tool="text" title="Text (T)">A</button>
+    <button class="tool-btn" data-tool="card" title="Card (9)">▤</button>
+    <button class="tool-btn" data-tool="eraser" title="Eraser (E)">⌫</button>
+    <div class="divider"></div>
+    <button class="tool-btn" data-tool="more" title="More Tools">⋮</button>
   </div>
 
+  <!-- Hint banner -->
+  <div id="hint-banner">
+    To move canvas, hold <span class="key-badge">Scroll wheel</span> or <span class="key-badge">Space</span> while dragging, or use the hand tool
+  </div>
+
+  <!-- Top-Right Actions -->
+  <div id="top-right">
+    <button class="try-plus-btn">🎁 Try Excalidraw+</button>
+    <button class="share-btn">↗ Share</button>
+  </div>
+
+  <!-- Fullscreen Infinite Canvas -->
   <canvas id="canvas"></canvas>
 
-  <div id="status-bar">
-    <span class="badge">Hybrid WebView Mode</span>
-    <span id="elem-count">5 elements</span>
-    <span>• Powered by CraftUI Rust Bridge</span>
+  <!-- Bottom-Left Zoom & Undo/Redo -->
+  <div id="bottom-left">
+    <div class="island-pill">
+      <button class="pill-btn" id="zoom-lbl">100%</button>
+      <button class="pill-btn">🗺</button>
+    </div>
+    <div class="island-pill">
+      <button class="pill-btn" id="btn-undo">↶</button>
+      <button class="pill-btn" id="btn-redo">↷</button>
+    </div>
+  </div>
+
+  <!-- Bottom-Right Badges -->
+  <div id="bottom-right">
+    <div class="round-btn" title="Security" style="color:#4f46e5;">🛡</div>
+    <div class="round-btn" title="Help" style="font-weight:bold; color:#666;">?</div>
   </div>
 </div>
 

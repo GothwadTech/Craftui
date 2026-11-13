@@ -27,6 +27,7 @@ pub struct WhiteboardController {
     pub stroke_width: Signal<f32>,
     pub view: Signal<ViewTransform>,
     pub selected_id: Signal<Option<u64>>,
+    pub tool_locked: Signal<bool>,
     pub history: Rc<RefCell<HistoryManager>>,
     next_id: Rc<Cell<u64>>,
     interaction: Rc<RefCell<InteractionState>>,
@@ -40,6 +41,7 @@ impl WhiteboardController {
         let stroke_width = cx.signal(2.5);
         let view = cx.signal(ViewTransform::default());
         let selected_id = cx.signal(None);
+        let tool_locked = cx.signal(false);
 
         let mut history_mgr = HistoryManager::default();
         history_mgr.push(elements.get());
@@ -51,74 +53,26 @@ impl WhiteboardController {
             stroke_width,
             view,
             selected_id,
+            tool_locked,
             history: Rc::new(RefCell::new(history_mgr)),
             next_id: Rc::new(Cell::new(100)),
             interaction: Rc::new(RefCell::new(InteractionState::Idle)),
         }
     }
 
-    /// Starter sample matching user screenshot (hand-drawn arrow + architecture nodes).
+    /// Starter sample matching user screenshot (single hand-drawn arrow).
     fn sample_elements() -> Vec<WhiteboardElement> {
         vec![
             // The prominent arrow pointing right from the user screenshot!
             WhiteboardElement::new(
                 1,
-                Point::new(480.0, 240.0),
+                Point::new(560.0, 240.0),
                 ElementKind::Arrow {
-                    end: Point::new(600.0, 250.0),
+                    end: Point::new(595.0, 246.0),
                 },
                 Color::rgb(30, 30, 30),
                 None,
-                3.0,
-            ),
-            // Rectangle block
-            WhiteboardElement::new(
-                2,
-                Point::new(160.0, 190.0),
-                ElementKind::Rectangle {
-                    width: 220.0,
-                    height: 110.0,
-                    roundness: 0.0,
-                },
-                Color::rgb(30, 30, 30),
-                Some(Color::rgba(180, 200, 255, 40)),
                 2.5,
-            ),
-            // Text inside rectangle
-            WhiteboardElement::new(
-                3,
-                Point::new(195.0, 235.0),
-                ElementKind::Text {
-                    content: "CraftUI Canvas".to_string(),
-                    font_size: 20.0,
-                },
-                Color::rgb(25, 113, 194),
-                None,
-                1.0,
-            ),
-            // Diamond decision
-            WhiteboardElement::new(
-                4,
-                Point::new(690.0, 180.0),
-                ElementKind::Diamond {
-                    width: 170.0,
-                    height: 130.0,
-                },
-                Color::rgb(47, 158, 68),
-                Some(Color::rgba(211, 249, 216, 50)),
-                2.5,
-            ),
-            // Text inside diamond
-            WhiteboardElement::new(
-                5,
-                Point::new(725.0, 238.0),
-                ElementKind::Text {
-                    content: "Multi-Platform".to_string(),
-                    font_size: 16.0,
-                },
-                Color::rgb(47, 158, 68),
-                None,
-                1.0,
             ),
         ]
     }
@@ -634,6 +588,9 @@ pub fn handle_pointer(_bounds: Rect, event: &PointerEvent, ctrl: &WhiteboardCont
                         current.push(draft);
                         ctrl.elements.set(current);
                         ctrl.selected_id.set(Some(draft_id));
+                        if !ctrl.tool_locked.get() {
+                            ctrl.tool.set(Tool::Select);
+                        }
                     }
                 }
                 InteractionState::DraggingElement { .. } | InteractionState::Erasing => {

@@ -1725,6 +1725,23 @@ fn layout_stmt_for_prop(p: &PropBinding, ctx: &EmitCtx<'_>, tracked: bool) -> Op
             expr_to_align(&p.value, eval_ctx, tracked)
         )),
         "clip" => Some(format!("ls.clip_overflow = {};", b(&p.value))),
+        "top" => {
+            let v = f(&p.value);
+            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.top = {v};"))
+        }
+        "bottom" => {
+            let v = f(&p.value);
+            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.bottom = {v};"))
+        }
+        "left" => {
+            let v = f(&p.value);
+            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.left = {v};"))
+        }
+        "right" => {
+            let v = f(&p.value);
+            Some(format!("ls.absolute = true; ls.use_inset = true; ls.inset.right = {v};"))
+        }
+        "absolute" => Some(format!("ls.absolute = {};", b(&p.value))),
         _ => None,
     }
 }
