@@ -482,6 +482,14 @@ fn emit_element(
             }
         }
         let _ = writeln!(out, "{indent}    let __sub_node = __sub.build({cx}, {tr});");
+        emit_children(
+            out,
+            "__sub_node",
+            el,
+            counter,
+            &format!("{indent}    "),
+            ctx,
+        );
         emit_common_props_and_events(out, "__sub_node", el, &format!("{indent}    "), ctx, true);
         let _ = writeln!(out, "{indent}    __sub_node");
         let _ = writeln!(out, "{indent}}};");
@@ -2977,6 +2985,13 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
         }
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    return ctx
+                        .prop_types
+                        .get(field.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| "String".into());
+                }
                 if root == "Theme" {
                     if field == "mode" {
                         return "ThemeMode".into();
@@ -3077,14 +3092,27 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                 infer_expr_type(else_expr, ctx)
             }
         }
-        Expr::MethodCall(base, m, _) => match m.as_str() {
-            "len" => "usize".into(),
-            "is_empty" | "contains" | "starts_with" | "ends_with" => "bool".into(),
-            "to_lowercase" | "to_uppercase" | "trim" => "String".into(),
-            _ => infer_expr_type(base, ctx),
-        },
+        Expr::MethodCall(base, m, _) => {
+            if let Expr::Ident(root) = base.as_ref() {
+                if root == "Math" {
+                    return "f32".into();
+                }
+            }
+            match m.as_str() {
+                "len" => "usize".into(),
+                "is_empty" | "contains" | "starts_with" | "ends_with" => "bool".into(),
+                "to_lowercase" | "to_uppercase" | "trim" => "String".into(),
+                "sin" | "cos" | "tan" | "sqrt" | "abs" | "round" | "floor" | "ceil" | "min"
+                | "max" | "clamp" | "pow" => "f32".into(),
+                _ => infer_expr_type(base, ctx),
+            }
+        }
         Expr::Call(name, args) => match name.as_str() {
             "rgb" | "rgba" => "Color".into(),
+            "@linear-gradient" | "linear_gradient" | "@radial-gradient" | "radial_gradient" => {
+                "Brush".into()
+            }
+            "sin" | "cos" | "tan" | "sqrt" | "pow" => "f32".into(),
             "Some" => args
                 .first()
                 .map(|a| format!("Option<{}>", infer_expr_type(a, ctx)))
@@ -3101,7 +3129,12 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
 fn expr_has_reactive_props(expr: &Expr, ctx: &EmitCtx<'_>) -> bool {
     match expr {
         Expr::Ident(id) => ctx.signal_type(id.as_str()).is_some(),
-        Expr::Member(base, _) => {
+        Expr::Member(base, field) => {
+            if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    return ctx.signal_type(field.as_str()).is_some();
+                }
+            }
             matches!(base.as_ref(), Expr::Ident(s) if s == "Theme")
                 || expr_has_reactive_props(base, ctx)
         }
@@ -3196,6 +3229,13 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
         }
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    return ctx
+                        .prop_types
+                        .get(field.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| "String".into());
+                }
                 if root == "Theme" {
                     return theme_token_expr_tracked(field, ty, tracked);
                 }
@@ -3204,6 +3244,19 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                 }
                 if root == "ToastSeverity" {
                     return format!("ToastSeverity::{field}");
+                }
+                if root == "Math" {
+                    let const_val = match field.as_str() {
+                        "PI" => "std::f32::consts::PI",
+                        "E" => "std::f32::consts::E",
+                        "LN2" => "std::f32::consts::LN_2",
+                        "LN10" => "std::f32::consts::LN_10",
+                        "LOG2E" => "std::f32::consts::LOG2_E",
+                        "LOG10E" => "std::f32::consts::LOG10_E",
+                        "SQRT2" => "std::f32::consts::SQRT_2",
+                        _ => "0.0",
+                    };
+                    return cast_expr_var(const_val, "f32", ty);
                 }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return format!("{root}::{field}");
@@ -3324,6 +3377,15 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                 let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
                 cast_expr_var(&format!("({x}).{name}()"), "f32", ty)
             }
+            "sin" | "cos" | "tan" | "sqrt" if args.len() == 1 => {
+                let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                cast_expr_var(&format!("({x}).{name}()"), "f32", ty)
+            }
+            "pow" if args.len() == 2 => {
+                let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                let p = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                cast_expr_var(&format!("({x}).powf({p})"), "f32", ty)
+            }
             "rgb" if args.len() == 3 => {
                 let r = expr_to_typed_rust_inner(&args[0], "i32", ctx, tracked);
                 let g = expr_to_typed_rust_inner(&args[1], "i32", ctx, tracked);
@@ -3351,6 +3413,41 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
             _ => "Default::default()".into(),
         },
         Expr::MethodCall(recv, method, args) => {
+            if let Expr::Ident(id) = recv.as_ref() {
+                if id == "Math" {
+                    match method.as_str() {
+                        "sin" | "cos" | "tan" | "sqrt" if args.len() == 1 => {
+                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                            return cast_expr_var(&format!("({x}).{method}()"), "f32", ty);
+                        }
+                        "abs" if args.len() == 1 => {
+                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                            return cast_expr_var(&format!("({x}).abs()"), "f32", ty);
+                        }
+                        "round" | "floor" | "ceil" if args.len() == 1 => {
+                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                            return cast_expr_var(&format!("({x}).{method}()"), "f32", ty);
+                        }
+                        "min" | "max" if args.len() == 2 => {
+                            let a = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                            let b = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                            return cast_expr_var(&format!("({a}).{method}({b})"), "f32", ty);
+                        }
+                        "pow" if args.len() == 2 => {
+                            let a = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                            let b = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                            return cast_expr_var(&format!("({a}).powf({b})"), "f32", ty);
+                        }
+                        "clamp" if args.len() == 3 => {
+                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                            let lo = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                            let hi = expr_to_typed_rust_inner(&args[2], "f32", ctx, tracked);
+                            return cast_expr_var(&format!("({x}).clamp({lo}, {hi})"), "f32", ty);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let rty = infer_expr_type(recv, ctx);
             let rc = expr_to_typed_rust_inner(recv, &rty, ctx, tracked);
             match method.as_str() {
@@ -3377,6 +3474,25 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                 }
                 "trim" if args.is_empty() => {
                     cast_expr_var(&format!("{rc}.trim().to_string()"), "String", ty)
+                }
+                "sin" | "cos" | "tan" | "sqrt" if args.is_empty() => {
+                    cast_expr_var(&format!("({rc}).{method}()"), "f32", ty)
+                }
+                "abs" | "round" | "floor" | "ceil" if args.is_empty() => {
+                    cast_expr_var(&format!("({rc}).{method}()"), "f32", ty)
+                }
+                "min" | "max" if args.len() == 1 => {
+                    let other = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                    cast_expr_var(&format!("({rc}).{method}({other})"), "f32", ty)
+                }
+                "pow" if args.len() == 1 => {
+                    let other = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                    cast_expr_var(&format!("({rc}).powf({other})"), "f32", ty)
+                }
+                "clamp" if args.len() == 2 => {
+                    let lo = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                    let hi = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                    cast_expr_var(&format!("({rc}).clamp({lo}, {hi})"), "f32", ty)
                 }
                 _ => "Default::default()".into(),
             }
@@ -3684,8 +3800,94 @@ fn expr_to_reactive_color(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
     }
 }
 
+fn is_gradient_call(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Call(name, _) if matches!(
+            name.as_str(),
+            "@linear-gradient" | "linear_gradient" | "@radial-gradient" | "radial_gradient"
+        )
+    )
+}
+
+fn emit_gradient_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
+    if let Expr::Call(name, args) = expr {
+        let is_reactive = expr_has_reactive_props(expr, ctx);
+        let cap_ctx = EmitCtx {
+            use_self: false,
+            ..*ctx
+        };
+        let eval_ctx = if is_reactive { &cap_ctx } else { ctx };
+        let captures = if is_reactive {
+            emit_signal_captures(ctx, &[])
+        } else {
+            String::new()
+        };
+
+        if matches!(name.as_str(), "@linear-gradient" | "linear_gradient") && args.len() >= 2 {
+            let angle_code = expr_to_typed_rust_inner(&args[0], "f32", eval_ctx, is_reactive);
+            let color_args = &args[1..];
+            let n = color_args.len();
+            let mut stops_code = Vec::new();
+            for (i, a) in color_args.iter().enumerate() {
+                let offset = if n > 1 {
+                    i as f32 / (n - 1) as f32
+                } else {
+                    0.0
+                };
+                let c_code = expr_to_typed_rust_inner(a, "Color", eval_ctx, is_reactive);
+                stops_code.push(format!(
+                    "ColorStop {{ offset: {offset:.3}, color: {c_code} }}"
+                ));
+            }
+            let stops_body = format!("vec![{}]", stops_code.join(", "));
+            let inner = format!(
+                "{{ let __ang = (({angle_code}) as f32 - 90.0).to_radians(); let __dx = __ang.cos(); let __dy = __ang.sin(); Brush::LinearGradient {{ start: Point::new(0.5 - 0.5 * __dx, 0.5 - 0.5 * __dy), end: Point::new(0.5 + 0.5 * __dx, 0.5 + 0.5 * __dy), stops: {stops_body} }} }}"
+            );
+            if is_reactive {
+                return format!(
+                    "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {inner})) }}"
+                );
+            } else {
+                return format!("ReactiveValue::Static({inner})");
+            }
+        } else if matches!(name.as_str(), "@radial-gradient" | "radial_gradient") && args.len() >= 2
+        {
+            let rad_code = expr_to_typed_rust_inner(&args[0], "f32", eval_ctx, is_reactive);
+            let color_args = &args[1..];
+            let n = color_args.len();
+            let mut stops_code = Vec::new();
+            for (i, a) in color_args.iter().enumerate() {
+                let offset = if n > 1 {
+                    i as f32 / (n - 1) as f32
+                } else {
+                    0.0
+                };
+                let c_code = expr_to_typed_rust_inner(a, "Color", eval_ctx, is_reactive);
+                stops_code.push(format!(
+                    "ColorStop {{ offset: {offset:.3}, color: {c_code} }}"
+                ));
+            }
+            let stops_body = format!("vec![{}]", stops_code.join(", "));
+            let inner = format!(
+                "Brush::RadialGradient {{ center: Point::new(0.5, 0.5), radius: ({rad_code}) as f32, stops: {stops_body} }}"
+            );
+            if is_reactive {
+                return format!(
+                    "{{ {captures} ReactiveValue::Dynamic(std::rc::Rc::new(move || {inner})) }}"
+                );
+            } else {
+                return format!("ReactiveValue::Static({inner})");
+            }
+        }
+    }
+    format!("ReactiveValue::Static(Brush::Solid(Color::TRANSPARENT))")
+}
+
 fn expr_to_reactive_brush(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
-    if expr_is_theme_color(expr) || expr_has_reactive_props(expr, ctx) {
+    if is_gradient_call(expr) {
+        emit_gradient_brush(expr, ctx)
+    } else if expr_is_theme_color(expr) || expr_has_reactive_props(expr, ctx) {
         let captures = emit_signal_captures(ctx, &[]);
         let body = expr_to_typed_rust_captured(expr, "Color", ctx);
         format!(
@@ -3944,6 +4146,7 @@ fn expr_to_len(expr: &Expr, ctx: &EmitCtx<'_>, tracked: bool) -> String {
         Expr::Length(v, Unit::Dp) => format!("Length::Dp({v:.2})"),
         Expr::Length(v, Unit::Px) => format!("Length::Px({v:.2})"),
         Expr::Length(v, Unit::Pct) => format!("Length::Pct({v:.2})"),
+        Expr::Length(v, Unit::Deg | Unit::Rad) => format!("Length::Dp({v:.2})"),
         Expr::Int(v) => format!("Length::Dp({v}.0)"),
         Expr::Float(v) => format!("Length::Dp({v:.2})"),
         Expr::Ident(s) if s == "Auto" => "Length::Auto".into(),

@@ -707,12 +707,6 @@ fn validate_element(el: &ElementNode, ctx: &ScopeCtx<'_>, diags: &mut Vec<Diagno
                 severity: Severity::Error,
                 message: format!("leaf widget '{}' cannot contain child elements", el.kind),
             });
-        } else if !is_builtin {
-            diags.push(Diagnostic {
-                span: el.span,
-                severity: Severity::Error,
-                message: format!("component '{}' does not accept child elements", el.kind),
-            });
         }
     }
 
@@ -1342,6 +1336,12 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
             .or_else(|| ctx.comp_props.get(id.as_str()).map(|(t, _)| (*t).clone())),
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    return ctx
+                        .comp_props
+                        .get(field.as_str())
+                        .map(|(t, _)| (*t).clone());
+                }
                 if root == "Theme" {
                     return Some(TypeExpr::Named("color".into()));
                 }
@@ -1420,16 +1420,34 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
             else_expr,
             ..
         } => infer_expr_type(then_expr, ctx).or_else(|| infer_expr_type(else_expr, ctx)),
-        Expr::MethodCall(_, m, _) => match m.as_str() {
-            "len" => Some(TypeExpr::Named("uint".into())),
-            "is_empty" | "contains" | "starts_with" | "ends_with" => {
-                Some(TypeExpr::Named("bool".into()))
+        Expr::MethodCall(recv, m, _) => {
+            if let Expr::Ident(root) = recv.as_ref() {
+                if root == "Math" {
+                    return match m.as_str() {
+                        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sqrt" | "abs"
+                        | "round" | "floor" | "ceil" | "min" | "max" | "clamp" | "pow"
+                        | "atan2" => Some(TypeExpr::Named("float".into())),
+                        _ => None,
+                    };
+                }
             }
-            "to_lowercase" | "to_uppercase" | "trim" => Some(TypeExpr::Named("string".into())),
-            _ => None,
-        },
+            match m.as_str() {
+                "len" => Some(TypeExpr::Named("uint".into())),
+                "is_empty" | "contains" | "starts_with" | "ends_with" => {
+                    Some(TypeExpr::Named("bool".into()))
+                }
+                "to_lowercase" | "to_uppercase" | "trim" => Some(TypeExpr::Named("string".into())),
+                "sin" | "cos" | "tan" | "sqrt" | "abs" | "round" | "floor" | "ceil" | "min"
+                | "max" | "clamp" | "pow" => Some(TypeExpr::Named("float".into())),
+                _ => None,
+            }
+        }
         Expr::Call(name, args) => match name.as_str() {
             "rgb" | "rgba" => Some(TypeExpr::Named("color".into())),
+            "@linear-gradient" | "linear_gradient" | "@radial-gradient" | "radial_gradient" => {
+                Some(TypeExpr::Named("brush".into()))
+            }
+            "sin" | "cos" | "tan" | "sqrt" | "pow" => Some(TypeExpr::Named("float".into())),
             "abs" | "round" | "floor" | "ceil" | "min" | "max" | "clamp" => {
                 args.first().and_then(|a| infer_expr_type(a, ctx))
             }
@@ -1456,7 +1474,12 @@ fn validate_expr(
             }
         }
         Expr::Ident(id) => {
-            if id == "Theme" || id == "ThemeMode" || id == "ToastSeverity" || id == "SafeArea" {
+            if id == "Theme"
+                || id == "ThemeMode"
+                || id == "ToastSeverity"
+                || id == "SafeArea"
+                || id == "Math"
+            {
                 diags.push(Diagnostic {
                     span,
                     severity: Severity::Error,
@@ -1478,6 +1501,16 @@ fn validate_expr(
         }
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    if !ctx.comp_props.contains_key(field.as_str()) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown property '{field}' on 'root'"),
+                        });
+                    }
+                    return;
+                }
                 if root == "Theme" {
                     return;
                 }
@@ -1508,6 +1541,31 @@ fn validate_expr(
                             severity: Severity::Error,
                             message: format!(
                                 "unknown SafeArea member '{field}' (expected 'insets')"
+                            ),
+                        });
+                    }
+                    return;
+                }
+                if root == "root" {
+                    if !ctx.comp_props.contains_key(field.as_str()) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!("unknown property '{field}' on 'root'"),
+                        });
+                    }
+                    return;
+                }
+                if root == "Math" {
+                    if !matches!(
+                        field.as_str(),
+                        "PI" | "E" | "LN2" | "LN10" | "LOG2E" | "LOG10E" | "SQRT2" | "SQRT1_2"
+                    ) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!(
+                                "unknown Math constant '{field}' (expected PI, E, LN2, etc.)"
                             ),
                         });
                     }
@@ -1614,10 +1672,15 @@ fn validate_expr(
         Expr::Call(name, args) => {
             let valid_builtin = match name.as_str() {
                 "Some" => args.len() == 1,
-                "min" | "max" => args.len() == 2,
+                "min" | "max" | "pow" => args.len() == 2,
                 "clamp" | "rgb" => args.len() == 3,
                 "rgba" => args.len() == 4,
-                "abs" | "round" | "floor" | "ceil" => args.len() == 1,
+                "abs" | "round" | "floor" | "ceil" | "sin" | "cos" | "tan" | "sqrt" => {
+                    args.len() == 1
+                }
+                "@linear-gradient" | "linear_gradient" | "@radial-gradient" | "radial_gradient" => {
+                    args.len() >= 2
+                }
                 _ => false,
             };
             if !valid_builtin {
@@ -1636,10 +1699,41 @@ fn validate_expr(
             }
         }
         Expr::MethodCall(recv, method, args) => {
+            if let Expr::Ident(root) = recv.as_ref() {
+                if root == "Math" {
+                    let known_math = match method.as_str() {
+                        "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sqrt" | "abs"
+                        | "round" | "floor" | "ceil" => args.len() == 1,
+                        "min" | "max" | "pow" | "atan2" => args.len() == 2,
+                        "clamp" => args.len() == 3,
+                        _ => false,
+                    };
+                    if !known_math {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!(
+                                "unknown or invalid Math function 'Math.{}({} args)'",
+                                method,
+                                args.len()
+                            ),
+                        });
+                    }
+                    for a in args {
+                        validate_expr(a, None, span, ctx, diags);
+                    }
+                    return;
+                }
+            }
             validate_expr(recv, None, span, ctx, diags);
             let known_ok = match method.as_str() {
                 "len" | "is_empty" | "to_lowercase" | "to_uppercase" | "trim" => args.is_empty(),
                 "contains" | "starts_with" | "ends_with" => args.len() == 1,
+                "sin" | "cos" | "tan" | "sqrt" | "abs" | "round" | "floor" | "ceil" => {
+                    args.is_empty()
+                }
+                "min" | "max" | "pow" => args.len() == 1,
+                "clamp" => args.len() == 2,
                 _ => false,
             };
             if !known_ok {

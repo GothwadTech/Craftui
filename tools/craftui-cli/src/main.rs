@@ -1,4 +1,5 @@
 mod manifest;
+mod remote_server;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use craftui_core::{CraftError, Permission, Result, Size, WindowMetrics};
@@ -18,7 +19,7 @@ use std::io::{Read, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -129,6 +130,22 @@ enum Commands {
         device: bool,
         #[arg(long, help = "Enable element inspection overlay")]
         inspector: bool,
+        #[arg(
+            long,
+            help = "Broadcast live preview to connected Android devices over TCP/ADB"
+        )]
+        remote: bool,
+        #[arg(
+            long,
+            default_value_t = 9876,
+            help = "TCP port for remote live preview server (default: 9876)"
+        )]
+        remote_port: u16,
+        #[arg(
+            long,
+            help = "Run remote live preview server headlessly without opening desktop window"
+        )]
+        no_desktop: bool,
     },
     /// Parse, validate, and optionally emit AOT Rust code for .cui files
     Check {
@@ -234,19 +251,74 @@ fn run() -> Result<()> {
             cpu,
             device,
             inspector,
-        } => craftui_platform_desktop::run_live_preview_cui(
-            craftui_platform_desktop::WindowConfig {
-                title: format!("CraftUI Live Preview — {}", file.display()),
-                force_cpu: cpu,
-                width: if device { 460.0 } else { 800.0 },
-                height: if device { 960.0 } else { 600.0 },
-                ..Default::default()
-            },
-            file,
-            component,
-            device,
-            inspector,
-        ),
+            remote,
+            remote_port,
+            no_desktop,
+        } => {
+            let _remote_srv = if remote {
+                let srv = Arc::new(remote_server::RemotePreviewServer::start(remote_port));
+                srv.broadcast_file(&file, component.as_deref());
+
+                let watch_target = file
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."));
+
+                let s_clone = srv.clone();
+                let f_clone = file.clone();
+                let c_clone = component.clone();
+
+                std::thread::Builder::new()
+                    .name("craftui-remote-watcher".into())
+                    .spawn(move || {
+                        let (tx, rx) = mpsc::channel();
+                        if let Ok(mut watcher) = notify::recommended_watcher(tx) {
+                            let _ = watcher.watch(&watch_target, RecursiveMode::Recursive);
+                            for event in rx.into_iter().flatten() {
+                                let touches = event
+                                    .paths
+                                    .iter()
+                                    .any(|p| p.extension().and_then(|e| e.to_str()) == Some("cui"));
+                                if touches {
+                                    s_clone.broadcast_file(&f_clone, c_clone.as_deref());
+                                }
+                            }
+                        }
+                    })
+                    .ok();
+
+                Some(srv)
+            } else {
+                None
+            };
+
+            if no_desktop {
+                if !remote {
+                    return Err(CraftError::Platform(
+                        "--no-desktop flag requires --remote to be passed".into(),
+                    ));
+                }
+                println!("[craftui-remote] Running headlessly. Press Ctrl+C to stop.");
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            } else {
+                craftui_platform_desktop::run_live_preview_cui(
+                    craftui_platform_desktop::WindowConfig {
+                        title: format!("CraftUI Live Preview — {}", file.display()),
+                        force_cpu: cpu,
+                        width: if device { 460.0 } else { 800.0 },
+                        height: if device { 960.0 } else { 600.0 },
+                        ..Default::default()
+                    },
+                    file,
+                    component,
+                    device,
+                    inspector,
+                )
+            }
+        }
         Commands::Check { path, emit_rust } => {
             let stats = check_cui_paths(&path, emit_rust)?;
             println!(

@@ -87,7 +87,44 @@ fn fold_stmt(stmt: &mut Stmt) {
 pub fn fold_expr(expr: &mut Expr) {
     // 1. Recurse down sub-expressions first
     match expr {
-        Expr::Member(base, _) => fold_expr(base),
+        Expr::Member(base, field) => {
+            fold_expr(base);
+            if let Expr::Ident(id) = base.as_ref() {
+                if id == "Math" {
+                    match field.as_str() {
+                        "PI" => {
+                            *expr = Expr::Float(std::f64::consts::PI);
+                            return;
+                        }
+                        "E" => {
+                            *expr = Expr::Float(std::f64::consts::E);
+                            return;
+                        }
+                        "LN2" => {
+                            *expr = Expr::Float(std::f64::consts::LN_2);
+                            return;
+                        }
+                        "LN10" => {
+                            *expr = Expr::Float(std::f64::consts::LN_10);
+                            return;
+                        }
+                        "LOG2E" => {
+                            *expr = Expr::Float(std::f64::consts::LOG2_E);
+                            return;
+                        }
+                        "LOG10E" => {
+                            *expr = Expr::Float(std::f64::consts::LOG10_E);
+                            return;
+                        }
+                        "SQRT2" => {
+                            *expr = Expr::Float(std::f64::consts::SQRT_2);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         Expr::Index(base, idx) => {
             fold_expr(base);
             fold_expr(idx);
@@ -106,15 +143,92 @@ pub fn fold_expr(expr: &mut Expr) {
                 fold_expr(item);
             }
         }
-        Expr::Call(_, args) => {
-            for arg in args {
+        Expr::Call(name, args) => {
+            for arg in args.iter_mut() {
                 fold_expr(arg);
             }
+            if let Some(folded) = fold_math_call(name, args) {
+                *expr = folded;
+                return;
+            }
         }
-        Expr::MethodCall(recv, _, args) => {
+        Expr::MethodCall(recv, method, args) => {
             fold_expr(recv);
-            for arg in args {
+            for arg in args.iter_mut() {
                 fold_expr(arg);
+            }
+            if let Expr::Ident(id) = recv.as_ref() {
+                if id == "Math" {
+                    if let Some(folded) = fold_math_call(method, args) {
+                        *expr = folded;
+                        return;
+                    }
+                }
+            }
+            if let Some(v) = get_num(recv) {
+                if args.is_empty() {
+                    match method.as_str() {
+                        "sin" => {
+                            *expr = Expr::Float(v.sin());
+                            return;
+                        }
+                        "cos" => {
+                            *expr = Expr::Float(v.cos());
+                            return;
+                        }
+                        "tan" => {
+                            *expr = Expr::Float(v.tan());
+                            return;
+                        }
+                        "sqrt" => {
+                            *expr = Expr::Float(v.sqrt());
+                            return;
+                        }
+                        "abs" => {
+                            *expr = Expr::Float(v.abs());
+                            return;
+                        }
+                        "round" => {
+                            *expr = Expr::Float(v.round());
+                            return;
+                        }
+                        "floor" => {
+                            *expr = Expr::Float(v.floor());
+                            return;
+                        }
+                        "ceil" => {
+                            *expr = Expr::Float(v.ceil());
+                            return;
+                        }
+                        _ => {}
+                    }
+                } else if args.len() == 1 {
+                    if let Some(o) = get_num(&args[0]) {
+                        match method.as_str() {
+                            "min" => {
+                                *expr = Expr::Float(v.min(o));
+                                return;
+                            }
+                            "max" => {
+                                *expr = Expr::Float(v.max(o));
+                                return;
+                            }
+                            "pow" => {
+                                *expr = Expr::Float(v.powf(o));
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if args.len() == 2 {
+                    if let (Some(lo), Some(hi)) = (get_num(&args[0]), get_num(&args[1])) {
+                        if method == "clamp" {
+                            let hi_c = hi.max(lo);
+                            *expr = Expr::Float(v.clamp(lo, hi_c));
+                            return;
+                        }
+                    }
+                }
             }
         }
         Expr::UnaryNeg(inner) => {
@@ -193,9 +307,7 @@ fn fold_binary(left: &Expr, op: BinOp, right: &Expr) -> Option<Expr> {
         }
 
         // String concatenation
-        (Expr::String(a), BinOp::Add, Expr::String(b)) => {
-            Some(Expr::String(format!("{a}{b}")))
-        }
+        (Expr::String(a), BinOp::Add, Expr::String(b)) => Some(Expr::String(format!("{a}{b}"))),
 
         // Boolean operations
         (Expr::Bool(true), BinOp::And, other) | (other, BinOp::And, Expr::Bool(true)) => {
@@ -229,6 +341,66 @@ fn fold_binary(left: &Expr, op: BinOp, right: &Expr) -> Option<Expr> {
         (Expr::String(a), BinOp::Eq, Expr::String(b)) => Some(Expr::Bool(a == b)),
         (Expr::String(a), BinOp::Ne, Expr::String(b)) => Some(Expr::Bool(a != b)),
 
+        _ => None,
+    }
+}
+
+fn get_num(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::Float(f) => Some(*f),
+        Expr::Int(i) => Some(*i as f64),
+        Expr::Length(v, _) => Some(*v as f64),
+        _ => None,
+    }
+}
+
+fn fold_math_call(name: &str, args: &[Expr]) -> Option<Expr> {
+    match name {
+        "sin" if args.len() == 1 => get_num(&args[0]).map(|v| Expr::Float(v.sin())),
+        "cos" if args.len() == 1 => get_num(&args[0]).map(|v| Expr::Float(v.cos())),
+        "tan" if args.len() == 1 => get_num(&args[0]).map(|v| Expr::Float(v.tan())),
+        "sqrt" if args.len() == 1 => get_num(&args[0]).map(|v| Expr::Float(v.sqrt())),
+        "abs" if args.len() == 1 => match &args[0] {
+            Expr::Int(i) => Some(Expr::Int(i.abs())),
+            other => get_num(other).map(|v| Expr::Float(v.abs())),
+        },
+        "round" if args.len() == 1 => get_num(&args[0]).map(|v| Expr::Float(v.round())),
+        "floor" if args.len() == 1 => get_num(&args[0]).map(|v| Expr::Float(v.floor())),
+        "ceil" if args.len() == 1 => get_num(&args[0]).map(|v| Expr::Float(v.ceil())),
+        "min" if args.len() == 2 => match (&args[0], &args[1]) {
+            (Expr::Int(a), Expr::Int(b)) => Some(Expr::Int((*a).min(*b))),
+            _ => {
+                let a = get_num(&args[0])?;
+                let b = get_num(&args[1])?;
+                Some(Expr::Float(a.min(b)))
+            }
+        },
+        "max" if args.len() == 2 => match (&args[0], &args[1]) {
+            (Expr::Int(a), Expr::Int(b)) => Some(Expr::Int((*a).max(*b))),
+            _ => {
+                let a = get_num(&args[0])?;
+                let b = get_num(&args[1])?;
+                Some(Expr::Float(a.max(b)))
+            }
+        },
+        "pow" if args.len() == 2 => {
+            let base = get_num(&args[0])?;
+            let exp = get_num(&args[1])?;
+            Some(Expr::Float(base.powf(exp)))
+        }
+        "clamp" if args.len() == 3 => match (&args[0], &args[1], &args[2]) {
+            (Expr::Int(v), Expr::Int(lo), Expr::Int(hi)) => {
+                let hi_c = (*hi).max(*lo);
+                Some(Expr::Int((*v).clamp(*lo, hi_c)))
+            }
+            _ => {
+                let v = get_num(&args[0])?;
+                let lo = get_num(&args[1])?;
+                let hi = get_num(&args[2])?;
+                let hi_c = hi.max(lo);
+                Some(Expr::Float(v.clamp(lo, hi_c)))
+            }
+        },
         _ => None,
     }
 }

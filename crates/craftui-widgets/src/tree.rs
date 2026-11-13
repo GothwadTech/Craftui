@@ -4832,6 +4832,61 @@ impl WidgetTree {
         false
     }
 
+    fn adapt_brush_to_rect(brush: &Brush, rect: Rect) -> Brush {
+        match brush {
+            Brush::Solid(c) => Brush::Solid(*c),
+            Brush::LinearGradient { start, end, stops } => {
+                let s = if start.x <= 1.0 && start.y <= 1.0 && rect.width > 1.0 && rect.height > 1.0
+                {
+                    Point::new(
+                        rect.x + start.x * rect.width,
+                        rect.y + start.y * rect.height,
+                    )
+                } else {
+                    *start
+                };
+                let e = if end.x <= 1.0 && end.y <= 1.0 && rect.width > 1.0 && rect.height > 1.0 {
+                    Point::new(rect.x + end.x * rect.width, rect.y + end.y * rect.height)
+                } else {
+                    *end
+                };
+                Brush::LinearGradient {
+                    start: s,
+                    end: e,
+                    stops: stops.clone(),
+                }
+            }
+            Brush::RadialGradient {
+                center,
+                radius,
+                stops,
+            } => {
+                let c = if center.x <= 1.0
+                    && center.y <= 1.0
+                    && rect.width > 1.0
+                    && rect.height > 1.0
+                {
+                    Point::new(
+                        rect.x + center.x * rect.width,
+                        rect.y + center.y * rect.height,
+                    )
+                } else {
+                    *center
+                };
+                let r = if *radius <= 1.0 && rect.width > 1.0 && rect.height > 1.0 {
+                    *radius * rect.width.max(rect.height) * 0.5
+                } else {
+                    *radius
+                };
+                Brush::RadialGradient {
+                    center: c,
+                    radius: r,
+                    stops: stops.clone(),
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn paint_node_recursive(
         &mut self,
@@ -4951,7 +5006,8 @@ impl WidgetTree {
                 (None, None) => None,
             };
             if let Some(bg) = effective_bg {
-                scene.fill_rect(rect, bg, box_style.radius);
+                let adapted = Self::adapt_brush_to_rect(&bg, rect);
+                scene.fill_rect(rect, adapted, box_style.radius);
             }
         }
 
@@ -5032,7 +5088,8 @@ impl WidgetTree {
                         scene.fill_rect(rect, modulated, box_style.radius);
                     }
                     other_brush => {
-                        scene.fill_rect(rect, other_brush, box_style.radius);
+                        let adapted = Self::adapt_brush_to_rect(&other_brush, rect);
+                        scene.fill_rect(rect, adapted, box_style.radius);
                         if !disabled_eff && hover_t > 0.01 {
                             scene.fill_rect(
                                 rect,

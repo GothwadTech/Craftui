@@ -358,11 +358,15 @@ impl ThemeTokens {
             primary: self.primary.lerp(target.primary, t),
             on_primary: self.on_primary.lerp(target.on_primary, t),
             primary_container: self.primary_container.lerp(target.primary_container, t),
-            on_primary_container: self.on_primary_container.lerp(target.on_primary_container, t),
+            on_primary_container: self
+                .on_primary_container
+                .lerp(target.on_primary_container, t),
             secondary: self.secondary.lerp(target.secondary, t),
             on_secondary: self.on_secondary.lerp(target.on_secondary, t),
             secondary_container: self.secondary_container.lerp(target.secondary_container, t),
-            on_secondary_container: self.on_secondary_container.lerp(target.on_secondary_container, t),
+            on_secondary_container: self
+                .on_secondary_container
+                .lerp(target.on_secondary_container, t),
             tertiary: self.tertiary.lerp(target.tertiary, t),
             on_tertiary: self.on_tertiary.lerp(target.on_tertiary, t),
             text_primary: self.text_primary.lerp(target.text_primary, t),

@@ -82,7 +82,11 @@ fn lower_states_in_element(el: &mut ElementNode) {
         // Fold in reverse so the first state declared takes highest priority
         let mut folded = base_val;
         for state in el.states.iter().rev() {
-            if let Some(ov) = state.property_overrides.iter().find(|p| p.name == prop_name) {
+            if let Some(ov) = state
+                .property_overrides
+                .iter()
+                .find(|p| p.name == prop_name)
+            {
                 folded = Expr::Ternary {
                     cond: Box::new(state.condition.clone()),
                     then_expr: Box::new(ov.value.clone()),

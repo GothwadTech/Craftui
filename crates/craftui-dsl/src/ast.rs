@@ -257,6 +257,8 @@ pub enum Unit {
     Dp,
     Px,
     Pct,
+    Deg,
+    Rad,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

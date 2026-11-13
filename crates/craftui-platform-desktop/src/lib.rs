@@ -5,9 +5,9 @@
 
 use accesskit_winit::Adapter as AccessKitAdapter;
 use craftui_core::{
-    BatteryState, ClipboardBackend, Color, CraftError, CursorIcon,
-    DeviceCapabilitiesBackend, DeviceInfo, FileDialogBackend, FileDialogRequest, ImeEvent, KeyCode,
-    KeyEvent, MemorySecureStorage, Modifiers, NetworkStatus, NodeId, Permission, PermissionBackend,
+    BatteryState, ClipboardBackend, Color, CraftError, CursorIcon, DeviceCapabilitiesBackend,
+    DeviceInfo, FileDialogBackend, FileDialogRequest, ImeEvent, KeyCode, KeyEvent,
+    MemorySecureStorage, Modifiers, NetworkStatus, NodeId, Permission, PermissionBackend,
     PermissionStatus, PlatformServices, Point, PointerButton, PointerEvent, PointerId,
     PointerPhase, Result, ScrollDelta, SecureStorageBackend, ShareBackend, SharePayload, Size,
     UiDispatcher, UiEvent, WindowMetrics, monotonic_ms,
@@ -17,9 +17,9 @@ use craftui_core::{BoxShadow, Brush, CornerRadii, Rect, ThemeMode, ThemeTokens};
 use craftui_reactive::Scope;
 #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
 use craftui_render::GpuSurfacePipeline;
-use craftui_render::{PaintScene, SoftwareRenderer, TextureRegistry};
 #[cfg(feature = "hot-reload")]
 use craftui_render::PaintCommand;
+use craftui_render::{PaintScene, SoftwareRenderer, TextureRegistry};
 #[cfg(feature = "hot-reload")]
 use craftui_runtime::HotReloadSession;
 use craftui_text::TextEngine;
@@ -1476,12 +1476,7 @@ fn paint_live_preview_overlays(
     if spec.device_mode && win_w >= 412.0 {
         let frame_x = (win_w - 412.0) / 2.0;
         let frame_y = ((win_h - 915.0).max(0.0)) / 2.0;
-        let chassis_rect = Rect::new(
-            frame_x - 8.0,
-            frame_y - 8.0,
-            412.0 + 16.0,
-            915.0 + 16.0,
-        );
+        let chassis_rect = Rect::new(frame_x - 8.0, frame_y - 8.0, 412.0 + 16.0, 915.0 + 16.0);
         scene.stroke_rect(
             chassis_rect,
             Color::rgb(71, 85, 105),
@@ -1507,14 +1502,10 @@ fn paint_live_preview_overlays(
         if let Some(nid) = tree.hit_test(cursor_pos) {
             let rect = tree.rect(nid);
             if rect.width > 0.0 && rect.height > 0.0 {
-                scene.stroke_rect(
-                    rect,
-                    Color::rgb(6, 182, 212),
-                    2.0,
-                    CornerRadii::all(4.0),
-                );
+                scene.stroke_rect(rect, Color::rgb(6, 182, 212), 2.0, CornerRadii::all(4.0));
                 if let Some(node) = tree.nodes.get(nid) {
-                    let tag_text = format!("{}  {:.0}×{:.0}", node.debug_name, rect.width, rect.height);
+                    let tag_text =
+                        format!("{}  {:.0}×{:.0}", node.debug_name, rect.width, rect.height);
                     let tag_w = (tag_text.len() as f32) * 7.0 + 14.0;
                     let tag_y = (rect.y - 22.0).max(4.0);
                     let tag_rect = Rect::new(rect.x, tag_y, tag_w, 20.0);
@@ -1573,7 +1564,11 @@ fn paint_live_preview_overlays(
             1.5,
             CornerRadii::all(8.0),
         );
-        let err_short = if err.len() > 100 { format!("{}...", &err[..100]) } else { err.clone() };
+        let err_short = if err.len() > 100 {
+            format!("{}...", &err[..100])
+        } else {
+            err.clone()
+        };
         let err_text = format!("⚠ Live Error: {err_short}");
         scene.commands.push(PaintCommand::DrawText {
             origin: Point::new(banner_rect.x + 12.0, banner_rect.y + 14.0),

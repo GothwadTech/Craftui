@@ -2,7 +2,7 @@
 
 use craftui_core::{
     Alignment, Axis, BlendMode, Border, BoxShadow, Brush, Color, CornerRadii, CraftError,
-    CursorIcon, DirtyFlags, Fit, Insets, Justify, Length, NodeId, PlatformViewId, Result,
+    CursorIcon, DirtyFlags, Fit, Insets, Justify, Length, NodeId, PlatformViewId, Point, Result,
     TextureId, ThemeOverride, ThemeTokens, Transform2D,
 };
 use craftui_dsl::{
@@ -33,6 +33,7 @@ pub enum DynValue {
     Color(Color),
     Length(Length),
     Texture(Option<TextureId>),
+    Brush(Brush),
     List(Vec<DynValue>),
     Struct {
         name: String,
@@ -107,6 +108,7 @@ impl DynValue {
             Self::Length(Length::Auto) => "auto".to_string(),
             Self::Texture(Some(id)) => format!("{id:?}"),
             Self::Texture(None) | Self::Null => String::new(),
+            Self::Brush(_) => "brush".to_string(),
         }
     }
 
@@ -119,9 +121,18 @@ impl DynValue {
         }
     }
 
+    pub fn as_brush(&self) -> Option<Brush> {
+        match self {
+            Self::Brush(b) => Some(b.clone()),
+            Self::Color(c) => Some(Brush::Solid(*c)),
+            _ => None,
+        }
+    }
+
     pub fn as_color(&self) -> Option<Color> {
         match self {
             Self::Color(c) => Some(*c),
+            Self::Brush(Brush::Solid(c)) => Some(*c),
             Self::String(s) => Color::from_hex(s),
             _ => None,
         }
@@ -169,6 +180,7 @@ impl DynValue {
             }
             Self::Texture(id) => format!("t:{id:?}"),
             Self::Length(l) => format!("len:{l:?}"),
+            Self::Brush(_) => "brush".to_string(),
             Self::Null => "null".to_string(),
         }
     }
@@ -1305,6 +1317,25 @@ fn eval_shadows_dyn(v: &DynValue) -> Vec<BoxShadow> {
     match v {
         DynValue::Bool(true) => vec![BoxShadow::new(0.0, 4.0, 12.0, Color::rgba(0, 0, 0, 80))],
         DynValue::Bool(false) | DynValue::Null => Vec::new(),
+        DynValue::Struct { name, fields } if name == "BoxShadow" => {
+            let ox = fields.get("offset_x").map(|v| v.as_f32()).unwrap_or(0.0);
+            let oy = fields.get("offset_y").map(|v| v.as_f32()).unwrap_or(0.0);
+            let blur = fields.get("blur").map(|v| v.as_f32()).unwrap_or(0.0);
+            let spread = fields.get("spread").map(|v| v.as_f32()).unwrap_or(0.0);
+            let col = fields
+                .get("color")
+                .and_then(|v| v.as_color())
+                .unwrap_or(Color::rgba(0, 0, 0, 80));
+            let inset = fields.get("inset").map(|v| v.as_bool()).unwrap_or(false);
+            vec![BoxShadow {
+                offset_x: ox,
+                offset_y: oy,
+                blur_radius: blur,
+                spread,
+                color: col,
+                inset,
+            }]
+        }
         DynValue::List(items) => {
             let mut out = Vec::new();
             for chunk in items.as_chunks::<4>().0 {
@@ -1563,15 +1594,16 @@ fn apply_common_props_and_events(
             let expr = bg_prop.value.clone();
             let env_c = env.clone();
             box_style.background = Some(ReactiveValue::Dynamic(Rc::new(move || {
-                let c = eval_expr_tracked(&expr, &env_c, true)
-                    .as_color()
-                    .unwrap_or(Color::TRANSPARENT);
-                Brush::Solid(c)
+                let v = eval_expr_tracked(&expr, &env_c, true);
+                v.as_brush().unwrap_or(Brush::Solid(Color::TRANSPARENT))
             })));
             box_dirty = true;
-        } else if let Some(c) = eval_expr(&bg_prop.value, env).as_color() {
-            box_style.background = Some(ReactiveValue::Static(Brush::Solid(c)));
-            box_dirty = true;
+        } else {
+            let v = eval_expr(&bg_prop.value, env);
+            if let Some(b) = v.as_brush() {
+                box_style.background = Some(ReactiveValue::Static(b));
+                box_dirty = true;
+            }
         }
     }
     if let Some(br_prop) = find_prop(el, &["border_radius"]) {
@@ -2226,6 +2258,7 @@ fn instantiate_subcomponent(
     } else {
         tree.column(scope)
     };
+    build_children(scope, node, call_el, outer_env, tree);
     apply_common_props_and_events(scope, node, call_el, outer_env, tree, true);
     node
 }
@@ -2837,6 +2870,7 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
             Unit::Dp => Length::Dp(*v),
             Unit::Px => Length::Px(*v),
             Unit::Pct => Length::Pct(*v),
+            Unit::Deg | Unit::Rad => Length::Dp(*v),
         }),
         Expr::Array(items) => DynValue::List(
             items
@@ -2904,6 +2938,27 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
         }
         Expr::Member(base, field) => {
             if let Expr::Ident(root) = base.as_ref() {
+                if root == "root" {
+                    if let Some(sig) = env.props.get(field) {
+                        return if track {
+                            sig.get()
+                        } else {
+                            sig.get_untracked()
+                        };
+                    }
+                }
+                if root == "Math" {
+                    return match field.as_str() {
+                        "PI" => DynValue::Float(std::f64::consts::PI),
+                        "E" => DynValue::Float(std::f64::consts::E),
+                        "LN2" => DynValue::Float(std::f64::consts::LN_2),
+                        "LN10" => DynValue::Float(std::f64::consts::LN_10),
+                        "LOG2E" => DynValue::Float(std::f64::consts::LOG2_E),
+                        "LOG10E" => DynValue::Float(std::f64::consts::LOG10_E),
+                        "SQRT2" => DynValue::Float(std::f64::consts::SQRT_2),
+                        _ => DynValue::Null,
+                    };
+                }
                 if root == "Theme" {
                     let theme = if track {
                         env.theme_sig.get()
@@ -2953,6 +3008,72 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
             }
         }
         Expr::MethodCall(recv, method, args) => {
+            if let Expr::Ident(id) = recv.as_ref() {
+                if id == "Math" {
+                    let eval_args: Vec<DynValue> = args
+                        .iter()
+                        .map(|a| eval_expr_tracked(a, env, track))
+                        .collect();
+                    return match method.as_str() {
+                        "sin" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().sin() as f64)
+                        }
+                        "cos" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().cos() as f64)
+                        }
+                        "tan" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().tan() as f64)
+                        }
+                        "sqrt" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().sqrt() as f64)
+                        }
+                        "abs" if eval_args.len() == 1 => match eval_args[0] {
+                            DynValue::Int(v) => DynValue::Int(v.abs()),
+                            _ => DynValue::Float(eval_args[0].as_f32().abs() as f64),
+                        },
+                        "round" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().round() as f64)
+                        }
+                        "floor" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().floor() as f64)
+                        }
+                        "ceil" if eval_args.len() == 1 => {
+                            DynValue::Float(eval_args[0].as_f32().ceil() as f64)
+                        }
+                        "min" if eval_args.len() == 2 => {
+                            if let (DynValue::Int(a), DynValue::Int(b)) =
+                                (&eval_args[0], &eval_args[1])
+                            {
+                                DynValue::Int((*a).min(*b))
+                            } else {
+                                DynValue::Float(
+                                    eval_args[0].as_f32().min(eval_args[1].as_f32()) as f64
+                                )
+                            }
+                        }
+                        "max" if eval_args.len() == 2 => {
+                            if let (DynValue::Int(a), DynValue::Int(b)) =
+                                (&eval_args[0], &eval_args[1])
+                            {
+                                DynValue::Int((*a).max(*b))
+                            } else {
+                                DynValue::Float(
+                                    eval_args[0].as_f32().max(eval_args[1].as_f32()) as f64
+                                )
+                            }
+                        }
+                        "pow" if eval_args.len() == 2 => {
+                            DynValue::Float(eval_args[0].as_f32().powf(eval_args[1].as_f32()) as f64)
+                        }
+                        "clamp" if eval_args.len() == 3 => {
+                            let lo = eval_args[1].as_f32();
+                            let hi = eval_args[2].as_f32().max(lo);
+                            DynValue::Float(eval_args[0].as_f32().clamp(lo, hi) as f64)
+                        }
+                        _ => DynValue::Null,
+                    };
+                }
+            }
             let r = eval_expr_tracked(recv, env, track);
             let eval_args: Vec<DynValue> = args
                 .iter()
@@ -2986,6 +3107,24 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
                         .first()
                         .is_some_and(|needle| s.contains(&needle.as_str())),
                 ),
+                (DynValue::Float(v), "sin") => DynValue::Float((v as f32).sin() as f64),
+                (DynValue::Float(v), "cos") => DynValue::Float((v as f32).cos() as f64),
+                (DynValue::Float(v), "tan") => DynValue::Float((v as f32).tan() as f64),
+                (DynValue::Float(v), "sqrt") => DynValue::Float((v as f32).sqrt() as f64),
+                (DynValue::Float(v), "abs") => DynValue::Float(v.abs()),
+                (DynValue::Float(v), "round") => DynValue::Float(v.round()),
+                (DynValue::Float(v), "floor") => DynValue::Float(v.floor()),
+                (DynValue::Float(v), "ceil") => DynValue::Float(v.ceil()),
+                (DynValue::Float(v), "min") if eval_args.len() == 1 => {
+                    DynValue::Float(v.min(eval_args[0].as_f32() as f64))
+                }
+                (DynValue::Float(v), "max") if eval_args.len() == 1 => {
+                    DynValue::Float(v.max(eval_args[0].as_f32() as f64))
+                }
+                (DynValue::Float(v), "pow") if eval_args.len() == 1 => {
+                    DynValue::Float(v.powf(eval_args[0].as_f32() as f64))
+                }
+                (DynValue::Int(v), "abs") => DynValue::Int(v.abs()),
                 _ => DynValue::Null,
             }
         }
@@ -3034,6 +3173,69 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
                 }
                 "ceil" if eval_args.len() == 1 => {
                     DynValue::Float(eval_args[0].as_f32().ceil() as f64)
+                }
+                "sin" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().sin() as f64)
+                }
+                "cos" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().cos() as f64)
+                }
+                "tan" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().tan() as f64)
+                }
+                "sqrt" if eval_args.len() == 1 => {
+                    DynValue::Float(eval_args[0].as_f32().sqrt() as f64)
+                }
+                "pow" if eval_args.len() == 2 => {
+                    DynValue::Float(eval_args[0].as_f32().powf(eval_args[1].as_f32()) as f64)
+                }
+                "@linear-gradient" | "linear_gradient" if eval_args.len() >= 2 => {
+                    let angle_deg = eval_args[0].as_f32();
+                    let rad = (angle_deg - 90.0).to_radians();
+                    let dx = rad.cos();
+                    let dy = rad.sin();
+                    let start = Point::new(0.5 - 0.5 * dx, 0.5 - 0.5 * dy);
+                    let end = Point::new(0.5 + 0.5 * dx, 0.5 + 0.5 * dy);
+                    let color_args = &eval_args[1..];
+                    let count = color_args.len();
+                    let stops: Vec<craftui_core::ColorStop> = color_args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let offset = if count > 1 {
+                                i as f32 / (count - 1) as f32
+                            } else {
+                                0.0
+                            };
+                            let color = a.as_color().unwrap_or(Color::BLACK);
+                            craftui_core::ColorStop { offset, color }
+                        })
+                        .collect();
+                    DynValue::Brush(Brush::LinearGradient { start, end, stops })
+                }
+                "@radial-gradient" | "radial_gradient" if eval_args.len() >= 2 => {
+                    let radius = eval_args[0].as_f32().max(0.01);
+                    let center = Point::new(0.5, 0.5);
+                    let color_args = &eval_args[1..];
+                    let count = color_args.len();
+                    let stops: Vec<craftui_core::ColorStop> = color_args
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let offset = if count > 1 {
+                                i as f32 / (count - 1) as f32
+                            } else {
+                                0.0
+                            };
+                            let color = a.as_color().unwrap_or(Color::BLACK);
+                            craftui_core::ColorStop { offset, color }
+                        })
+                        .collect();
+                    DynValue::Brush(Brush::RadialGradient {
+                        center,
+                        radius,
+                        stops,
+                    })
                 }
                 "rgb" if eval_args.len() == 3 => DynValue::Color(Color::rgb(
                     eval_args[0].as_i64().clamp(0, 255) as u8,
@@ -3931,5 +4133,128 @@ export component ShowcasePhase3 {
             }
             _ => panic!("expected HtmlView widget"),
         }
+    }
+
+    #[test]
+    fn test_runtime_math_and_gradient_interpretation() {
+        let mut session = HotReloadSession::new(Scope::root());
+        let mut tree = WidgetTree::new(session.state_scope);
+        let src = r#"export component RuntimeMathAndGradients {
+    in property <float> angle: 90.0;
+    in property <float> half_pi: Math.PI / 2.0;
+    in property <float> calc_sin: Math.sin(0.0);
+    in property <float> calc_sqrt: Math.sqrt(25.0);
+
+    Container {
+        id: "grad_box";
+        width: 300dp;
+        height: 200dp;
+        background: @linear-gradient(90deg, #6750A4, #D0BCFF);
+        border_radius: 12dp;
+
+        Container {
+            id: "radial_box";
+            width: 100dp;
+            height: 100dp;
+            background: @radial-gradient(50.0, #FFD8E4, #6750A4);
+        }
+    }
+}"#;
+        session
+            .reload(src, Some("RuntimeMathAndGradients"), &mut tree)
+            .unwrap();
+
+        // Check props in dynamic store
+        let half_pi = session.store.props.get("half_pi").unwrap().get().as_f32();
+        assert!((half_pi - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+
+        let calc_sin = session.store.props.get("calc_sin").unwrap().get().as_f32();
+        assert!(calc_sin.abs() < 1e-4);
+
+        let calc_sqrt = session.store.props.get("calc_sqrt").unwrap().get().as_f32();
+        assert!((calc_sqrt - 5.0).abs() < 1e-4);
+
+        // Check grad_box has Brush::LinearGradient
+        let grad_id = tree.node_by_id("grad_box").unwrap();
+        let grad_node = tree.nodes.get(grad_id).unwrap();
+        let bg = grad_node.box_style.background.as_ref().unwrap().get();
+        match bg {
+            Brush::LinearGradient { start, end, stops } => {
+                assert_eq!(stops.len(), 2);
+                assert!((start.x - 0.0).abs() < 0.01);
+                assert!((end.x - 1.0).abs() < 0.01);
+            }
+            _ => panic!("expected LinearGradient, got {:?}", bg),
+        }
+
+        // Check radial_box has Brush::RadialGradient
+        let rad_id = tree.node_by_id("radial_box").unwrap();
+        let rad_node = tree.nodes.get(rad_id).unwrap();
+        let bg_rad = rad_node.box_style.background.as_ref().unwrap().get();
+        match bg_rad {
+            Brush::RadialGradient { radius, stops, .. } => {
+                assert_eq!(stops.len(), 2);
+                assert!((radius - 50.0).abs() < 0.01);
+            }
+            _ => panic!("expected RadialGradient, got {:?}", bg_rad),
+        }
+    }
+
+    #[test]
+    fn test_runtime_std_material_suite_with_children() {
+        let mut session = HotReloadSession::new(Scope::root());
+        let mut tree = WidgetTree::new(session.state_scope);
+        let src = r#"
+import { Card, ElevatedCard, SearchBar, Chip, FloatingActionButton } from "std/material.cui"
+
+export component RuntimeMaterialDemo {
+    in-out property <string> search_term: "Initial Query";
+    in-out property <bool> is_filtered: true;
+
+    ElevatedCard {
+        id: "main_card";
+        width: 360dp;
+        padding: 16dp;
+
+        SearchBar {
+            id: "search_bar";
+            text <=> search_term;
+        }
+
+        Chip {
+            id: "chip_filter";
+            label: "Material 3 Tag";
+            selected <=> is_filtered;
+        }
+
+        FloatingActionButton {
+            id: "fab_btn";
+            icon: "add";
+            label: "Create New";
+        }
+    }
+}"#;
+        session
+            .reload(src, Some("RuntimeMaterialDemo"), &mut tree)
+            .unwrap();
+
+        let card_id = tree.node_by_id("main_card").unwrap();
+        let card_node = tree.nodes.get(card_id).unwrap();
+        assert!(card_node.box_style.background.is_some());
+        assert!(card_node.box_style.shadow.is_some() || !card_node.box_style.shadows.is_empty());
+        // Verify children were mounted into the subcomponent root!
+        assert!(
+            !card_node.children.is_empty(),
+            "Card must have child elements"
+        );
+
+        let search_id = tree.node_by_id("search_bar").unwrap();
+        assert!(tree.nodes.contains_key(search_id));
+
+        let chip_id = tree.node_by_id("chip_filter").unwrap();
+        assert!(tree.nodes.contains_key(chip_id));
+
+        let fab_id = tree.node_by_id("fab_btn").unwrap();
+        assert!(tree.nodes.contains_key(fab_id));
     }
 }

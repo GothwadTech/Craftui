@@ -690,7 +690,10 @@ impl Parser {
                 span: Span::new(start, end),
             });
         }
-        self.expect(TokenKind::RBracket, "expected ']' closing transitions block");
+        self.expect(
+            TokenKind::RBracket,
+            "expected ']' closing transitions block",
+        );
         self.builder.finish_node();
         result
     }
@@ -1240,6 +1243,38 @@ impl Parser {
                 self.expect(TokenKind::RParen, "expected ')'");
                 e
             }
+            Some(TokenKind::AtLinearGradient) => {
+                self.bump();
+                self.expect(TokenKind::LParen, "expected '(' after @linear-gradient");
+                let args = self.parse_call_args();
+                Expr::Call("@linear-gradient".to_string(), args)
+            }
+            Some(TokenKind::AtRadialGradient) => {
+                self.bump();
+                self.expect(TokenKind::LParen, "expected '(' after @radial-gradient");
+                let args = self.parse_call_args();
+                Expr::Call("@radial-gradient".to_string(), args)
+            }
+            Some(TokenKind::At) => {
+                self.bump();
+                if self.peek() == Some(TokenKind::Ident) {
+                    let name = format!("@{}", self.bump().unwrap().text);
+                    if self.eat_if(TokenKind::LParen) {
+                        let args = self.parse_call_args();
+                        Expr::Call(name, args)
+                    } else {
+                        Expr::Ident(name)
+                    }
+                } else {
+                    let off = self.current_offset();
+                    self.diagnostics.push(Diagnostic {
+                        span: Span::new(off, off + 1),
+                        severity: Severity::Error,
+                        message: "expected macro or builtin name after '@'".into(),
+                    });
+                    Expr::Bool(false)
+                }
+            }
             _ => {
                 let off = self.current_offset();
                 self.diagnostics.push(Diagnostic {
@@ -1270,6 +1305,10 @@ fn parse_dimension(s: &str) -> Expr {
         Expr::Length(num.parse().unwrap_or(0.0), Unit::Dp)
     } else if let Some(num) = s.strip_suffix("px") {
         Expr::Length(num.parse().unwrap_or(0.0), Unit::Px)
+    } else if let Some(num) = s.strip_suffix("deg") {
+        Expr::Length(num.parse().unwrap_or(0.0), Unit::Deg)
+    } else if let Some(num) = s.strip_suffix("rad") {
+        Expr::Length(num.parse().unwrap_or(0.0), Unit::Rad)
     } else if let Some(num) = s.strip_suffix('%') {
         Expr::Length(num.parse().unwrap_or(0.0), Unit::Pct)
     } else {
