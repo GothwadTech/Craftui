@@ -3017,6 +3017,14 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
                 if root == "ToastSeverity" {
                     return "ToastSeverity".into();
                 }
+                if root == "Window" {
+                    return match field.as_str() {
+                        "width" | "height" | "scale_factor" => "f32".into(),
+                        "is_compact" | "is_medium" | "is_expanded" => "bool".into(),
+                        "breakpoint" => "String".into(),
+                        _ => "String".into(),
+                    };
+                }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return root.clone();
                 }
@@ -3257,6 +3265,27 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
                         _ => "0.0",
                     };
                     return cast_expr_var(const_val, "f32", ty);
+                }
+                if root == "Window" {
+                    let tr = ctx.tree_var;
+                    let expr_str = match field.as_str() {
+                        "width" => format!("{tr}.metrics.logical_size.width"),
+                        "height" => format!("{tr}.metrics.logical_size.height"),
+                        "scale_factor" => format!("{tr}.metrics.scale_factor"),
+                        "is_compact" => format!("({tr}.metrics.logical_size.width < 600.0)"),
+                        "is_medium" => format!(
+                            "({tr}.metrics.logical_size.width >= 600.0 && {tr}.metrics.logical_size.width <= 1024.0)"
+                        ),
+                        "is_expanded" => format!("({tr}.metrics.logical_size.width > 1024.0)"),
+                        "breakpoint" => format!("format!(\"{{:?}}\", {tr}.metrics.breakpoint())"),
+                        _ => "0.0".into(),
+                    };
+                    let field_ty = match field.as_str() {
+                        "width" | "height" | "scale_factor" => "f32",
+                        "is_compact" | "is_medium" | "is_expanded" => "bool",
+                        _ => "String",
+                    };
+                    return cast_expr_var(&expr_str, field_ty, ty);
                 }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return format!("{root}::{field}");

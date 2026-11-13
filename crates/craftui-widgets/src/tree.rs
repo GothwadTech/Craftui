@@ -308,6 +308,7 @@ pub struct WidgetTree {
     pub root_scope: Scope,
     pub theme_signal: Signal<ThemeTokens>,
     pub theme_override_signal: Signal<ThemeOverride>,
+    pub metrics_signal: Signal<WindowMetrics>,
     pub services: PlatformServices,
     pub direction: Direction,
     pub focused: Option<NodeId>,
@@ -336,8 +337,10 @@ impl WidgetTree {
         let initial_theme = ThemeTokens::dark();
         let theme_signal = root_scope.signal(initial_theme);
         let theme_override_signal = root_scope.signal(ThemeOverride::default());
+        let metrics_signal = root_scope.signal(WindowMetrics::default());
         root_scope.provide_context(theme_signal);
         root_scope.provide_context(theme_override_signal);
+        root_scope.provide_context(metrics_signal);
         root_scope.provide_context(services.clone());
         Self {
             nodes: SlotMap::with_key(),
@@ -351,6 +354,7 @@ impl WidgetTree {
             root_scope,
             theme_signal,
             theme_override_signal,
+            metrics_signal,
             services,
             direction: Direction::Ltr,
             focused: None,
@@ -3771,9 +3775,18 @@ impl WidgetTree {
         })
     }
 
+    /// Update tree window metrics and notify reactive listeners.
+    pub fn set_metrics(&mut self, metrics: WindowMetrics) {
+        self.metrics = metrics;
+        self.metrics_signal.set(metrics);
+    }
+
     /// Pull dirty flags from `craftui-reactive` and update layout + virtualized windows.
     pub fn layout(&mut self, metrics: WindowMetrics) -> usize {
-        self.metrics = metrics;
+        if self.metrics != metrics {
+            self.metrics = metrics;
+            self.metrics_signal.set(metrics);
+        }
         let dirty_updates = drain_dirty_nodes();
         let dirty_count = dirty_updates.len();
 
@@ -6730,6 +6743,7 @@ impl WidgetTree {
             } => {
                 self.metrics.logical_size = Size::new(*width, *height);
                 self.metrics.scale_factor = *scale_factor;
+                self.metrics_signal.set(self.metrics);
                 true
             }
             UiEvent::FocusChanged(_) => false,

@@ -33,7 +33,7 @@ craftui = { workspace = true, default-features = false, features = [
 ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-craftui = { workspace = true, default-features = false, features = ["android"] }
+craftui = { workspace = true, default-features = false, features = ["android", "hot-reload"] }
 jni.workspace = true
 ndk-context.workspace = true
 

@@ -1354,6 +1354,18 @@ fn infer_expr_type(expr: &Expr, ctx: &ScopeCtx<'_>) -> Option<TypeExpr> {
                 if root == "SafeArea" {
                     return Some(TypeExpr::Named("Insets".into()));
                 }
+                if root == "Window" {
+                    return match field.as_str() {
+                        "width" | "height" | "scale_factor" => {
+                            Some(TypeExpr::Named("float".into()))
+                        }
+                        "is_compact" | "is_medium" | "is_expanded" => {
+                            Some(TypeExpr::Named("bool".into()))
+                        }
+                        "breakpoint" => Some(TypeExpr::Named("string".into())),
+                        _ => None,
+                    };
+                }
                 if ctx.enum_map.contains_key(root.as_str()) {
                     return Some(TypeExpr::Named(root.clone()));
                 }
@@ -1479,6 +1491,7 @@ fn validate_expr(
                 || id == "ToastSeverity"
                 || id == "SafeArea"
                 || id == "Math"
+                || id == "Window"
             {
                 diags.push(Diagnostic {
                     span,
@@ -1541,6 +1554,27 @@ fn validate_expr(
                             severity: Severity::Error,
                             message: format!(
                                 "unknown SafeArea member '{field}' (expected 'insets')"
+                            ),
+                        });
+                    }
+                    return;
+                }
+                if root == "Window" {
+                    if !matches!(
+                        field.as_str(),
+                        "width"
+                            | "height"
+                            | "scale_factor"
+                            | "is_compact"
+                            | "is_medium"
+                            | "is_expanded"
+                            | "breakpoint"
+                    ) {
+                        diags.push(Diagnostic {
+                            span,
+                            severity: Severity::Error,
+                            message: format!(
+                                "unknown Window property '{field}' (expected width, height, scale_factor, is_compact, is_medium, is_expanded, breakpoint)"
                             ),
                         });
                     }

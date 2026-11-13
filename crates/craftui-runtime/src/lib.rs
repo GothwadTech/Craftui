@@ -3,7 +3,7 @@
 use craftui_core::{
     Alignment, Axis, BlendMode, Border, BoxShadow, Brush, Color, CornerRadii, CraftError,
     CursorIcon, DirtyFlags, Fit, Insets, Justify, Length, NodeId, PlatformViewId, Point, Result,
-    TextureId, ThemeOverride, ThemeTokens, Transform2D,
+    TextureId, ThemeOverride, ThemeTokens, Transform2D, WindowMetrics,
 };
 use craftui_dsl::{
     AnimateSpec, AssignOp, BinOp, ChildItem, ComponentDecl, CuiFile, Diagnostic, ElementNode, Expr,
@@ -361,6 +361,7 @@ impl HotReloadSession {
             locals: HashMap::new(),
             theme_sig: tree.theme_signal,
             theme_ov_sig: tree.theme_override_signal,
+            metrics_sig: tree.metrics_signal,
         };
 
         // Ensure component properties exist in preserved DynamicStore
@@ -374,9 +375,21 @@ impl HotReloadSession {
                 .as_ref()
                 .map(|e| eval_expr(e, &env_cur))
                 .unwrap_or(DynValue::Null);
-            let _ = self
+            let sig = self
                 .store
                 .get_or_create_prop(self.state_scope, &prop.name, init);
+
+            if let Some(ref def_expr) = prop.default_value {
+                if expr_references_window(def_expr) {
+                    let sig_c = sig;
+                    let expr_c = def_expr.clone();
+                    let env_c = base_env.clone();
+                    mount_scope.effect(move || {
+                        let v = eval_expr_tracked(&expr_c, &env_c, true);
+                        sig_c.set(v);
+                    });
+                }
+            }
         }
 
         let root_env = DynEnv {
@@ -405,6 +418,7 @@ struct DynEnv {
     locals: HashMap<String, DynValue>,
     theme_sig: Signal<ThemeTokens>,
     theme_ov_sig: Signal<ThemeOverride>,
+    metrics_sig: Signal<WindowMetrics>,
 }
 
 impl DynEnv {
@@ -417,6 +431,34 @@ impl DynEnv {
         } else {
             None
         }
+    }
+}
+
+fn expr_references_window(expr: &Expr) -> bool {
+    match expr {
+        Expr::Member(base, _) => {
+            if let Expr::Ident(root) = base.as_ref() {
+                root == "Window"
+            } else {
+                expr_references_window(base)
+            }
+        }
+        Expr::UnaryNot(inner) | Expr::UnaryNeg(inner) => expr_references_window(inner),
+        Expr::Binary(l, _, r) => expr_references_window(l) || expr_references_window(r),
+        Expr::Ternary {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            expr_references_window(cond)
+                || expr_references_window(then_expr)
+                || expr_references_window(else_expr)
+        }
+        Expr::Call(_, args) => args.iter().any(expr_references_window),
+        Expr::MethodCall(base, _, args) => {
+            expr_references_window(base) || args.iter().any(expr_references_window)
+        }
+        _ => false,
     }
 }
 
@@ -2251,6 +2293,7 @@ fn instantiate_subcomponent(
         locals: HashMap::new(),
         theme_sig: outer_env.theme_sig,
         theme_ov_sig: outer_env.theme_ov_sig,
+        metrics_sig: outer_env.metrics_sig,
     };
 
     let node = if let Some(ref root) = comp.root {
@@ -2956,6 +2999,25 @@ fn eval_expr_tracked(expr: &Expr, env: &DynEnv, track: bool) -> DynValue {
                         "LOG2E" => DynValue::Float(std::f64::consts::LOG2_E),
                         "LOG10E" => DynValue::Float(std::f64::consts::LOG10_E),
                         "SQRT2" => DynValue::Float(std::f64::consts::SQRT_2),
+                        _ => DynValue::Null,
+                    };
+                }
+                if root == "Window" {
+                    let m = if track {
+                        env.metrics_sig.get()
+                    } else {
+                        env.metrics_sig.get_untracked()
+                    };
+                    return match field.as_str() {
+                        "width" => DynValue::Float(m.logical_size.width as f64),
+                        "height" => DynValue::Float(m.logical_size.height as f64),
+                        "scale_factor" => DynValue::Float(m.scale_factor as f64),
+                        "is_compact" => DynValue::Bool(m.logical_size.width < 600.0),
+                        "is_medium" => DynValue::Bool(
+                            m.logical_size.width >= 600.0 && m.logical_size.width <= 1024.0,
+                        ),
+                        "is_expanded" => DynValue::Bool(m.logical_size.width > 1024.0),
+                        "breakpoint" => DynValue::String(format!("{:?}", m.breakpoint())),
                         _ => DynValue::Null,
                     };
                 }
@@ -4256,5 +4318,48 @@ export component RuntimeMaterialDemo {
 
         let fab_id = tree.node_by_id("fab_btn").unwrap();
         assert!(tree.nodes.contains_key(fab_id));
+    }
+
+    #[test]
+    fn test_runtime_window_responsive_breakpoints() {
+        use craftui_core::Size;
+        let root_scope = Scope::root();
+        let mut session = HotReloadSession::new(root_scope);
+        let mut tree = WidgetTree::new(session.state_scope);
+
+        let src = r#"
+            component ResponsiveApp {
+                in-out property <bool> mobile: Window.is_compact;
+                in-out property <bool> desktop: Window.is_expanded;
+                Column {
+                    Text { text: root.mobile ? "Mobile Layout" : "Desktop Layout"; }
+                }
+            }
+        "#;
+
+        // 1. Initial layout at mobile width (400x800)
+        tree.set_metrics(WindowMetrics {
+            logical_size: Size::new(400.0, 800.0),
+            ..Default::default()
+        });
+        let root = session.reload(src, Some("ResponsiveApp"), &mut tree).unwrap();
+        tree.set_root(root);
+        tree.layout(tree.metrics);
+
+        let mobile_sig = session.store.props.get("mobile").unwrap();
+        let desktop_sig = session.store.props.get("desktop").unwrap();
+        assert_eq!(mobile_sig.get(), DynValue::Bool(true));
+        assert_eq!(desktop_sig.get(), DynValue::Bool(false));
+
+        // 2. Resize to desktop (1280x800)
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(1280.0, 800.0),
+            scale_factor: 1.0,
+            safe_area: Insets::ZERO,
+            keyboard_inset: 0.0,
+        });
+
+        assert_eq!(mobile_sig.get(), DynValue::Bool(false));
+        assert_eq!(desktop_sig.get(), DynValue::Bool(true));
     }
 }
