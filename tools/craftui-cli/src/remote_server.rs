@@ -203,17 +203,16 @@ fn run_server_accept_loop(
                 );
 
                 // Immediately send current live UI source if available
-                if let Ok(guard) = latest_msg.lock() {
-                    if let Some(msg) = guard.as_ref() {
-                        if let Ok(line) = msg.to_line() {
-                            let mut s = match stream.try_clone() {
-                                Ok(cloned) => cloned,
-                                Err(_) => continue,
-                            };
-                            let _ = s.write_all(line.as_bytes());
-                            let _ = s.flush();
-                        }
-                    }
+                if let Ok(guard) = latest_msg.lock()
+                    && let Some(msg) = guard.as_ref()
+                    && let Ok(line) = msg.to_line()
+                {
+                    let mut s = match stream.try_clone() {
+                        Ok(cloned) => cloned,
+                        Err(_) => continue,
+                    };
+                    let _ = s.write_all(line.as_bytes());
+                    let _ = s.flush();
                 }
 
                 let reader_stream = match stream.try_clone() {

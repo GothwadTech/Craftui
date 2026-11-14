@@ -2454,8 +2454,10 @@ impl WidgetTree {
     /// Mount a Material 3 Card panel container matching Flutter's `Card` (`Elevated`, `Filled`, `Outlined`).
     pub fn card(&mut self, scope: Scope, variant: CardVariant) -> NodeId {
         let layout = LayoutStyle::column().with_padding(Insets::all(16.0));
-        let mut box_style = BoxStyle::default();
-        box_style.radius = CornerRadii::all(12.0);
+        let box_style = BoxStyle {
+            radius: CornerRadii::all(12.0),
+            ..BoxStyle::default()
+        };
         let id = self.spawn_node("Card", WidgetKind::Card { variant }, layout, scope);
         if let Some(n) = self.nodes.get_mut(id) {
             n.box_style = box_style;
@@ -7434,11 +7436,11 @@ impl WidgetTree {
                         WidgetKind::Button { hovered, .. }
                         | WidgetKind::FloatingActionButton { hovered, .. }
                         | WidgetKind::ListTile { hovered, .. }
-                        | WidgetKind::Chip { hovered, .. } => {
-                            if *hovered {
-                                *hovered = false;
-                                unhover = true;
-                            }
+                        | WidgetKind::Chip { hovered, .. }
+                            if *hovered =>
+                        {
+                            *hovered = false;
+                            unhover = true;
                         }
                         _ => {}
                     }
@@ -7473,11 +7475,11 @@ impl WidgetTree {
                         WidgetKind::Button { hovered, .. }
                         | WidgetKind::FloatingActionButton { hovered, .. }
                         | WidgetKind::ListTile { hovered, .. }
-                        | WidgetKind::Chip { hovered, .. } => {
-                            if !*hovered {
-                                *hovered = true;
-                                do_hover = true;
-                            }
+                        | WidgetKind::Chip { hovered, .. }
+                            if !*hovered =>
+                        {
+                            *hovered = true;
+                            do_hover = true;
                         }
                         _ => {}
                     }

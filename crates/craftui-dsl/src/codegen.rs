@@ -1465,20 +1465,19 @@ fn emit_element(
                 _ => (15.0f32, 400.0f32),
             };
             let mut style_chain = String::new();
-            if let Some(class_prop) = find_prop(el, &["class"]) {
-                if let Expr::String(s) = &class_prop.value {
-                    let tw = craftui_core::TailwindTokens::parse(s);
-                    if let Some(sz) = tw.font_size {
-                        default_size = sz;
-                    }
-                    if let Some(wt) = tw.font_weight {
-                        default_weight = wt;
-                    }
-                    if let Some(c) = tw.text_color {
-                        let (r, g, b, a) = (c.r, c.g, c.b, c.a);
-                        style_chain
-                            .push_str(&format!(".with_color(Color::rgba({r}, {g}, {b}, {a}))"));
-                    }
+            if let Some(class_prop) = find_prop(el, &["class"])
+                && let Expr::String(s) = &class_prop.value
+            {
+                let tw = craftui_core::TailwindTokens::parse(s);
+                if let Some(sz) = tw.font_size {
+                    default_size = sz;
+                }
+                if let Some(wt) = tw.font_weight {
+                    default_weight = wt;
+                }
+                if let Some(c) = tw.text_color {
+                    let (r, g, b, a) = (c.r, c.g, c.b, c.a);
+                    style_chain.push_str(&format!(".with_color(Color::rgba({r}, {g}, {b}, {a}))"));
                 }
             }
             if let Some(cp) = find_prop(el, &["color"]) {
@@ -1830,108 +1829,108 @@ fn emit_common_props_and_events(
     let mut box_dyn_tracks = Vec::new();
 
     // Parse Tailwind utility class tokens if class="..." attribute is provided
-    if let Some(class_prop) = find_prop(el, &["class"]) {
-        if let Expr::String(s) = &class_prop.value {
-            let tw = craftui_core::TailwindTokens::parse(s);
-            if tw.is_column {
-                layout_init_stmts.push("ls.mode = LayoutMode::Column;".into());
-            } else if tw.is_row {
-                layout_init_stmts.push("ls.mode = LayoutMode::Row;".into());
-            }
-            if tw.align_center {
-                layout_init_stmts.push("ls.align_items = Alignment::Center;".into());
-            } else if tw.align_start {
-                layout_init_stmts.push("ls.align_items = Alignment::Start;".into());
-            } else if tw.align_end {
-                layout_init_stmts.push("ls.align_items = Alignment::End;".into());
-            }
-            if tw.justify_between {
-                layout_init_stmts.push("ls.justify_content = Justify::SpaceBetween;".into());
-            } else if tw.justify_center {
-                layout_init_stmts.push("ls.justify_content = Justify::Center;".into());
-            } else if tw.justify_around {
-                layout_init_stmts.push("ls.justify_content = Justify::SpaceAround;".into());
-            } else if tw.justify_evenly {
-                layout_init_stmts.push("ls.justify_content = Justify::SpaceEvenly;".into());
-            } else if tw.justify_start {
-                layout_init_stmts.push("ls.justify_content = Justify::Start;".into());
-            } else if tw.justify_end {
-                layout_init_stmts.push("ls.justify_content = Justify::End;".into());
-            }
-            if let Some(pad) = tw.padding {
-                layout_init_stmts.push(format!(
-                    "ls.padding = Insets::new({}f32, {}f32, {}f32, {}f32);",
-                    pad.top, pad.right, pad.bottom, pad.left
-                ));
-            }
-            if let Some(gap) = tw.gap {
-                layout_init_stmts.push(format!("ls.gap_x = {gap}f32; ls.gap_y = {gap}f32;"));
-            }
-            if let Some(w) = tw.width {
-                match w {
-                    craftui_core::Length::Pct(pct) => {
-                        layout_init_stmts.push(format!("ls.width = Length::Pct({pct}f32);"));
-                    }
-                    craftui_core::Length::Dp(dp) => {
-                        layout_init_stmts.push(format!("ls.width = Length::Dp({dp}f32); ls.min_width = Length::Dp({dp}f32); ls.flex_shrink = 0.0f32;"));
-                    }
-                    craftui_core::Length::Px(px) => {
-                        layout_init_stmts.push(format!("ls.width = Length::Dp({px}f32); ls.min_width = Length::Dp({px}f32); ls.flex_shrink = 0.0f32;"));
-                    }
-                    _ => {}
+    if let Some(class_prop) = find_prop(el, &["class"])
+        && let Expr::String(s) = &class_prop.value
+    {
+        let tw = craftui_core::TailwindTokens::parse(s);
+        if tw.is_column {
+            layout_init_stmts.push("ls.mode = LayoutMode::Column;".into());
+        } else if tw.is_row {
+            layout_init_stmts.push("ls.mode = LayoutMode::Row;".into());
+        }
+        if tw.align_center {
+            layout_init_stmts.push("ls.align_items = Alignment::Center;".into());
+        } else if tw.align_start {
+            layout_init_stmts.push("ls.align_items = Alignment::Start;".into());
+        } else if tw.align_end {
+            layout_init_stmts.push("ls.align_items = Alignment::End;".into());
+        }
+        if tw.justify_between {
+            layout_init_stmts.push("ls.justify_content = Justify::SpaceBetween;".into());
+        } else if tw.justify_center {
+            layout_init_stmts.push("ls.justify_content = Justify::Center;".into());
+        } else if tw.justify_around {
+            layout_init_stmts.push("ls.justify_content = Justify::SpaceAround;".into());
+        } else if tw.justify_evenly {
+            layout_init_stmts.push("ls.justify_content = Justify::SpaceEvenly;".into());
+        } else if tw.justify_start {
+            layout_init_stmts.push("ls.justify_content = Justify::Start;".into());
+        } else if tw.justify_end {
+            layout_init_stmts.push("ls.justify_content = Justify::End;".into());
+        }
+        if let Some(pad) = tw.padding {
+            layout_init_stmts.push(format!(
+                "ls.padding = Insets::new({}f32, {}f32, {}f32, {}f32);",
+                pad.top, pad.right, pad.bottom, pad.left
+            ));
+        }
+        if let Some(gap) = tw.gap {
+            layout_init_stmts.push(format!("ls.gap_x = {gap}f32; ls.gap_y = {gap}f32;"));
+        }
+        if let Some(w) = tw.width {
+            match w {
+                craftui_core::Length::Pct(pct) => {
+                    layout_init_stmts.push(format!("ls.width = Length::Pct({pct}f32);"));
                 }
-            }
-            if let Some(h) = tw.height {
-                match h {
-                    craftui_core::Length::Pct(pct) => {
-                        layout_init_stmts.push(format!("ls.height = Length::Pct({pct}f32);"));
-                    }
-                    craftui_core::Length::Dp(dp) => {
-                        layout_init_stmts.push(format!(
-                            "ls.height = Length::Dp({dp}f32); ls.min_height = Length::Dp({dp}f32);"
-                        ));
-                    }
-                    craftui_core::Length::Px(px) => {
-                        layout_init_stmts.push(format!(
-                            "ls.height = Length::Dp({px}f32); ls.min_height = Length::Dp({px}f32);"
-                        ));
-                    }
-                    _ => {}
+                craftui_core::Length::Dp(dp) => {
+                    layout_init_stmts.push(format!("ls.width = Length::Dp({dp}f32); ls.min_width = Length::Dp({dp}f32); ls.flex_shrink = 0.0f32;"));
                 }
+                craftui_core::Length::Px(px) => {
+                    layout_init_stmts.push(format!("ls.width = Length::Dp({px}f32); ls.min_width = Length::Dp({px}f32); ls.flex_shrink = 0.0f32;"));
+                }
+                _ => {}
             }
-            if let Some(bg) = tw.background {
-                let (r, g, b, a) = (bg.r, bg.g, bg.b, bg.a);
-                box_stmts.push(format!(
+        }
+        if let Some(h) = tw.height {
+            match h {
+                craftui_core::Length::Pct(pct) => {
+                    layout_init_stmts.push(format!("ls.height = Length::Pct({pct}f32);"));
+                }
+                craftui_core::Length::Dp(dp) => {
+                    layout_init_stmts.push(format!(
+                        "ls.height = Length::Dp({dp}f32); ls.min_height = Length::Dp({dp}f32);"
+                    ));
+                }
+                craftui_core::Length::Px(px) => {
+                    layout_init_stmts.push(format!(
+                        "ls.height = Length::Dp({px}f32); ls.min_height = Length::Dp({px}f32);"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if let Some(bg) = tw.background {
+            let (r, g, b, a) = (bg.r, bg.g, bg.b, bg.a);
+            box_stmts.push(format!(
                     "bs.background = Some(ReactiveValue::Static(Brush::Solid(Color::rgba({r}, {g}, {b}, {a}))));"
                 ));
-            }
-            if let Some(rad) = tw.radius {
-                box_stmts.push(format!(
-                    "bs.radius = CornerRadii::new({}f32, {}f32, {}f32, {}f32);",
-                    rad.top_left, rad.top_right, rad.bottom_right, rad.bottom_left
-                ));
-            }
-            if let Some(sh) = tw.shadow {
-                let (r, g, b, a) = (sh.color.r, sh.color.g, sh.color.b, sh.color.a);
-                box_stmts.push(format!(
+        }
+        if let Some(rad) = tw.radius {
+            box_stmts.push(format!(
+                "bs.radius = CornerRadii::new({}f32, {}f32, {}f32, {}f32);",
+                rad.top_left, rad.top_right, rad.bottom_right, rad.bottom_left
+            ));
+        }
+        if let Some(sh) = tw.shadow {
+            let (r, g, b, a) = (sh.color.r, sh.color.g, sh.color.b, sh.color.a);
+            box_stmts.push(format!(
                     "bs.shadow = Some(BoxShadow::drop({}f32, {}f32, {}f32, {}f32, Color::rgba({r}, {g}, {b}, {a})));",
                     sh.offset_x, sh.offset_y, sh.blur_radius, sh.spread
                 ));
-            }
-            if tw.border_width.is_some() || tw.border_color.is_some() {
-                let bw = tw.border_width.unwrap_or(1.0);
-                let bc = tw
-                    .border_color
-                    .unwrap_or(craftui_core::Color::rgb(30, 41, 59));
-                box_stmts.push(format!(
+        }
+        if tw.border_width.is_some() || tw.border_color.is_some() {
+            let bw = tw.border_width.unwrap_or(1.0);
+            let bc = tw
+                .border_color
+                .unwrap_or(craftui_core::Color::rgb(30, 41, 59));
+            box_stmts.push(format!(
                     "bs.border = Some(Border {{ width: {bw}f32, color: Color::rgba({}, {}, {}, {}), radius: bs.radius }});",
                     bc.r, bc.g, bc.b, bc.a
                 ));
-                box_stmts.push(format!(
-                    "bs.border_color = Some(ReactiveValue::Static(Color::rgba({}, {}, {}, {})));",
-                    bc.r, bc.g, bc.b, bc.a
-                ));
-            }
+            box_stmts.push(format!(
+                "bs.border_color = Some(ReactiveValue::Static(Color::rgba({}, {}, {}, {})));",
+                bc.r, bc.g, bc.b, bc.a
+            ));
         }
     }
 
@@ -3379,10 +3378,10 @@ fn infer_expr_type(expr: &Expr, ctx: &EmitCtx<'_>) -> String {
             }
         }
         Expr::MethodCall(base, m, _) => {
-            if let Expr::Ident(root) = base.as_ref() {
-                if root == "Math" {
-                    return "f32".into();
-                }
+            if let Expr::Ident(root) = base.as_ref()
+                && root == "Math"
+            {
+                return "f32".into();
             }
             match m.as_str() {
                 "len" => "usize".into(),
@@ -3732,39 +3731,39 @@ fn expr_to_typed_rust_inner(expr: &Expr, ty: &str, ctx: &EmitCtx<'_>, tracked: b
             _ => "Default::default()".into(),
         },
         Expr::MethodCall(recv, method, args) => {
-            if let Expr::Ident(id) = recv.as_ref() {
-                if id == "Math" {
-                    match method.as_str() {
-                        "sin" | "cos" | "tan" | "sqrt" if args.len() == 1 => {
-                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                            return cast_expr_var(&format!("({x}).{method}()"), "f32", ty);
-                        }
-                        "abs" if args.len() == 1 => {
-                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                            return cast_expr_var(&format!("({x}).abs()"), "f32", ty);
-                        }
-                        "round" | "floor" | "ceil" if args.len() == 1 => {
-                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                            return cast_expr_var(&format!("({x}).{method}()"), "f32", ty);
-                        }
-                        "min" | "max" if args.len() == 2 => {
-                            let a = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                            let b = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
-                            return cast_expr_var(&format!("({a}).{method}({b})"), "f32", ty);
-                        }
-                        "pow" if args.len() == 2 => {
-                            let a = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                            let b = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
-                            return cast_expr_var(&format!("({a}).powf({b})"), "f32", ty);
-                        }
-                        "clamp" if args.len() == 3 => {
-                            let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
-                            let lo = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
-                            let hi = expr_to_typed_rust_inner(&args[2], "f32", ctx, tracked);
-                            return cast_expr_var(&format!("({x}).clamp({lo}, {hi})"), "f32", ty);
-                        }
-                        _ => {}
+            if let Expr::Ident(id) = recv.as_ref()
+                && id == "Math"
+            {
+                match method.as_str() {
+                    "sin" | "cos" | "tan" | "sqrt" if args.len() == 1 => {
+                        let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                        return cast_expr_var(&format!("({x}).{method}()"), "f32", ty);
                     }
+                    "abs" if args.len() == 1 => {
+                        let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                        return cast_expr_var(&format!("({x}).abs()"), "f32", ty);
+                    }
+                    "round" | "floor" | "ceil" if args.len() == 1 => {
+                        let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                        return cast_expr_var(&format!("({x}).{method}()"), "f32", ty);
+                    }
+                    "min" | "max" if args.len() == 2 => {
+                        let a = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                        let b = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                        return cast_expr_var(&format!("({a}).{method}({b})"), "f32", ty);
+                    }
+                    "pow" if args.len() == 2 => {
+                        let a = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                        let b = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                        return cast_expr_var(&format!("({a}).powf({b})"), "f32", ty);
+                    }
+                    "clamp" if args.len() == 3 => {
+                        let x = expr_to_typed_rust_inner(&args[0], "f32", ctx, tracked);
+                        let lo = expr_to_typed_rust_inner(&args[1], "f32", ctx, tracked);
+                        let hi = expr_to_typed_rust_inner(&args[2], "f32", ctx, tracked);
+                        return cast_expr_var(&format!("({x}).clamp({lo}, {hi})"), "f32", ty);
+                    }
+                    _ => {}
                 }
             }
             let rty = infer_expr_type(recv, ctx);

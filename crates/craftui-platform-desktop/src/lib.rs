@@ -1655,39 +1655,38 @@ fn paint_live_preview_overlays(
     }
 
     // 3. Live Element Inspector
-    if spec.show_inspector {
-        if let Some(nid) = tree.hit_test(cursor_pos) {
-            let rect = tree.rect(nid);
-            if rect.width > 0.0 && rect.height > 0.0 {
-                scene.stroke_rect(rect, Color::rgb(6, 182, 212), 2.0, CornerRadii::all(4.0));
-                if let Some(node) = tree.nodes.get(nid) {
-                    let tag_text =
-                        format!("{}  {:.0}×{:.0}", node.debug_name, rect.width, rect.height);
-                    let tag_w = (tag_text.len() as f32) * 7.0 + 14.0;
-                    let tag_y = (rect.y - 22.0).max(4.0);
-                    let tag_rect = Rect::new(rect.x, tag_y, tag_w, 20.0);
-                    scene.fill_rect(
-                        tag_rect,
-                        Brush::Solid(Color::rgba(15, 23, 42, 242)),
-                        CornerRadii::all(4.0),
-                    );
-                    scene.stroke_rect(
-                        tag_rect,
-                        Color::rgb(6, 182, 212),
-                        1.0,
-                        CornerRadii::all(4.0),
-                    );
-                    scene.commands.push(PaintCommand::DrawText {
-                        origin: Point::new(rect.x + 6.0, tag_y + 4.0),
-                        text: tag_text,
-                        style: TextStyle {
-                            font_size: 11.0,
-                            color: Color::WHITE,
-                            ..Default::default()
-                        },
-                        max_width: None,
-                    });
-                }
+    if spec.show_inspector
+        && let Some(nid) = tree.hit_test(cursor_pos)
+    {
+        let rect = tree.rect(nid);
+        if rect.width > 0.0 && rect.height > 0.0 {
+            scene.stroke_rect(rect, Color::rgb(6, 182, 212), 2.0, CornerRadii::all(4.0));
+            if let Some(node) = tree.nodes.get(nid) {
+                let tag_text = format!("{}  {:.0}×{:.0}", node.debug_name, rect.width, rect.height);
+                let tag_w = (tag_text.len() as f32) * 7.0 + 14.0;
+                let tag_y = (rect.y - 22.0).max(4.0);
+                let tag_rect = Rect::new(rect.x, tag_y, tag_w, 20.0);
+                scene.fill_rect(
+                    tag_rect,
+                    Brush::Solid(Color::rgba(15, 23, 42, 242)),
+                    CornerRadii::all(4.0),
+                );
+                scene.stroke_rect(
+                    tag_rect,
+                    Color::rgb(6, 182, 212),
+                    1.0,
+                    CornerRadii::all(4.0),
+                );
+                scene.commands.push(PaintCommand::DrawText {
+                    origin: Point::new(rect.x + 6.0, tag_y + 4.0),
+                    text: tag_text,
+                    style: TextStyle {
+                        font_size: 11.0,
+                        color: Color::WHITE,
+                        ..Default::default()
+                    },
+                    max_width: None,
+                });
             }
         }
     }
@@ -2032,48 +2031,48 @@ impl ApplicationHandler<DesktopUserEvent> for DesktopRunner {
             WindowEvent::KeyboardInput { event: key_ev, .. } => {
                 let ke = translate_winit_key(&key_ev, state.modifiers);
                 #[cfg(feature = "hot-reload")]
-                if key_ev.state == ElementState::Pressed {
-                    if let Some(spec) = state.hot_reload.as_mut() {
-                        match ke.code {
-                            KeyCode::F1 => {
-                                spec.show_inspector = !spec.show_inspector;
-                                state.window.request_redraw();
-                                return;
-                            }
-                            KeyCode::F2 => {
-                                let cur = state.tree.theme().mode;
-                                let next = match cur {
-                                    ThemeMode::Amoled => ThemeTokens::dark(),
-                                    ThemeMode::Dark => ThemeTokens::light(),
-                                    _ => ThemeTokens::amoled(),
-                                };
-                                state.tree.set_theme(next);
-                                state.window.request_redraw();
-                                return;
-                            }
-                            KeyCode::F3 => {
-                                spec.device_mode = !spec.device_mode;
-                                state.window.request_redraw();
-                                return;
-                            }
-                            KeyCode::F5 => {
-                                match spec.session.reload_file(
-                                    &spec.path,
-                                    spec.component.as_deref(),
-                                    &mut state.tree,
-                                ) {
-                                    Ok(_) => {
-                                        spec.last_reload_error = None;
-                                    }
-                                    Err(e) => {
-                                        spec.last_reload_error = Some(e.to_string());
-                                    }
-                                }
-                                state.window.request_redraw();
-                                return;
-                            }
-                            _ => {}
+                if key_ev.state == ElementState::Pressed
+                    && let Some(spec) = state.hot_reload.as_mut()
+                {
+                    match ke.code {
+                        KeyCode::F1 => {
+                            spec.show_inspector = !spec.show_inspector;
+                            state.window.request_redraw();
+                            return;
                         }
+                        KeyCode::F2 => {
+                            let cur = state.tree.theme().mode;
+                            let next = match cur {
+                                ThemeMode::Amoled => ThemeTokens::dark(),
+                                ThemeMode::Dark => ThemeTokens::light(),
+                                _ => ThemeTokens::amoled(),
+                            };
+                            state.tree.set_theme(next);
+                            state.window.request_redraw();
+                            return;
+                        }
+                        KeyCode::F3 => {
+                            spec.device_mode = !spec.device_mode;
+                            state.window.request_redraw();
+                            return;
+                        }
+                        KeyCode::F5 => {
+                            match spec.session.reload_file(
+                                &spec.path,
+                                spec.component.as_deref(),
+                                &mut state.tree,
+                            ) {
+                                Ok(_) => {
+                                    spec.last_reload_error = None;
+                                }
+                                Err(e) => {
+                                    spec.last_reload_error = Some(e.to_string());
+                                }
+                            }
+                            state.window.request_redraw();
+                            return;
+                        }
+                        _ => {}
                     }
                 }
                 if state.tree.handle_event(&UiEvent::Key(ke)) {
