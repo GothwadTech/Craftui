@@ -96,6 +96,24 @@ export component LayoutDemo {
 }
 ```
 
+### Making a list fill the rest of the screen
+
+`ScrollView { flex_grow: 1.0; }` takes the space its parent has left and scrolls
+its content inside it. This only works when the parent's own height is limited.
+A parent that is sized by its content is as tall as the whole list, so nothing
+needs to scroll and the end of the list is off the screen.
+
+Give every container between the screen and the `ScrollView` a limited height
+in one of these ways:
+
+- `height: 100%;` (or a fixed height), or
+- `flex_grow: 1.0;` together with `min_height: 0dp;`.
+
+The second form is needed because a container that grows is never made smaller
+than its content unless you set a minimum. `examples/notes/ui/notes.cui` uses
+both: the row that holds the panes has `flex_grow: 1.0; min_height: 0dp;` and
+each pane has `height: 100%;`.
+
 ## Text, icons and images
 
 | Widget | What it does | Own properties |

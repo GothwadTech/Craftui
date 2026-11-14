@@ -1026,6 +1026,13 @@ mod tests {
             "the list must end inside the window: {list:?}"
         );
         assert_eq!(h.titles().len(), 60);
+
+        // The header, search box and tabs above the list keep their size.
+        let mut short = Harness::start(seeded(), PHONE);
+        short.layout();
+        let short_list = short.tree.rect(short.tree.node_by_id("note_list").unwrap());
+        assert_eq!(list.y, short_list.y, "the list must start where it always does");
+        assert_eq!(list.height, short_list.height);
     }
 
     #[test]

@@ -901,9 +901,7 @@ location_always = "Track runs"
     #[test]
     fn parse_errors_name_the_line_and_the_problem() {
         let message = |src: &str| {
-            let err = AppManifest::parse(src)
-                .err()
-                .expect("this manifest must be rejected");
+            let err = AppManifest::parse(src).expect_err("this manifest must be rejected");
             format!("{err:?}")
         };
 
@@ -944,9 +942,9 @@ location_always = "Track runs"
         assert_eq!(m.enabled_permissions().len(), 1);
         let diags = m.validate();
         assert!(
-            diags
-                .iter()
-                .any(|d| !d.is_error && d.message.contains("teleport") && d.message.contains("custom")),
+            diags.iter().any(|d| !d.is_error
+                && d.message.contains("teleport")
+                && d.message.contains("custom")),
             "an unknown permission should produce a warning"
         );
     }
@@ -988,7 +986,10 @@ location_always = "Track runs"
             AppManifest::sanitize_id("My Cool-App"),
             "dev.craftui.my_cool_app"
         );
-        assert_eq!(AppManifest::sanitize_id("--weird__name--"), "dev.craftui.weird_name");
+        assert_eq!(
+            AppManifest::sanitize_id("--weird__name--"),
+            "dev.craftui.weird_name"
+        );
         assert_eq!(AppManifest::sanitize_id("!!!"), "dev.craftui.app");
     }
 }

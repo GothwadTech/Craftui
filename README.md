@@ -129,12 +129,10 @@ The book is in [`docs/`](docs/src/SUMMARY.md):
 Every `cui` example in the documentation is compiled by the test suite, so the
 examples stay valid as the language changes.
 
-Design notes and plans, written before and during development, are in
-[`ROADMAP.md`](ROADMAP.md), [`craftui_prd.md`](craftui_prd.md),
-[`craftui_architecture.md`](craftui_architecture.md) and
-[`craftui_dsl_and_design_spec.md`](craftui_dsl_and_design_spec.md). They
-describe intent and are not always accurate about the current code; where they
-disagree with the book, the book is right.
+Design notes and plans written before and during development are in
+[`docs/design/`](docs/design/README.md). They describe intent and are not always
+accurate about the current code; where they disagree with the book, the book is
+right.
 
 ## Developing CraftUI
 

@@ -48,11 +48,19 @@ fn untracked_reads_do_not_subscribe() {
 
     ignored.set(20);
     also_ignored.set(200);
-    assert_eq!(runs.get(), 1, "untracked signals must not re-run the effect");
+    assert_eq!(
+        runs.get(),
+        1,
+        "untracked signals must not re-run the effect"
+    );
 
     tracked.set(2);
     assert_eq!(runs.get(), 2);
-    assert_eq!(last.get(), 222, "the re-run sees the latest untracked values");
+    assert_eq!(
+        last.get(),
+        222,
+        "the re-run sees the latest untracked values"
+    );
 }
 
 #[test]
@@ -250,11 +258,17 @@ fn context_is_inherited_and_can_be_overridden_by_a_child() {
     let child = root.child_scope();
     let grandchild = child.child_scope();
 
-    assert_eq!(grandchild.use_context::<String>().as_deref(), Some("root theme"));
+    assert_eq!(
+        grandchild.use_context::<String>().as_deref(),
+        Some("root theme")
+    );
     assert_eq!(grandchild.use_context::<u64>(), None);
 
     child.provide_context("child theme".to_string());
-    assert_eq!(grandchild.use_context::<String>().as_deref(), Some("child theme"));
+    assert_eq!(
+        grandchild.use_context::<String>().as_deref(),
+        Some("child theme")
+    );
     assert_eq!(root.use_context::<String>().as_deref(), Some("root theme"));
 }
 

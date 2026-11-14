@@ -76,7 +76,9 @@ fn a_row_places_children_side_by_side_and_centres_them_vertically() {
     let a = f.node(boxed(50.0, 20.0));
     let b = f.node(boxed(70.0, 40.0));
     let root = f.parent(
-        LayoutStyle::row().with_size(dp(300.0), dp(60.0)).with_gap(10.0),
+        LayoutStyle::row()
+            .with_size(dp(300.0), dp(60.0))
+            .with_gap(10.0),
         &[a, b],
     );
     f.compute(root, 300.0, 60.0);
@@ -171,7 +173,10 @@ fn flex_grow_shares_spare_space_in_proportion() {
 fn percentages_resolve_against_the_parent() {
     let mut f = Fixture::new();
     let child = f.node(LayoutStyle::column().with_size(pct(50.0), pct(25.0)));
-    let root = f.parent(LayoutStyle::column().with_size(dp(400.0), dp(200.0)), &[child]);
+    let root = f.parent(
+        LayoutStyle::column().with_size(dp(400.0), dp(200.0)),
+        &[child],
+    );
     f.compute(root, 400.0, 200.0);
 
     let rect = f.rect(child);
@@ -261,7 +266,10 @@ fn removing_a_child_closes_the_gap() {
     let a = f.node(LayoutStyle::column().with_height(dp(20.0)));
     let b = f.node(LayoutStyle::column().with_height(dp(20.0)));
     let c = f.node(LayoutStyle::column().with_height(dp(20.0)));
-    let root = f.parent(LayoutStyle::column().with_size(dp(100.0), dp(100.0)), &[a, b, c]);
+    let root = f.parent(
+        LayoutStyle::column().with_size(dp(100.0), dp(100.0)),
+        &[a, b, c],
+    );
     f.compute(root, 100.0, 100.0);
     assert_eq!(f.rect(c).y, 40.0);
 
@@ -275,7 +283,10 @@ fn removing_a_child_closes_the_gap() {
 fn a_new_window_size_is_applied_on_the_next_layout() {
     let mut f = Fixture::new();
     let child = f.node(LayoutStyle::column().with_flex_grow(1.0));
-    let root = f.parent(LayoutStyle::column().with_size(pct(100.0), pct(100.0)), &[child]);
+    let root = f.parent(
+        LayoutStyle::column().with_size(pct(100.0), pct(100.0)),
+        &[child],
+    );
 
     f.compute(root, 400.0, 800.0);
     assert_eq!(f.rect(child), Rect::new(0.0, 0.0, 400.0, 800.0));

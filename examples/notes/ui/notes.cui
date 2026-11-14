@@ -75,6 +75,10 @@ export component NotesScreen {
             Row {
                 width: 100%;
                 flex_grow: 1.0;
+                // Without this the row would be as tall as its content, so a
+                // long list of notes would run off the screen instead of
+                // scrolling inside the list pane.
+                min_height: 0dp;
 
                 // ---------------------------------------------------------
                 // List pane
