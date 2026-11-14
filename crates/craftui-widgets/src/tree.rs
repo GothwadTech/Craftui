@@ -1579,11 +1579,13 @@ impl WidgetTree {
         let initial_s = bound_signal
             .map(|s| s.get_untracked())
             .unwrap_or_else(|| initial.into());
+        let placeholder = placeholder.into();
+        let accessible_name = (!placeholder.is_empty()).then(|| placeholder.clone());
         let id = self.spawn_node(
             "TextInput",
             WidgetKind::TextInput {
                 editor: TextEditorState::new(initial_s.clone()),
-                placeholder: placeholder.into(),
+                placeholder,
                 style: TextStyle::default().with_size(14.0),
                 multiline: false,
                 bound_signal,
@@ -1598,6 +1600,8 @@ impl WidgetTree {
         if let Some(n) = self.nodes.get_mut(id) {
             n.box_style.radius = CornerRadii::all(8.0);
             n.a11y.role = A11yRole::TextInput;
+            // Without a name a screen reader only announces "edit text".
+            n.a11y.label = accessible_name;
             n.a11y.value = Some(initial_s);
             n.a11y.focusable = true;
         }
@@ -1615,11 +1619,13 @@ impl WidgetTree {
         let initial_s = bound_signal
             .map(|s| s.get_untracked())
             .unwrap_or_else(|| initial.into());
+        let placeholder = placeholder.into();
+        let accessible_name = (!placeholder.is_empty()).then(|| placeholder.clone());
         let id = self.spawn_node(
             "TextArea",
             WidgetKind::TextInput {
                 editor: TextEditorState::new(initial_s.clone()),
-                placeholder: placeholder.into(),
+                placeholder,
                 style: TextStyle::default().with_size(14.0),
                 multiline: true,
                 bound_signal,
@@ -1634,6 +1640,8 @@ impl WidgetTree {
         if let Some(n) = self.nodes.get_mut(id) {
             n.box_style.radius = CornerRadii::all(8.0);
             n.a11y.role = A11yRole::MultilineTextInput;
+            // Without a name a screen reader only announces "edit text".
+            n.a11y.label = accessible_name;
             n.a11y.value = Some(initial_s);
             n.a11y.focusable = true;
         }
@@ -3875,6 +3883,13 @@ impl WidgetTree {
         self.layout_engine.rect(node)
     }
 
+    /// Whether a node is mounted and shown: neither it nor any ancestor is
+    /// hidden by `visible`, a false `if` condition, a closed overlay or a
+    /// collapsed accordion.
+    pub fn is_visible(&self, node: NodeId) -> bool {
+        !self.is_effectively_hidden(node)
+    }
+
     fn is_effectively_hidden(&self, id: NodeId) -> bool {
         let mut cur = Some(id);
         while let Some(nid) = cur {
@@ -4060,8 +4075,11 @@ impl WidgetTree {
 
     /// Pull dirty flags from `craftui-reactive` and update layout + virtualized windows.
     pub fn layout(&mut self, metrics: WindowMetrics) -> usize {
-        if self.metrics != metrics {
-            self.metrics = metrics;
+        self.metrics = metrics;
+        // Platform runners assign `metrics` directly before the first frame, so
+        // comparing against the field alone would leave the reactive copy at
+        // its default and `Window.*` bindings would see the wrong size.
+        if self.metrics_signal.get_untracked() != metrics {
             self.metrics_signal.set(metrics);
         }
         let dirty_updates = drain_dirty_nodes();

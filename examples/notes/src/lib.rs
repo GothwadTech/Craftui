@@ -226,7 +226,9 @@ impl NotesController {
             Some(note) => {
                 self.screen.draft_title.set(note.title.clone());
                 self.screen.draft_body.set(note.body.clone());
-                self.screen.pin_label.set(pin_label(note.pinned).to_string());
+                self.screen
+                    .pin_label
+                    .set(pin_label(note.pinned).to_string());
                 let status = if note.is_blank() {
                     "New note".to_string()
                 } else {
@@ -267,7 +269,11 @@ impl NotesController {
         let Some(id) = self.selected.get() else {
             return;
         };
-        let blank = self.book.borrow().get(id).is_some_and(|note| note.is_blank());
+        let blank = self
+            .book
+            .borrow()
+            .get(id)
+            .is_some_and(|note| note.is_blank());
         if blank {
             self.book.borrow_mut().delete(id);
             self.persist();
@@ -339,9 +345,15 @@ impl NotesController {
         let (empty_title, empty_hint) = if total == 0 {
             ("No notes yet", "Tap + to write your first note.")
         } else if searching {
-            ("Nothing found", "Try a different word, or clear the search.")
+            (
+                "Nothing found",
+                "Try a different word, or clear the search.",
+            )
         } else {
-            ("No pinned notes", "Open a note and tap Pin to keep it here.")
+            (
+                "No pinned notes",
+                "Open a note and tap Pin to keep it here.",
+            )
         };
         drop(book);
 
@@ -495,9 +507,7 @@ pub fn start() -> Result<(), JsValue> {
 pub fn android_main(app: craftui::platform_android::android_activity::AndroidApp) {
     // The app's private files directory. It needs no permission and is removed
     // when the app is uninstalled.
-    let data_dir = app
-        .internal_data_path()
-        .unwrap_or_else(std::env::temp_dir);
+    let data_dir = app.internal_data_path().unwrap_or_else(std::env::temp_dir);
     let notes_file = data_dir.join("notes.json");
 
     craftui::platform_android::android_runtime::run_android_app(
@@ -534,8 +544,7 @@ mod tests {
             let mut tree = WidgetTree::new(cx);
             let clock = Rc::new(Cell::new(T0));
             let clock_handle = clock.clone();
-            let config =
-                NotesConfig::new(storage.clone()).with_clock(move || clock_handle.get());
+            let config = NotesConfig::new(storage.clone()).with_clock(move || clock_handle.get());
             let (root, ctrl) = mount_notes_app(cx, &mut tree, config);
             tree.set_root(root);
             let mut harness = Self {
@@ -573,8 +582,12 @@ mod tests {
             Notebook::from_json(&text).expect("saved notebook is valid")
         }
 
+        /// Whether the node with this `id` is on screen. An `if` without `else`
+        /// keeps its element mounted and hides it, so being mounted is not enough.
         fn has_node(&self, id: &str) -> bool {
-            self.tree.node_by_id(id).is_some()
+            self.tree
+                .node_by_id(id)
+                .is_some_and(|node| self.tree.is_visible(node))
         }
 
         fn tap(&mut self, id: &str) {
@@ -704,7 +717,10 @@ mod tests {
         let h = Harness::start(seeded(), DESKTOP);
         h.ctrl.open_note(2);
         assert_eq!(h.ctrl.screen.draft_title.get(), "Trip ideas");
-        h.ctrl.screen.draft_body.set("Jaipur in winter, Goa in March".to_string());
+        h.ctrl
+            .screen
+            .draft_body
+            .set("Jaipur in winter, Goa in March".to_string());
 
         h.ctrl.open_note(3);
         assert_eq!(h.ctrl.screen.draft_title.get(), "Plumber");
@@ -973,6 +989,61 @@ mod tests {
         assert!(h.has_node("list_pane"));
     }
 
+    #[test]
+    fn the_note_body_fills_the_rest_of_the_editor() {
+        for size in [PHONE, DESKTOP] {
+            let mut h = Harness::start(seeded(), size);
+            h.ctrl.open_note(2);
+            h.layout();
+
+            let title = h.tree.rect(h.tree.node_by_id("title_input").unwrap());
+            let body = h.tree.rect(h.tree.node_by_id("body_input").unwrap());
+            let bottom = body.y + body.height;
+            assert!(body.y > title.y + title.height - 1.0, "body: {body:?}");
+            // 16dp of padding is left under the text area.
+            assert!(
+                (bottom - (size.1 - 16.0)).abs() < 2.0,
+                "the body should reach the bottom of a {size:?} window: {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_list_scrolls_inside_the_window() {
+        let mut book = Notebook::new();
+        for n in 0..60 {
+            book.create(&format!("Note {n}"), "some text", T0 - n * 60_000);
+        }
+        let mut h = Harness::start(MemoryStorage::with_contents(book.to_json()), PHONE);
+        h.layout();
+
+        // The list is taller than the phone, so it has to stay inside the
+        // window and scroll rather than push its end off the screen.
+        let list = h.tree.rect(h.tree.node_by_id("note_list").unwrap());
+        assert!(list.height > 200.0, "list: {list:?}");
+        assert!(
+            list.y + list.height <= PHONE.1 + 0.5,
+            "the list must end inside the window: {list:?}"
+        );
+        assert_eq!(h.titles().len(), 60);
+    }
+
+    #[test]
+    fn text_fields_are_named_for_screen_readers() {
+        let mut h = Harness::start(seeded(), DESKTOP);
+        h.ctrl.open_note(2);
+        h.layout();
+        for (id, name) in [
+            ("search_input", "Search notes"),
+            ("title_input", "Title"),
+            ("body_input", "Start writing..."),
+        ] {
+            let node = h.tree.node_by_id(id).unwrap_or_else(|| panic!("no `{id}`"));
+            let label = h.tree.nodes.get(node).and_then(|n| n.a11y.label.clone());
+            assert_eq!(label.as_deref(), Some(name), "accessible name of `{id}`");
+        }
+    }
+
     /// Renders the main screens. When `CRAFTUI_SNAPSHOT_DIR` is set (CI does
     /// this) the frames are also written there as PNG files for review.
     #[test]
@@ -1015,7 +1086,7 @@ mod tests {
         assert_eq!(list.len(), 390 * 800 * 4);
         // Not a blank frame: more than one colour was drawn.
         let first = &list[0..4];
-        assert!(list.chunks_exact(4).any(|pixel| pixel != first));
+        assert!(list.as_chunks::<4>().0.iter().any(|pixel| pixel != first));
 
         h.ctrl.open_note(2);
         h.layout();

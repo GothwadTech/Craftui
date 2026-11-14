@@ -2664,19 +2664,18 @@ class MainActivity : GameActivity() {{
         .and_then(|_| std::fs::write(java_dir.join("MainActivity.kt"), main_activity))
         .map_err(|e| CraftError::Platform(format!("failed writing android template: {e}")))?;
 
+    // `local.properties` tells Gradle where the Android SDK is. When it cannot
+    // be worked out, the file is left out and Gradle falls back to ANDROID_HOME
+    // or reports a clear "SDK location not found" error.
     let sdk_dir = std::env::var("ANDROID_HOME")
         .or_else(|_| std::env::var("ANDROID_SDK_ROOT"))
-        .unwrap_or_else(|_| {
-            if let Ok(home) = std::env::var("HOME") {
-                format!("{home}/Android/Sdk")
-            } else {
-                "/home/krishna/Android/Sdk".to_string()
-            }
-        });
-    let _ = std::fs::write(
-        out_dir.join("local.properties"),
-        format!("sdk.dir={}\n", sdk_dir.replace('\\', "/")),
-    );
+        .or_else(|_| std::env::var("HOME").map(|home| format!("{home}/Android/Sdk")));
+    if let Ok(sdk_dir) = sdk_dir {
+        let _ = std::fs::write(
+            out_dir.join("local.properties"),
+            format!("sdk.dir={}\n", sdk_dir.replace('\\', "/")),
+        );
+    }
     let _ = std::fs::write(
         out_dir.join("gradle.properties"),
         "android.useAndroidX=true\n",

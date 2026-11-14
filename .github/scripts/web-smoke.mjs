@@ -234,10 +234,18 @@ await check("tapping + opens the editor", async () => {
   await screenshot("web-2-editor.png");
 });
 
+await check("a phone-sized window shows one pane at a time", async () => {
+  // The viewport is narrower than the 720dp breakpoint, so opening a note
+  // must replace the list rather than sit beside it.
+  const search = await rectOf(`input${label("Search notes")}`);
+  if (search) throw new Error(`the list is still shown next to the editor (search field at x=${search.x})`);
+  await waitFor("the back button", () => rectOf(label("chevron_left")));
+});
+
 await check("typing a title saves the note to localStorage", async () => {
-  // On a phone-sized window the editor is the only pane, so the first text
-  // field in the tree is the title.
-  await click("input");
+  // Text fields are announced by their placeholder, which is also how the
+  // test finds the title field.
+  await click(`input${label("Title")}`);
   await cdp("Input.insertText", { text: TYPED_TITLE });
   await waitFor("the note in localStorage", () =>
     evaluate(`(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}) ?? "").includes(${JSON.stringify(TYPED_TITLE)})`),

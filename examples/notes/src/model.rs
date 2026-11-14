@@ -63,7 +63,11 @@ impl Note {
         let body = self.body.trim();
         if body.is_empty() || self.title.trim().is_empty() {
             // Either there is no body, or the title was derived from it.
-            if body.is_empty() { title } else { body.to_string() }
+            if body.is_empty() {
+                title
+            } else {
+                body.to_string()
+            }
         } else {
             format!("{title}\n\n{body}")
         }

@@ -357,6 +357,52 @@ fn find_prop<'a>(el: &'a ElementNode, names: &[&str]) -> Option<&'a PropBinding>
     el.props.iter().find(|p| names.iter().any(|n| p.name == *n))
 }
 
+/// Sizing that the wrapper around `if … else` branches takes over from them.
+///
+/// The branches are mounted inside a helper container. Left at its default
+/// size, that container is only as large as its content, so a branch asking
+/// for `flex_grow: 1.0` or `height: 100%` would have nothing to grow into.
+/// The first branch that sets a literal `width`, `height` or `flex_grow`
+/// decides the wrapper's value for it.
+fn slot_sizing_from_branches(branches: &[&ElementNode]) -> String {
+    fn literal_len(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Length(v, Unit::Dp) => Some(format!("Length::Dp({v:.2})")),
+            Expr::Length(v, Unit::Px) => Some(format!("Length::Px({v:.2})")),
+            Expr::Length(v, Unit::Pct) => Some(format!("Length::Pct({v:.2})")),
+            Expr::Int(v) => Some(format!("Length::Dp({v}.0)")),
+            Expr::Float(v) => Some(format!("Length::Dp({v:.2})")),
+            _ => None,
+        }
+    }
+    fn literal_number(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Int(v) => Some(format!("{v}.0")),
+            Expr::Float(v) => Some(format!("{v:.2}")),
+            _ => None,
+        }
+    }
+    let first = |name: &str, convert: fn(&Expr) -> Option<String>| {
+        branches
+            .iter()
+            .copied()
+            .filter_map(|el| find_prop(el, &[name]))
+            .find_map(|p| convert(&p.value))
+    };
+
+    let mut out = String::new();
+    if let Some(width) = first("width", literal_len) {
+        let _ = write!(out, ".with_width({width})");
+    }
+    if let Some(height) = first("height", literal_len) {
+        let _ = write!(out, ".with_height({height})");
+    }
+    if let Some(grow) = first("flex_grow", literal_number) {
+        let _ = write!(out, ".with_flex_grow({grow})");
+    }
+    out
+}
+
 fn find_handler<'a>(el: &'a ElementNode, names: &[&str]) -> Option<&'a HandlerBinding> {
     el.handlers
         .iter()
@@ -2753,9 +2799,10 @@ fn emit_children(
                         &slot_ctx,
                     );
 
+                    let slot_sizing = slot_sizing_from_branches(&[&**then_branch, &**eb]);
                     let _ = writeln!(
                         out,
-                        "{indent}{{ let __if_host = {tr}.dynamic_slot({cx}, {slot_layout}, {{ {captures_cond} move || {cond_dyn} }}, {{ {captures_body} move |__if_cx, &__is_then, __if_tree| {{ if __is_then {{\n{then_buf}{indent}            {tvar}\n{indent}        }} else {{\n{else_buf}{indent}            {evar}\n{indent}        }} }} }}); {tr}.append_child({var}, __if_host); }}"
+                        "{indent}{{ let __if_host = {tr}.dynamic_slot({cx}, {slot_layout}{slot_sizing}, {{ {captures_cond} move || {cond_dyn} }}, {{ {captures_body} move |__if_cx, &__is_then, __if_tree| {{ if __is_then {{\n{then_buf}{indent}            {tvar}\n{indent}        }} else {{\n{else_buf}{indent}            {evar}\n{indent}        }} }} }}); {tr}.append_child({var}, __if_host); }}"
                     );
                 } else {
                     let cvar = emit_element(out, then_branch, counter, indent, ctx);

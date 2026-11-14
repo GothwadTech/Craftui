@@ -4,14 +4,17 @@
 
 # Getting Started
 - [Installation (Linux & Android)](getting-started/installation-linux-android.md)
-- [Quickstart: Your First App](getting-started/quickstart.md)
+- [Quickstart: your first app](getting-started/quickstart.md)
 
 # The `.cui` DSL
-- [Syntax & Markup Guide](dsl/syntax-guide.md)
-- [Reactivity & State Management](dsl/reactivity.md)
+- [The `.cui` language](dsl/syntax-guide.md)
+- [Reactivity and Rust](dsl/reactivity.md)
 
-# Widget Catalog
-- [Comprehensive Widget Reference](widgets/catalog.md)
+# Widgets
+- [Widget catalog](widgets/catalog.md)
+
+# Tutorials
+- [Building the Notes app](guides/notes-app.md)
 
 # Platform Guides
 - [Linux Desktop Development](platforms/linux-desktop.md)

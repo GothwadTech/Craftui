@@ -8,5 +8,7 @@ min_sdk = 26
 target_sdk = 35
 version_code = 1
 
-# Notes are kept in the app's private storage, so no permissions are needed.
+# Notes are kept in the app's private storage, so the app asks for no
+# permissions of its own. (The packaging template still adds INTERNET, and the
+# biometrics library it links adds USE_BIOMETRIC; see the README.)
 [permissions]
