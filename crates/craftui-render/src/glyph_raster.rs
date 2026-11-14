@@ -70,7 +70,7 @@ impl OutlineRecorder {
         let y1 = (self.max_y + sub_y).ceil() as i32 + 1;
         let width = (x1 - x0).max(1) as usize;
         let height = (y1 - y0).max(1) as usize;
-        if width > 16384 || height > 16384 {
+        if width > 8192 || height > 8192 || width.saturating_mul(height) > 16 * 1024 * 1024 {
             return None;
         }
 

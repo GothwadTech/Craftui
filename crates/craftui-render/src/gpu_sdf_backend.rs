@@ -1027,6 +1027,13 @@ impl GpuSdfBackend {
         }
         // Flush queued geometry that still references old atlas UVs before resetting atlas!
         self.flush_pending(device, queue, encoder, inst_cursor, background);
+        let old_cmd = std::mem::replace(
+            encoder,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("craftui-render-encoder-reset"),
+            }),
+        );
+        queue.submit(std::iter::once(old_cmd.finish()));
         self.atlas_alloc.clear();
         self.glyph_cache.clear();
         self.path_cache.clear();
@@ -1286,16 +1293,19 @@ impl GpuSdfBackend {
                         attempt += 1;
                         if attempt < 2 {
                             continue 'retry;
+                        } else {
+                            self.path_cache.insert(key, None);
+                            return None;
                         }
                     }
 
                     self.upload_rgba_to_atlas(queue, ax, ay, cur_w, cur_h, &rgba);
 
                     tiles.push(AtlasEntry {
-                        u0: ax as f32 * inv,
-                        v0: ay as f32 * inv,
-                        u1: (ax + cur_w) as f32 * inv,
-                        v1: (ay + cur_h) as f32 * inv,
+                        u0: (ax as f32 + 0.5) * inv,
+                        v0: (ay as f32 + 0.5) * inv,
+                        u1: ((ax + cur_w) as f32 - 0.5).max(ax as f32 + 0.5) * inv,
+                        v1: ((ay + cur_h) as f32 - 0.5).max(ay as f32 + 0.5) * inv,
                         width: cur_w,
                         height: cur_h,
                         offset_x: mask.offset_x + tile_x as i32,
@@ -1304,6 +1314,11 @@ impl GpuSdfBackend {
                 }
             }
             break;
+        }
+
+        if self.atlas_generation != start_gen || tiles.is_empty() {
+            self.path_cache.insert(key, None);
+            return None;
         }
 
         let res = PathAtlasTiles::Multiple(tiles);
