@@ -28,6 +28,7 @@ pub struct WhiteboardController {
     pub view: Signal<ViewTransform>,
     pub selected_id: Signal<Option<u64>>,
     pub tool_locked: Signal<bool>,
+    pub is_dark: Signal<bool>,
     pub history: Rc<RefCell<HistoryManager>>,
     next_id: Rc<Cell<u64>>,
     interaction: Rc<RefCell<InteractionState>>,
@@ -42,6 +43,7 @@ impl WhiteboardController {
         let view = cx.signal(ViewTransform::default());
         let selected_id = cx.signal(None);
         let tool_locked = cx.signal(false);
+        let is_dark = cx.signal(false);
 
         let mut history_mgr = HistoryManager::default();
         history_mgr.push(elements.get());
@@ -54,6 +56,7 @@ impl WhiteboardController {
             view,
             selected_id,
             tool_locked,
+            is_dark,
             history: Rc::new(RefCell::new(history_mgr)),
             next_id: Rc::new(Cell::new(100)),
             interaction: Rc::new(RefCell::new(InteractionState::Idle)),
@@ -201,26 +204,31 @@ pub fn attach_whiteboard_canvas(tree: &mut WidgetTree, node: NodeId, ctrl: White
 }
 
 pub fn paint_whiteboard(bounds: Rect, scene: &mut PaintScene, ctrl: &WhiteboardController) {
-    // Fill background
-    scene.fill_rect(bounds, Color::rgb(255, 255, 255), CornerRadii::ZERO);
+    let is_dark = ctrl.is_dark.get();
+    let bg_color = if is_dark {
+        Color::rgb(18, 18, 18)
+    } else {
+        Color::rgb(255, 255, 255)
+    };
+    scene.fill_rect(bounds, bg_color, CornerRadii::ZERO);
 
     let view = ctrl.view.get();
 
-    // 1. Draw subtle infinite dot grid (spaced at 24dp intervals in world space)
-    paint_dot_grid(bounds, scene, view);
+    // 1. Draw subtle infinite dot grid (batched in single fill_path call for high FPS)
+    paint_dot_grid(bounds, scene, view, is_dark);
 
     // 2. Draw committed elements
     let elements = ctrl.elements.get();
     let selected_id = ctrl.selected_id.get();
 
     for elem in &elements {
-        paint_element(scene, elem, view);
+        paint_element(scene, elem, view, is_dark);
     }
 
     // 3. Draw active drawing preview draft (if currently dragging out a new shape)
     let interaction = ctrl.interaction.borrow().clone();
     if let InteractionState::Drawing { draft } = interaction {
-        paint_element(scene, &draft, view);
+        paint_element(scene, &draft, view, is_dark);
     }
 
     // 4. Draw selection bounding box and corner handles
@@ -231,7 +239,7 @@ pub fn paint_whiteboard(bounds: Rect, scene: &mut PaintScene, ctrl: &WhiteboardC
     }
 }
 
-fn paint_dot_grid(bounds: Rect, scene: &mut PaintScene, view: ViewTransform) {
+fn paint_dot_grid(bounds: Rect, scene: &mut PaintScene, view: ViewTransform, is_dark: bool) {
     let grid_step = 36.0;
     let scaled_step = grid_step * view.zoom;
 
@@ -242,27 +250,40 @@ fn paint_dot_grid(bounds: Rect, scene: &mut PaintScene, view: ViewTransform) {
     let start_x = ((view.pan.x % scaled_step) + scaled_step) % scaled_step;
     let start_y = ((view.pan.y % scaled_step) + scaled_step) % scaled_step;
 
-    let dot_color = Color::rgba(215, 220, 228, (160.0 * view.zoom.min(1.0)) as u8);
+    let dot_color = if is_dark {
+        Color::rgba(65, 72, 85, (160.0 * view.zoom.min(1.0)) as u8)
+    } else {
+        Color::rgba(215, 220, 228, (160.0 * view.zoom.min(1.0)) as u8)
+    };
     let dot_size = 1.5;
 
+    let mut path = kurbo::BezPath::new();
     let mut x = start_x;
     while x < bounds.width {
         let mut y = start_y;
         while y < bounds.height {
-            scene.fill_rect(
-                Rect::new(x, y, dot_size, dot_size),
-                dot_color,
-                CornerRadii::ZERO,
-            );
+            path.move_to((x as f64, y as f64));
+            path.line_to(((x + dot_size) as f64, y as f64));
+            path.line_to(((x + dot_size) as f64, (y + dot_size) as f64));
+            path.line_to((x as f64, (y + dot_size) as f64));
+            path.close_path();
             y += scaled_step;
         }
         x += scaled_step;
     }
+    if !path.is_empty() {
+        scene.fill_path(path, dot_color);
+    }
 }
 
-fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTransform) {
+fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTransform, is_dark: bool) {
     let screen_origin = view.world_to_screen(elem.origin);
     let scaled_width = (elem.stroke_width * view.zoom).clamp(1.0, 20.0);
+    let stroke_color = if is_dark && elem.stroke_color == Color::rgb(30, 30, 30) {
+        Color::rgb(224, 224, 224)
+    } else {
+        elem.stroke_color
+    };
     let seed = elem.id.wrapping_mul(31);
 
     match &elem.kind {
@@ -273,7 +294,7 @@ fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTra
             if let Some(fill) = elem.fill_color {
                 scene.fill_path(path.clone(), fill);
             }
-            scene.stroke_path(path, elem.stroke_color, scaled_width);
+            scene.stroke_path(path, stroke_color, scaled_width);
         }
         ElementKind::Diamond { width, height } => {
             let sw = width * view.zoom;
@@ -282,7 +303,7 @@ fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTra
             if let Some(fill) = elem.fill_color {
                 scene.fill_path(path.clone(), fill);
             }
-            scene.stroke_path(path, elem.stroke_color, scaled_width);
+            scene.stroke_path(path, stroke_color, scaled_width);
         }
         ElementKind::Ellipse { radius_x, radius_y } => {
             let srx = radius_x * view.zoom;
@@ -291,17 +312,17 @@ fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTra
             if let Some(fill) = elem.fill_color {
                 scene.fill_path(path.clone(), fill);
             }
-            scene.stroke_path(path, elem.stroke_color, scaled_width);
+            scene.stroke_path(path, stroke_color, scaled_width);
         }
         ElementKind::Arrow { end } => {
             let screen_end = view.world_to_screen(*end);
             let path = sketch_arrow_path(screen_origin, screen_end, elem.roughness, seed);
-            scene.stroke_path(path, elem.stroke_color, scaled_width);
+            scene.stroke_path(path, stroke_color, scaled_width);
         }
         ElementKind::Line { end } => {
             let screen_end = view.world_to_screen(*end);
             let path = sketch_line_path(screen_origin, screen_end, elem.roughness, seed);
-            scene.stroke_path(path, elem.stroke_color, scaled_width);
+            scene.stroke_path(path, stroke_color, scaled_width);
         }
         ElementKind::Freehand { points } => {
             let mut screen_pts = Vec::with_capacity(points.len() + 1);
@@ -310,7 +331,7 @@ fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTra
                 screen_pts.push(view.world_to_screen(*p));
             }
             let path = sketch_freehand_path(&screen_pts, elem.roughness, seed);
-            scene.stroke_path(path, elem.stroke_color, scaled_width);
+            scene.stroke_path(path, stroke_color, scaled_width);
         }
         ElementKind::Text { content, font_size } => {
             let scaled_font_size = (font_size * view.zoom).clamp(8.0, 96.0);
@@ -319,7 +340,7 @@ fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTra
                 content.clone(),
                 TextStyle {
                     font_size: scaled_font_size,
-                    color: elem.stroke_color,
+                    color: stroke_color,
                     ..Default::default()
                 },
                 None,
