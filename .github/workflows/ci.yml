@@ -75,12 +75,6 @@ jobs:
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev libx11-dev
       - name: Format check
         run: .github/scripts/logged.sh fmt cargo fmt --all -- --check
-      - name: Save the formatting patch
-        if: ${{ failure() }}
-        run: |
-          cargo fmt --all
-          git diff >"$RUNNER_TEMP/ci-logs/fmt.patch"
-          git checkout -- .
       - name: Clippy report (all warnings, never fails on lints)
         if: ${{ !cancelled() }}
         run: .github/scripts/logged.sh clippy-report cargo clippy --locked --workspace --all-targets
@@ -93,6 +87,13 @@ jobs:
       - name: Minimal-feature compile check
         if: ${{ !cancelled() }}
         run: .github/scripts/logged.sh minimal cargo check --locked -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"
+      - name: Save machine-applicable fixes as a patch
+        if: ${{ failure() }}
+        run: |
+          cargo clippy --fix --allow-dirty --allow-staged --locked --workspace --all-targets || true
+          cargo fmt --all || true
+          git diff >"$RUNNER_TEMP/ci-logs/autofix.patch"
+          git checkout -- .
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh linux
@@ -123,7 +124,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Clippy report (all warnings, never fails on lints)
         run: .github/scripts/logged.sh clippy-report cargo clippy --locked -p craftui-platform-web --target wasm32-unknown-unknown
@@ -133,6 +134,13 @@ jobs:
       - name: Minimal-feature check
         if: ${{ !cancelled() }}
         run: .github/scripts/logged.sh minimal cargo check --locked -p craftui-platform-web --target wasm32-unknown-unknown --no-default-features --features gpu-sdf
+      - name: Save machine-applicable fixes as a patch
+        if: ${{ failure() }}
+        run: |
+          cargo clippy --fix --allow-dirty --allow-staged --locked -p craftui-platform-web --target wasm32-unknown-unknown || true
+          cargo fmt --all || true
+          git diff >"$RUNNER_TEMP/ci-logs/autofix.patch"
+          git checkout -- .
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh wasm
@@ -145,7 +153,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Point cargo at the preinstalled NDK
         run: |
@@ -164,6 +172,13 @@ jobs:
       - name: Minimal-feature check
         if: ${{ !cancelled() }}
         run: .github/scripts/logged.sh minimal cargo check --locked -p craftui-platform-android --target aarch64-linux-android --no-default-features --features gpu-sdf
+      - name: Save machine-applicable fixes as a patch
+        if: ${{ failure() }}
+        run: |
+          cargo clippy --fix --allow-dirty --allow-staged --locked -p craftui-platform-android --target aarch64-linux-android || true
+          cargo fmt --all || true
+          git diff >"$RUNNER_TEMP/ci-logs/autofix.patch"
+          git checkout -- .
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh android
