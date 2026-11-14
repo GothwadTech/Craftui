@@ -1,12 +1,25 @@
 name: CraftUI CI
 
+# Pull requests run the Tier 1 targets (Linux desktop, Web/WASM, Android).
+# The slower and more expensive Windows and macOS runners only run on pushes
+# to `main` and on manual dispatch.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
 
 jobs:
   license-guard:
@@ -18,31 +31,66 @@ jobs:
         with:
           command: check licenses
 
-  test-desktop:
-    name: Test & Clippy (${{ matrix.os }})
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  lockfile:
+    name: Resolve Cargo.lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generate lockfile when it is not committed
+        run: |
+          if [ ! -f Cargo.lock ]; then cargo generate-lockfile; fi
+          wc -l Cargo.lock
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+
+  linux:
+    name: Linux (fmt, clippy, tests)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Install Linux System Deps
-        if: matrix.os == 'ubuntu-latest'
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev libx11-dev
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - name: Minimal-Feature Compile Check
-        if: matrix.os == 'ubuntu-latest'
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (deny warnings)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace
+      - name: Minimal-feature compile check
+        if: ${{ !cancelled() }}
         run: cargo check -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"
 
-  check-wasm:
-    name: Web WASM Clippy & Minimal Check
+  desktop-matrix:
+    name: Test & Clippy (${{ matrix.os }})
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: ${{ !cancelled() }}
+        run: cargo test --workspace
+
+  wasm:
+    name: Web WASM (clippy, minimal check)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,11 +98,15 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: clippy
-      - run: cargo clippy -p craftui-platform-web --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo check -p craftui-platform-web --target wasm32-unknown-unknown --no-default-features --features gpu-sdf
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p craftui-platform-web --target wasm32-unknown-unknown -- -D warnings
+      - name: Minimal-feature check
+        if: ${{ !cancelled() }}
+        run: cargo check -p craftui-platform-web --target wasm32-unknown-unknown --no-default-features --features gpu-sdf
 
-  check-android:
-    name: Android Clippy & Minimal Check
+  android:
+    name: Android (clippy, minimal check)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,26 +114,34 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
-      - name: Clippy & Minimal-Feature Check with preinstalled NDK
+      - uses: Swatinem/rust-cache@v2
+      - name: Point cargo at the preinstalled NDK
         run: |
           NDK_BIN="${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export CC_aarch64_linux_android="${NDK_BIN}/aarch64-linux-android26-clang"
-          export CXX_aarch64_linux_android="${NDK_BIN}/aarch64-linux-android26-clang++"
-          export AR_aarch64_linux_android="${NDK_BIN}/llvm-ar"
-          cargo clippy -p craftui-platform-android --target aarch64-linux-android -- -D warnings
-          cargo check -p craftui-platform-android --target aarch64-linux-android --no-default-features --features gpu-sdf
+          {
+            echo "CC_aarch64_linux_android=${NDK_BIN}/aarch64-linux-android26-clang"
+            echo "CXX_aarch64_linux_android=${NDK_BIN}/aarch64-linux-android26-clang++"
+            echo "AR_aarch64_linux_android=${NDK_BIN}/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${NDK_BIN}/aarch64-linux-android26-clang"
+          } >> "$GITHUB_ENV"
+      - name: Clippy
+        run: cargo clippy -p craftui-platform-android --target aarch64-linux-android -- -D warnings
+      - name: Minimal-feature check
+        if: ${{ !cancelled() }}
+        run: cargo check -p craftui-platform-android --target aarch64-linux-android --no-default-features --features gpu-sdf
 
   bench-smoke:
-    name: Benchmark Smoke Check
+    name: Benchmark smoke check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install Linux System Deps
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev libx11-dev
-      - name: Run Perf Suite Smoke Benchmark
+      - name: Run perf suite smoke benchmark
         run: |
           cargo bench -p craftui --bench perf_suite -- --quick --json > bench-smoke.json
           cat bench-smoke.json
