@@ -17,9 +17,9 @@ pub use router::{Router, RouterTransition};
 pub use toast::{ToastItem, ToastManager, ToastSeverity};
 pub use tree::{TreeUiSnapshot, VirtualItemFactory, WidgetNode, WidgetTree};
 pub use widgets::{
-    BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CardVariant, CustomWidget, FloatCallback,
-    HoverCallback, IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, TextCallback,
-    ToastDismissCallback, WidgetKind,
+    BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CardVariant, CustomWidget,
+    FloatCallback, HoverCallback, IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler,
+    TextCallback, ToastDismissCallback, WidgetKind,
 };
 
 /// Composable declarative view mountable onto a [`WidgetTree`].
@@ -2050,14 +2050,7 @@ mod tests {
         let drawer = tree.drawer(cx, drawer_open, 304.0, None::<fn()>);
         let fab = tree.floating_action_button(cx, "+", Some("Add"));
 
-        let root = tree.scaffold(
-            cx,
-            Some(app_bar),
-            body,
-            None,
-            Some(fab),
-            Some(drawer),
-        );
+        let root = tree.scaffold(cx, Some(app_bar), body, None, Some(fab), Some(drawer));
         tree.set_root(root);
 
         tree.layout(WindowMetrics {

@@ -45,18 +45,17 @@ jobs:
         run: .github/scripts/publish-logs.sh license-guard
 
   lockfile:
-    name: Resolve Cargo.lock
+    name: Cargo.lock is up to date
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Generate lockfile when it is not committed
+      - name: Re-resolve and compare with the committed lockfile
         run: |
-          if [ ! -f Cargo.lock ]; then
-            .github/scripts/logged.sh generate-lockfile cargo generate-lockfile
-          fi
           mkdir -p "$RUNNER_TEMP/ci-logs"
+          cargo metadata --format-version 1 >/dev/null
           cp Cargo.lock "$RUNNER_TEMP/ci-logs/Cargo.lock"
+          .github/scripts/logged.sh lockfile-diff git diff --exit-code --stat -- Cargo.lock
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh lockfile
@@ -82,15 +81,18 @@ jobs:
           cargo fmt --all
           git diff >"$RUNNER_TEMP/ci-logs/fmt.patch"
           git checkout -- .
+      - name: Clippy report (all warnings, never fails on lints)
+        if: ${{ !cancelled() }}
+        run: .github/scripts/logged.sh clippy-report cargo clippy --locked --workspace --all-targets
       - name: Clippy (deny warnings)
         if: ${{ !cancelled() }}
-        run: .github/scripts/logged.sh clippy cargo clippy --workspace --all-targets -- -D warnings
+        run: .github/scripts/logged.sh clippy cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Tests
         if: ${{ !cancelled() }}
-        run: .github/scripts/logged.sh test cargo test --workspace
+        run: .github/scripts/logged.sh test cargo test --locked --workspace
       - name: Minimal-feature compile check
         if: ${{ !cancelled() }}
-        run: .github/scripts/logged.sh minimal cargo check -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"
+        run: .github/scripts/logged.sh minimal cargo check --locked -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh linux
@@ -123,11 +125,14 @@ jobs:
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: .github/scripts/logged.sh clippy cargo clippy -p craftui-platform-web --target wasm32-unknown-unknown -- -D warnings
+      - name: Clippy report (all warnings, never fails on lints)
+        run: .github/scripts/logged.sh clippy-report cargo clippy --locked -p craftui-platform-web --target wasm32-unknown-unknown
+      - name: Clippy (deny warnings)
+        if: ${{ !cancelled() }}
+        run: .github/scripts/logged.sh clippy cargo clippy --locked -p craftui-platform-web --target wasm32-unknown-unknown -- -D warnings
       - name: Minimal-feature check
         if: ${{ !cancelled() }}
-        run: .github/scripts/logged.sh minimal cargo check -p craftui-platform-web --target wasm32-unknown-unknown --no-default-features --features gpu-sdf
+        run: .github/scripts/logged.sh minimal cargo check --locked -p craftui-platform-web --target wasm32-unknown-unknown --no-default-features --features gpu-sdf
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh wasm
@@ -151,11 +156,14 @@ jobs:
             echo "AR_aarch64_linux_android=${NDK_BIN}/llvm-ar"
             echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${NDK_BIN}/aarch64-linux-android26-clang"
           } >> "$GITHUB_ENV"
-      - name: Clippy
-        run: .github/scripts/logged.sh clippy cargo clippy -p craftui-platform-android --target aarch64-linux-android -- -D warnings
+      - name: Clippy report (all warnings, never fails on lints)
+        run: .github/scripts/logged.sh clippy-report cargo clippy --locked -p craftui-platform-android --target aarch64-linux-android
+      - name: Clippy (deny warnings)
+        if: ${{ !cancelled() }}
+        run: .github/scripts/logged.sh clippy cargo clippy --locked -p craftui-platform-android --target aarch64-linux-android -- -D warnings
       - name: Minimal-feature check
         if: ${{ !cancelled() }}
-        run: .github/scripts/logged.sh minimal cargo check -p craftui-platform-android --target aarch64-linux-android --no-default-features --features gpu-sdf
+        run: .github/scripts/logged.sh minimal cargo check --locked -p craftui-platform-android --target aarch64-linux-android --no-default-features --features gpu-sdf
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh android
@@ -173,8 +181,8 @@ jobs:
           sudo apt-get install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev libx11-dev
       - name: Run perf suite smoke benchmark
         run: |
-          .github/scripts/logged.sh bench-build cargo bench -p craftui --bench perf_suite --no-run
-          cargo bench -p craftui --bench perf_suite -- --quick --json > bench-smoke.json
+          .github/scripts/logged.sh bench-build cargo bench --locked -p craftui --bench perf_suite --no-run
+          cargo bench --locked -p craftui --bench perf_suite -- --quick --json > bench-smoke.json
           cp bench-smoke.json "$RUNNER_TEMP/ci-logs/bench-smoke.json"
           python3 -m json.tool bench-smoke.json > /dev/null
       - name: Publish logs

@@ -4395,7 +4395,9 @@ export component RuntimeMaterialDemo {
             logical_size: Size::new(400.0, 800.0),
             ..Default::default()
         });
-        let root = session.reload(src, Some("ResponsiveApp"), &mut tree).unwrap();
+        let root = session
+            .reload(src, Some("ResponsiveApp"), &mut tree)
+            .unwrap();
         tree.set_root(root);
         tree.layout(tree.metrics);
 
