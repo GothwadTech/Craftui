@@ -1292,6 +1292,7 @@ impl GpuSdfBackend {
                         start_gen = self.atlas_generation;
                         attempt += 1;
                         if attempt < 2 {
+                            self.atlas_alloc.clear();
                             continue 'retry;
                         } else {
                             self.path_cache.insert(key, None);
