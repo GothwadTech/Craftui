@@ -479,7 +479,7 @@ impl GpuSdfBackend {
         let w = width.max(1);
         let h = height.max(1);
         let surface_is_srgb = surface_format.is_srgb();
-        let atlas_size = device.limits().max_texture_dimension_2d.clamp(512, 2048);
+        let atlas_size = device.limits().max_texture_dimension_2d.clamp(1024, 4096);
 
         let globals_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("craftui-sdf-globals"),
@@ -997,8 +997,11 @@ impl GpuSdfBackend {
         w: u32,
         h: u32,
     ) -> Option<(u32, u32)> {
-        let req_w = (w + 2).min(self.atlas_size);
-        let req_h = (h + 2).min(self.atlas_size);
+        let req_w = w.saturating_add(2);
+        let req_h = h.saturating_add(2);
+        if req_w > self.atlas_size || req_h > self.atlas_size {
+            return None;
+        }
         if let Some(alloc) = self.atlas_alloc.allocate(size2(req_w as i32, req_h as i32)) {
             return Some((
                 alloc.rectangle.min.x as u32 + 1,
@@ -1025,6 +1028,9 @@ impl GpuSdfBackend {
         h: u32,
         rgba: &[u8],
     ) {
+        if x + w > self.atlas_size || y + h > self.atlas_size {
+            return;
+        }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas_tex,

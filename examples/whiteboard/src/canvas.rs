@@ -257,22 +257,18 @@ fn paint_dot_grid(bounds: Rect, scene: &mut PaintScene, view: ViewTransform, is_
     };
     let dot_size = 1.5;
 
-    let mut path = kurbo::BezPath::new();
     let mut x = start_x;
     while x < bounds.width {
         let mut y = start_y;
         while y < bounds.height {
-            path.move_to((x as f64, y as f64));
-            path.line_to(((x + dot_size) as f64, y as f64));
-            path.line_to(((x + dot_size) as f64, (y + dot_size) as f64));
-            path.line_to((x as f64, (y + dot_size) as f64));
-            path.close_path();
+            scene.fill_rect(
+                Rect::new(x, y, dot_size, dot_size),
+                dot_color,
+                CornerRadii::all(0.75),
+            );
             y += scaled_step;
         }
         x += scaled_step;
-    }
-    if !path.is_empty() {
-        scene.fill_path(path, dot_color);
     }
 }
 

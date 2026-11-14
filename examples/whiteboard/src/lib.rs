@@ -483,13 +483,38 @@ mod tests {
 }
 
 #[cfg(target_os = "android")]
+pub fn android_log(msg: &str) {
+    unsafe extern "C" {
+        fn __android_log_write(
+            prio: std::ffi::c_int,
+            tag: *const std::ffi::c_char,
+            text: *const std::ffi::c_char,
+        ) -> std::ffi::c_int;
+    }
+    use std::ffi::CString;
+    if let (Ok(tag), Ok(text)) = (CString::new("CraftUI_Native"), CString::new(msg)) {
+        unsafe {
+            __android_log_write(4, tag.as_ptr(), text.as_ptr());
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub fn android_main(app: craftui::platform_android::android_activity::AndroidApp) {
+    std::panic::set_hook(Box::new(|info| {
+        android_log(&format!("CRITICAL CRAFTUI PANIC: {info}"));
+    }));
+    android_log(">>> STARTING WHITEBOARD ANDROID_MAIN <<<");
     craftui::platform_android::android_runtime::run_android_app(
         app,
         |cx, tree, _textures, _disp| {
-            mount_whiteboard_app(cx, tree, None)
+            android_log(">>> MOUNTING WHITEBOARD APP <<<");
+            let root = mount_whiteboard_app(cx, tree, None);
+            android_log(">>> MOUNTED WHITEBOARD APP ROOT OK <<<");
+            root
         },
     );
+    android_log(">>> EXITED WHITEBOARD ANDROID_MAIN <<<");
 }
 
