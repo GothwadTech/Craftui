@@ -1,6 +1,6 @@
 # Introduction to CraftUI
 
-Welcome to **CraftUI**, a modern, lightweight, high-performance cross-platform GUI framework written in Rust.
+**CraftUI** is a cross-platform GUI framework written in Rust. It is at an early stage: version 0.1.0, with an API that will change.
 
 CraftUI aims to provide:
 1. **GPU rendering with a CPU fallback:** 2D vector and text rendering through WGPU (Vulkan, DirectX 12, Metal, WebGPU), with software rasterizers for machines without a usable GPU.
@@ -14,7 +14,7 @@ module and 8.9 MB for the Android `arm64-v8a` library, both before compression.
 
 ---
 
-## Architectural Pillars
+## How the parts fit together
 
 ```mermaid
 flowchart TD
@@ -30,6 +30,10 @@ flowchart TD
     Backends -->|CPU Fallback| CPU["Vello CPU / TinySkia"]
 ```
 
-- **Reactivity without Virtual DOM:** Changes propagate directly from modified `Signal`s to subscribed widgets and layout nodes with zero full-tree diffing overhead.
-- **Demand-Driven Power:** Pure 0% CPU consumption when idle; timers, animations, and caret blinking wake the event loop only when needed.
-- **Production Accessibility:** Incremental AccessKit synchronization out-of-the-box for screen readers across Desktop and Web.
+- **No tree diffing.** A changed `Signal` updates only the widgets and layout
+  nodes that read it.
+- **Frames on demand.** The event loop waits when nothing changes; timers,
+  animations and the text caret wake it. Idle power use has not been measured.
+- **Accessibility.** The widget tree is exported through AccessKit on desktop
+  and as ARIA elements on the Web. Testing with real screen readers has not
+  been done.
