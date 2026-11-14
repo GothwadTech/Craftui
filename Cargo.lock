@@ -824,6 +824,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "craftui-example-notes"
+version = "0.1.0"
+dependencies = [
+ "craftui",
+ "craftui-dsl",
+ "craftui-platform-web",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "craftui-example-scancraft"
 version = "0.1.0"
 dependencies = [

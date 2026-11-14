@@ -83,7 +83,11 @@ jobs:
         run: .github/scripts/logged.sh clippy cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Tests
         if: ${{ !cancelled() }}
-        run: .github/scripts/logged.sh test cargo test --locked --workspace
+        # CRAFTUI_SNAPSHOT_DIR makes the notes example write PNG screenshots of
+        # its screens, rendered with the CPU backend, next to the logs.
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-logs"
+          CRAFTUI_SNAPSHOT_DIR="$RUNNER_TEMP/ci-logs" .github/scripts/logged.sh test cargo test --locked --workspace
       - name: Minimal-feature compile check
         if: ${{ !cancelled() }}
         run: .github/scripts/logged.sh minimal cargo check --locked -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"
@@ -182,6 +186,126 @@ jobs:
       - name: Publish logs
         if: ${{ always() }}
         run: .github/scripts/publish-logs.sh android
+
+  # The notes example is the end-to-end proof that one codebase ships to the
+  # Web and to Android. Both jobs go through the `craftui` CLI, the same way a
+  # user would, instead of calling cargo with hand-picked flags.
+  notes-web:
+    name: Notes app (Web bundle + browser test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev libx11-dev
+      - name: Read the wasm-bindgen version from Cargo.lock
+        # The CLI must be the exact version of the `wasm-bindgen` crate in use.
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          echo "wasm-bindgen ${version}"
+          echo "WASM_BINDGEN_VERSION=${version}" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@${{ env.WASM_BINDGEN_VERSION }}
+      - name: Build the web bundle with the CraftUI CLI
+        run: .github/scripts/logged.sh notes-web-build cargo run --locked -p craftui-cli -- build --platform web --release -p craftui-example-notes -o dist/notes-web
+      - name: Check the bundle contents
+        run: |
+          ls -l dist/notes-web | tee "$RUNNER_TEMP/ci-logs/notes-web-files.log"
+          test -s dist/notes-web/index.html
+          test -s dist/notes-web/craftui_app.js
+          test -s dist/notes-web/craftui_app_bg.wasm
+      - name: Run the app in headless Chrome
+        run: .github/scripts/logged.sh notes-web-smoke node .github/scripts/web-smoke.mjs dist/notes-web "$RUNNER_TEMP/ci-logs"
+      - name: Upload the web bundle
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: craftui-notes-web
+          path: dist/notes-web
+          if-no-files-found: ignore
+      - name: Publish logs
+        if: ${{ always() }}
+        run: .github/scripts/publish-logs.sh notes-web
+
+  notes-android:
+    name: Notes app (Android APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          # The Android Gradle Plugin version in the generated project needs Gradle 8.7+.
+          gradle-version: "8.10.2"
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype-dev libx11-dev
+      - name: Select the preinstalled NDK
+        run: echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME}" >> "$GITHUB_ENV"
+      - name: Build the native library and Gradle project with the CraftUI CLI
+        run: .github/scripts/logged.sh notes-android-build cargo run --locked -p craftui-cli -- build --platform android --release -p craftui-example-notes -o dist/notes-android
+      - name: Check the native library
+        run: |
+          so=dist/notes-android/app/src/main/jniLibs/arm64-v8a/libcraftui_example_notes.so
+          test -s "$so"
+          nm="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          "$nm" -D --defined-only "$so" > "$RUNNER_TEMP/notes-symbols.txt"
+          {
+            ls -l "$so"
+            file "$so"
+            echo "--- exported entry points"
+            grep -E ' (android_main|GameActivity_onCreate|Java_[A-Za-z0-9_]+)$' "$RUNNER_TEMP/notes-symbols.txt" || true
+          } | tee "$RUNNER_TEMP/ci-logs/notes-android-so.log"
+          # GameActivity (Java) loads the library and calls its native glue,
+          # which starts the thread that runs `android_main`. Both ends must be
+          # exported or the app cannot start.
+          grep -q ' android_main$' "$RUNNER_TEMP/notes-symbols.txt"
+          grep -qE ' (GameActivity_onCreate|Java_com_google_androidgamesdk_GameActivity_[A-Za-z0-9_]+)$' "$RUNNER_TEMP/notes-symbols.txt"
+      - name: Assemble the debug APK
+        working-directory: dist/notes-android
+        run: ../../.github/scripts/logged.sh notes-android-gradle gradle --no-daemon --console=plain assembleDebug
+      - name: Check the APK
+        run: |
+          apk=dist/notes-android/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          aapt2="$(ls "${ANDROID_HOME}"/build-tools/*/aapt2 | sort -V | tail -n 1)"
+          "$aapt2" dump badging "$apk" > "$RUNNER_TEMP/notes-badging.txt"
+          unzip -l "$apk" > "$RUNNER_TEMP/notes-apk-files.txt"
+          {
+            ls -l "$apk"
+            grep -E "^(package|sdkVersion|targetSdkVersion|application-label:|native-code|uses-permission)" "$RUNNER_TEMP/notes-badging.txt" || true
+            echo "--- native libraries"
+            grep -E 'lib/.*\.so' "$RUNNER_TEMP/notes-apk-files.txt" || true
+          } | tee "$RUNNER_TEMP/ci-logs/notes-android-apk.log"
+          grep -q "package: name='dev.craftui.notes'" "$RUNNER_TEMP/notes-badging.txt"
+          grep -q 'lib/arm64-v8a/libcraftui_example_notes.so' "$RUNNER_TEMP/notes-apk-files.txt"
+      - name: Upload the APK
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: craftui-notes-android-debug-apk
+          path: dist/notes-android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore
+      - name: Publish logs
+        if: ${{ always() }}
+        run: .github/scripts/publish-logs.sh notes-android
 
   bench-smoke:
     name: Benchmark smoke check

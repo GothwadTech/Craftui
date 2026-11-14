@@ -223,6 +223,10 @@ fn emit_component(
         use_self: false,
     };
 
+    // The builder below is machine-written: it favours a direct, uniform
+    // translation of each `.cui` expression over idiomatic Rust, so style lints
+    // are switched off for it rather than surfacing in every app that uses the DSL.
+    let _ = writeln!(out, "#[allow(clippy::all)]");
     let _ = writeln!(out, "impl {} {{", comp.name);
     let _ = writeln!(out, "    #[allow(dead_code)]");
     let _ = writeln!(out, "    pub fn new(_cx: Scope) -> Self {{");
