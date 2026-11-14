@@ -87,7 +87,7 @@ jobs:
         # its screens, rendered with the CPU backend, next to the logs.
         run: |
           mkdir -p "$RUNNER_TEMP/ci-logs"
-          CRAFTUI_SNAPSHOT_DIR="$RUNNER_TEMP/ci-logs" .github/scripts/logged.sh test cargo test --locked --workspace
+          CRAFTUI_SNAPSHOT_DIR="$RUNNER_TEMP/ci-logs" .github/scripts/logged.sh test cargo test --locked --workspace --no-fail-fast
       - name: Minimal-feature compile check
         if: ${{ !cancelled() }}
         run: .github/scripts/logged.sh minimal cargo check --locked -p craftui --no-default-features --features "desktop,dsl,hot-reload,embedded-fallback-font,gpu-sdf"

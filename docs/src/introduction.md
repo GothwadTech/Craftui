@@ -2,12 +2,15 @@
 
 Welcome to **CraftUI**, a modern, lightweight, high-performance cross-platform GUI framework written in Rust.
 
-CraftUI is built from first principles to provide:
-1. **Unrivaled Rendering Performance:** GPU-accelerated 2D vector & text rendering via WGPU (Vulkan, DirectX 12, Metal, WebGPU) with instant fallback to optimized software rasterization.
-2. **True Cross-Platform Autonomy:** Tier-1 support for Linux Desktop and Android directly from a Linux host, plus WebAssembly and Windows. *macOS and iOS hardware is never required to build and test your apps.*
-3. **Ergonomic Declarative DSL (`.cui`):** Beautiful, concise UI definition syntax with fine-grained reactivity, two-way data binding, spring animations, and glassmorphism.
-4. **Zero-Boilerplate Mobile Capabilities:** Unified 35-permission security model and automatic manifest generation (`craftui.toml`) mapping transparently to Android XML and iOS Info.plist.
-5. **Ultra-Lightweight Footprint:** Stripped release binaries under 15 MB on Desktop, under 1 MB on WebAssembly, and sub-750 KB on Android arm64.
+CraftUI aims to provide:
+1. **GPU rendering with a CPU fallback:** 2D vector and text rendering through WGPU (Vulkan, DirectX 12, Metal, WebGPU), with software rasterizers for machines without a usable GPU.
+2. **One codebase for desktop, Android and the Web:** all three can be built from a Linux machine. iOS support exists in the source tree but is not built or tested in CI.
+3. **A declarative UI language (`.cui`):** concise markup with fine-grained reactivity, two-way bindings and animations, compiled to Rust at build time.
+4. **One manifest for packaging:** `craftui.toml` holds the app id, version and permissions, and the CLI generates the Android project from it.
+
+What is verified today, and how, is listed in the repository README. Binary
+sizes measured in CI for the notes example are about 6.2 MB for the WebAssembly
+module and 8.9 MB for the Android `arm64-v8a` library, both before compression.
 
 ---
 

@@ -163,7 +163,10 @@ fn the_parser_reads_bindings_handlers_children_and_control_flow() {
 "#,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let root = parsed.file.components[0].root.clone().expect("root element");
+    let root = parsed.file.components[0]
+        .root
+        .clone()
+        .expect("root element");
 
     assert_eq!(root.props.len(), 1);
     assert_eq!(root.props[0].name, "gap");
@@ -180,7 +183,7 @@ fn comments_are_ignored() {
     let rust = compile(
         r#"
 // A line comment.
-component Commented {
+export component Commented {
     /* A block
        comment. */
     Column {
@@ -257,7 +260,10 @@ fn unknown_names_are_rejected_with_the_name_in_the_message() {
         r#"Button { text: "x"; on_press => { count += 1; } }"#,
         "unknown event handler 'on_press' on 'Button'",
     );
-    assert_rejected(r#"Text { text: missing; }"#, "undefined identifier 'missing'");
+    assert_rejected(
+        r#"Text { text: missing; }"#,
+        "undefined identifier 'missing'",
+    );
     assert_rejected(
         r#"for task in tasks : Text { text: task.nam; }"#,
         "unknown field 'nam' on struct 'Task'",
@@ -429,7 +435,10 @@ export component Page { Column { Badge { label: "New"; } } }
         .iter()
         .map(|c| c.name.as_str())
         .collect();
-    assert!(names.contains(&"Badge") && names.contains(&"Page"), "{names:?}");
+    assert!(
+        names.contains(&"Badge") && names.contains(&"Page"),
+        "{names:?}"
+    );
 
     let private = resolve_source_with_loader(
         r#"
@@ -631,7 +640,10 @@ fn every_built_in_widget_can_be_generated() {
             .filter(|d| d.severity == Severity::Error)
             .map(|d| d.message.as_str())
             .collect();
-        assert!(problems.is_empty(), "`{widget} {{ }}` is rejected: {problems:#?}");
+        assert!(
+            problems.is_empty(),
+            "`{widget} {{ }}` is rejected: {problems:#?}"
+        );
         let rust = generate_rust(&unit.merged);
         assert!(
             rust.contains("pub fn build"),

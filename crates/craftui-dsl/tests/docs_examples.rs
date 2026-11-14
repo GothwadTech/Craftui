@@ -122,7 +122,9 @@ fn every_cui_block_in_the_docs_compiles() {
         }
         let rust = generate_rust(&unit.merged);
         if !rust.contains("pub fn build") {
-            failures.push(format!("{location}\n    code generation produced no builder"));
+            failures.push(format!(
+                "{location}\n    code generation produced no builder"
+            ));
         }
     }
 

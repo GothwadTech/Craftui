@@ -2169,7 +2169,10 @@ mod tests {
         };
         tree.layout(tree.metrics);
 
-        assert_eq!(tree.metrics_signal.get_untracked().logical_size.width, 390.0);
+        assert_eq!(
+            tree.metrics_signal.get_untracked().logical_size.width,
+            390.0
+        );
         assert_eq!(seen_width.get(), 390.0);
     }
 
@@ -2200,7 +2203,10 @@ mod tests {
         tree.layout(metrics);
         assert!(tree.is_visible(root));
         assert!(!tree.is_visible(panel));
-        assert!(!tree.is_visible(label), "a child of a hidden node is hidden");
+        assert!(
+            !tree.is_visible(label),
+            "a child of a hidden node is hidden"
+        );
 
         shown.set(true);
         tree.layout(metrics);
@@ -2220,7 +2226,8 @@ mod tests {
         let body = tree.text_area(cx, "", "Start writing...", None);
         let unnamed = tree.text_input(cx, "", "", None);
 
-        let label = |id: craftui_core::NodeId| tree.nodes.get(id).and_then(|n| n.a11y.label.clone());
+        let label =
+            |id: craftui_core::NodeId| tree.nodes.get(id).and_then(|n| n.a11y.label.clone());
         assert_eq!(label(search).as_deref(), Some("Search notes"));
         assert_eq!(label(body).as_deref(), Some("Start writing..."));
         assert_eq!(label(unnamed), None);
