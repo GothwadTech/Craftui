@@ -200,18 +200,6 @@ export component WhiteboardScreen {
                         on_tap => { on_select_tool("Text"); }
                     }
 
-                    // Note / Card
-                    Button {
-                        text: "card";
-                        font_size: 15;
-                        background: active_tool == "Card" ? #e0dfff : Theme.surface;
-                        foreground: active_tool == "Card" ? #4338ca : Theme.text_primary;
-                        border_radius: 6dp;
-                        padding_x: 8dp;
-                        padding_y: 6dp;
-                        on_tap => { on_select_tool("Card"); }
-                    }
-
                     // Eraser
                     Button {
                         text: "eraser";
@@ -301,9 +289,106 @@ export component WhiteboardScreen {
                 }
             }
 
-            // 2.3 Centered Compact Tool Ribbon (Mobile Phones: Core 8 Tools, fits <= 360dp)
+            // 2.3 Top-Right Action Controls (Adaptive)
             Row {
-                visible: Window.is_compact;
+                gap: 6dp;
+                align: Center;
+
+                // "Try Whiteboard+ 14-day free trial" pill button (Desktop only)
+                Button {
+                    visible: Window.is_expanded;
+                    background: #f5f3ff;
+                    border_radius: 8dp;
+                    border_width: 1;
+                    border_color: #c7d2fe;
+                    padding_x: 10dp;
+                    padding_y: 8dp;
+                    on_tap => { on_toggle_mode(); }
+
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+
+                        Icon {
+                            svg: "gift";
+                            size: 15;
+                            color: #4f46e5;
+                        }
+
+                        Text {
+                            text: "Try Whiteboard+";
+                            font_size: 12;
+                            color: #4f46e5;
+                        }
+                    }
+                }
+
+                // Share button (Desktop/Tablet: Icon + Text)
+                Button {
+                    visible: !Window.is_compact;
+                    background: #4f46e5;
+                    border_radius: 8dp;
+                    padding_x: 12dp;
+                    padding_y: 8dp;
+                    on_tap => { on_share(); }
+
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+
+                        Icon {
+                            svg: "share";
+                            size: 14;
+                            color: #ffffff;
+                        }
+
+                        Text {
+                            text: "Share";
+                            font_size: 13;
+                            color: #ffffff;
+                        }
+                    }
+                }
+
+                // Share button (Mobile: Compact Icon Button)
+                Button {
+                    visible: Window.is_compact;
+                    text: "share";
+                    font_size: 14;
+                    background: #4f46e5;
+                    foreground: #ffffff;
+                    border_radius: 8dp;
+                    padding_x: 8dp;
+                    padding_y: 7dp;
+                    on_tap => { on_share(); }
+                }
+
+                // Theme toggle button
+                Button {
+                    text: is_dark ? "sun" : "moon";
+                    font_size: 16;
+                    background: Theme.surface;
+                    foreground: Theme.text_primary;
+                    border_radius: 8dp;
+                    border_width: 1;
+                    border_color: Theme.border;
+                    padding_x: 8dp;
+                    padding_y: 7dp;
+                    on_tap => { on_toggle_theme(); }
+                }
+            }
+        }
+
+        // 2.4 Floating Compact Tool Ribbon (Mobile Phones: placed in a dedicated row below top nav)
+        Row {
+            visible: Window.is_compact;
+            top: 58dp;
+            left: 12dp;
+            right: 12dp;
+            justify: Center;
+            align: Center;
+
+            Row {
                 background: Theme.surface;
                 border_radius: 8dp;
                 border_width: 1;
@@ -413,95 +498,6 @@ export component WhiteboardScreen {
                     padding_x: 5dp;
                     padding_y: 5dp;
                     on_tap => { on_toggle_drawer(); }
-                }
-            }
-
-            // 2.4 Top-Right Action Controls (Adaptive)
-            Row {
-                gap: 6dp;
-                align: Center;
-
-                // "Try Whiteboard+ 14-day free trial" pill button (Desktop only)
-                Button {
-                    visible: Window.is_expanded;
-                    background: #f5f3ff;
-                    border_radius: 8dp;
-                    border_width: 1;
-                    border_color: #c7d2fe;
-                    padding_x: 10dp;
-                    padding_y: 8dp;
-                    on_tap => { on_toggle_mode(); }
-
-                    Row {
-                        gap: 6dp;
-                        align: Center;
-
-                        Icon {
-                            svg: "gift";
-                            size: 15;
-                            color: #4f46e5;
-                        }
-
-                        Text {
-                            text: "Try Whiteboard+";
-                            font_size: 12;
-                            color: #4f46e5;
-                        }
-                    }
-                }
-
-                // Share button (Desktop/Tablet: Icon + Text)
-                Button {
-                    visible: !Window.is_compact;
-                    background: #4f46e5;
-                    border_radius: 8dp;
-                    padding_x: 12dp;
-                    padding_y: 8dp;
-                    on_tap => { on_share(); }
-
-                    Row {
-                        gap: 6dp;
-                        align: Center;
-
-                        Icon {
-                            svg: "share";
-                            size: 14;
-                            color: #ffffff;
-                        }
-
-                        Text {
-                            text: "Share";
-                            font_size: 13;
-                            color: #ffffff;
-                        }
-                    }
-                }
-
-                // Share button (Mobile: Compact Icon Button)
-                Button {
-                    visible: Window.is_compact;
-                    text: "share";
-                    font_size: 14;
-                    background: #4f46e5;
-                    foreground: #ffffff;
-                    border_radius: 8dp;
-                    padding_x: 8dp;
-                    padding_y: 7dp;
-                    on_tap => { on_share(); }
-                }
-
-                // Theme toggle button
-                Button {
-                    text: is_dark ? "sun" : "moon";
-                    font_size: 16;
-                    background: Theme.surface;
-                    foreground: Theme.text_primary;
-                    border_radius: 8dp;
-                    border_width: 1;
-                    border_color: Theme.border;
-                    padding_x: 8dp;
-                    padding_y: 7dp;
-                    on_tap => { on_toggle_theme(); }
                 }
             }
         }
@@ -618,238 +614,246 @@ export component WhiteboardScreen {
             open <=> drawer_open;
             width: 320dp;
 
-            Column {
+            ScrollView {
                 width: 100%;
                 height: 100%;
-                background: Theme.surface;
-                padding: 16dp;
-                gap: 10dp;
 
-                Text {
-                    text: "Whiteboard";
-                    font_size: 20;
-                    font_weight: Bold;
-                    color: Theme.text_primary;
-                }
-                Text {
-                    text: "Hand-Drawn Vector Whiteboard • Multiplatform";
-                    font_size: 12;
-                    color: Theme.text_secondary;
-                }
-
-                // Whiteboard+ Pro Upgrade Card (Prominent for Mobile & Tablet users)
-                Card {
+                Column {
                     width: 100%;
-                    padding: 10dp;
-                    gap: 6dp;
-                    background: #f5f3ff;
-                    border_color: #c7d2fe;
+                    background: Theme.surface;
+                    padding: 16dp;
+                    gap: 10dp;
 
-                    Row {
-                        gap: 8dp;
-                        align: Center;
+                    Text {
+                        text: "Whiteboard";
+                        font_size: 20;
+                        font_weight: Bold;
+                        color: Theme.text_primary;
+                    }
+                    Text {
+                        text: "Hand-Drawn Vector Whiteboard • Multiplatform";
+                        font_size: 12;
+                        color: Theme.text_secondary;
+                    }
 
-                        Icon {
-                            svg: "gift";
-                            size: 18;
-                            color: #4f46e5;
-                        }
+                    // Whiteboard+ Pro Upgrade Card (Prominent for Mobile & Tablet users)
+                    Card {
+                        width: 100%;
+                        padding: 10dp;
+                        gap: 6dp;
+                        background: #f5f3ff;
+                        border_color: #c7d2fe;
 
-                        Column {
-                            gap: 2dp;
-                            Text {
-                                text: "Whiteboard+ Pro";
-                                font_size: 14;
-                                font_weight: Bold;
+                        Row {
+                            gap: 8dp;
+                            align: Center;
+
+                            Icon {
+                                svg: "gift";
+                                size: 18;
                                 color: #4f46e5;
                             }
-                            Text {
-                                text: "Unlimited sync & real-time collaboration";
-                                font_size: 11;
-                                color: #6366f1;
+
+                            Column {
+                                gap: 2dp;
+                                Text {
+                                    text: "Whiteboard+ Pro";
+                                    font_size: 14;
+                                    font_weight: Bold;
+                                    color: #4f46e5;
+                                }
+                                Text {
+                                    text: "Unlimited sync & real-time collaboration";
+                                    font_size: 11;
+                                    color: #6366f1;
+                                }
                             }
+                        }
+
+                        Button {
+                            text: "Start 14-day Free Trial";
+                            font_size: 12;
+                            background: #4f46e5;
+                            foreground: #ffffff;
+                            border_radius: 6dp;
+                            padding_y: 6dp;
+                            on_tap => {
+                                on_toggle_mode();
+                                drawer_open = false;
+                            }
+                        }
+                    }
+
+                    // Shapes & Drawing Tools Selector (Quick Access on Mobile)
+                    Card {
+                        width: 100%;
+                        padding: 8dp;
+                        gap: 6dp;
+
+                        Row {
+                            width: 100%;
+                            justify: SpaceBetween;
+                            align: Center;
+
+                            Text {
+                                text: "Drawing Tools & Shapes";
+                                font_size: 12;
+                                font_weight: Bold;
+                                color: Theme.text_secondary;
+                            }
+
+                            Button {
+                                text: tool_locked ? "lock Locked" : "unlock Unlock";
+                                font_size: 12;
+                                background: tool_locked ? #ede9fe : Theme.surface_variant;
+                                foreground: tool_locked ? #4f46e5 : Theme.text_secondary;
+                                border_radius: 6dp;
+                                padding_x: 6dp;
+                                padding_y: 3dp;
+                                on_tap => { on_toggle_lock(); }
+                            }
+                        }
+
+                        Row {
+                            gap: 4dp;
+                            align: Center;
+
+                            Button {
+                                text: "rectangle";
+                                font_size: 14;
+                                background: active_tool == "Rectangle" ? #e0dfff : Theme.surface;
+                                foreground: active_tool == "Rectangle" ? #4338ca : Theme.text_primary;
+                                border_radius: 6dp;
+                                padding_x: 8dp;
+                                padding_y: 6dp;
+                                on_tap => {
+                                    on_select_tool("Rectangle");
+                                    drawer_open = false;
+                                }
+                            }
+                            Button {
+                                text: "diamond";
+                                font_size: 14;
+                                background: active_tool == "Diamond" ? #e0dfff : Theme.surface;
+                                foreground: active_tool == "Diamond" ? #4338ca : Theme.text_primary;
+                                border_radius: 6dp;
+                                padding_x: 8dp;
+                                padding_y: 6dp;
+                                on_tap => {
+                                    on_select_tool("Diamond");
+                                    drawer_open = false;
+                                }
+                            }
+                            Button {
+                                text: "circle";
+                                font_size: 14;
+                                background: active_tool == "Ellipse" ? #e0dfff : Theme.surface;
+                                foreground: active_tool == "Ellipse" ? #4338ca : Theme.text_primary;
+                                border_radius: 6dp;
+                                padding_x: 8dp;
+                                padding_y: 6dp;
+                                on_tap => {
+                                    on_select_tool("Ellipse");
+                                    drawer_open = false;
+                                }
+                            }
+                            Button {
+                                text: "arrow";
+                                font_size: 14;
+                                background: active_tool == "Arrow" ? #e0dfff : Theme.surface;
+                                foreground: active_tool == "Arrow" ? #4338ca : Theme.text_primary;
+                                border_radius: 6dp;
+                                padding_x: 8dp;
+                                padding_y: 6dp;
+                                on_tap => {
+                                    on_select_tool("Arrow");
+                                    drawer_open = false;
+                                }
+                            }
+                            Button {
+                                text: "line";
+                                font_size: 14;
+                                background: active_tool == "Line" ? #e0dfff : Theme.surface;
+                                foreground: active_tool == "Line" ? #4338ca : Theme.text_primary;
+                                border_radius: 6dp;
+                                padding_x: 8dp;
+                                padding_y: 6dp;
+                                on_tap => {
+                                    on_select_tool("Line");
+                                    drawer_open = false;
+                                }
+                            }
+                        }
+                    }
+
+                    // Document Actions Card
+                    Card {
+                        width: 100%;
+                        padding: 8dp;
+                        gap: 4dp;
+
+                        ListTile {
+                            title: "New Canvas";
+                            subtitle: "Start fresh with a clean board";
+                            leading: "file";
+                            on_tap => { on_new_canvas(); }
+                        }
+                        ListTile {
+                            title: "Export as SVG";
+                            subtitle: "Hand-drawn vector graphic to clipboard";
+                            leading: "image";
+                            on_tap => { on_export_svg(); }
+                        }
+                        ListTile {
+                            title: "Export as JSON";
+                            subtitle: "Excalidraw compatible JSON format";
+                            leading: "download";
+                            on_tap => { on_export_json(); }
+                        }
+                        ListTile {
+                            title: "Import from Clipboard";
+                            subtitle: "Load document JSON";
+                            leading: "copy";
+                            on_tap => { on_import_json(); }
+                        }
+                    }
+
+                    // Platform Settings Card
+                    Card {
+                        width: 100%;
+                        padding: 8dp;
+                        gap: 4dp;
+
+                        ListTile {
+                            title: "Admin Privileges";
+                            subtitle: "Elevated platform settings";
+                            leading: "lock";
+                            trailing: "Open";
+                            on_tap => { on_open_admin(); }
+                        }
+                        ListTile {
+                            title: "Accessibility Settings";
+                            subtitle: "System access & screen reader";
+                            leading: "shield";
+                            trailing: "Open";
+                            on_tap => { on_open_accessibility(); }
+                        }
+                        ListTile {
+                            title: "System App Settings";
+                            subtitle: "Manage permissions";
+                            leading: "settings";
+                            trailing: "Open";
+                            on_tap => { on_open_settings(); }
                         }
                     }
 
                     Button {
-                        text: "Start 14-day Free Trial";
-                        font_size: 12;
-                        background: #4f46e5;
-                        foreground: #ffffff;
-                        border_radius: 6dp;
-                        padding_y: 6dp;
-                        on_tap => {
-                            on_toggle_mode();
-                            drawer_open = false;
-                        }
+                        text: "Close Menu";
+                        background: Theme.surface_variant;
+                        foreground: Theme.text_primary;
+                        border_radius: 8dp;
+                        on_tap => { drawer_open = false; }
                     }
-                }
-
-                // Shapes & Drawing Tools Selector (Quick Access on Mobile)
-                Card {
-                    width: 100%;
-                    padding: 8dp;
-                    gap: 4dp;
-
-                    Text {
-                        text: "Drawing Tools & Shapes";
-                        font_size: 12;
-                        font_weight: Bold;
-                        color: Theme.text_secondary;
-                    }
-
-                    Row {
-                        gap: 4dp;
-                        align: Center;
-
-                        Button {
-                            text: "rectangle";
-                            font_size: 14;
-                            background: active_tool == "Rectangle" ? #e0dfff : Theme.surface;
-                            foreground: active_tool == "Rectangle" ? #4338ca : Theme.text_primary;
-                            border_radius: 6dp;
-                            padding_x: 8dp;
-                            padding_y: 6dp;
-                            on_tap => {
-                                on_select_tool("Rectangle");
-                                drawer_open = false;
-                            }
-                        }
-                        Button {
-                            text: "diamond";
-                            font_size: 14;
-                            background: active_tool == "Diamond" ? #e0dfff : Theme.surface;
-                            foreground: active_tool == "Diamond" ? #4338ca : Theme.text_primary;
-                            border_radius: 6dp;
-                            padding_x: 8dp;
-                            padding_y: 6dp;
-                            on_tap => {
-                                on_select_tool("Diamond");
-                                drawer_open = false;
-                            }
-                        }
-                        Button {
-                            text: "circle";
-                            font_size: 14;
-                            background: active_tool == "Ellipse" ? #e0dfff : Theme.surface;
-                            foreground: active_tool == "Ellipse" ? #4338ca : Theme.text_primary;
-                            border_radius: 6dp;
-                            padding_x: 8dp;
-                            padding_y: 6dp;
-                            on_tap => {
-                                on_select_tool("Ellipse");
-                                drawer_open = false;
-                            }
-                        }
-                        Button {
-                            text: "arrow";
-                            font_size: 14;
-                            background: active_tool == "Arrow" ? #e0dfff : Theme.surface;
-                            foreground: active_tool == "Arrow" ? #4338ca : Theme.text_primary;
-                            border_radius: 6dp;
-                            padding_x: 8dp;
-                            padding_y: 6dp;
-                            on_tap => {
-                                on_select_tool("Arrow");
-                                drawer_open = false;
-                            }
-                        }
-                        Button {
-                            text: "line";
-                            font_size: 14;
-                            background: active_tool == "Line" ? #e0dfff : Theme.surface;
-                            foreground: active_tool == "Line" ? #4338ca : Theme.text_primary;
-                            border_radius: 6dp;
-                            padding_x: 8dp;
-                            padding_y: 6dp;
-                            on_tap => {
-                                on_select_tool("Line");
-                                drawer_open = false;
-                            }
-                        }
-                        Button {
-                            text: "card";
-                            font_size: 14;
-                            background: active_tool == "Card" ? #e0dfff : Theme.surface;
-                            foreground: active_tool == "Card" ? #4338ca : Theme.text_primary;
-                            border_radius: 6dp;
-                            padding_x: 8dp;
-                            padding_y: 6dp;
-                            on_tap => {
-                                on_select_tool("Card");
-                                drawer_open = false;
-                            }
-                        }
-                    }
-                }
-
-                // Document Actions Card
-                Card {
-                    width: 100%;
-                    padding: 8dp;
-                    gap: 4dp;
-
-                    ListTile {
-                        title: "New Canvas";
-                        subtitle: "Start fresh with a clean board";
-                        leading: "file";
-                        on_tap => { on_new_canvas(); }
-                    }
-                    ListTile {
-                        title: "Export as SVG";
-                        subtitle: "Hand-drawn vector graphic to clipboard";
-                        leading: "image";
-                        on_tap => { on_export_svg(); }
-                    }
-                    ListTile {
-                        title: "Export as JSON";
-                        subtitle: "Excalidraw compatible JSON format";
-                        leading: "download";
-                        on_tap => { on_export_json(); }
-                    }
-                    ListTile {
-                        title: "Import from Clipboard";
-                        subtitle: "Load document JSON";
-                        leading: "copy";
-                        on_tap => { on_import_json(); }
-                    }
-                }
-
-                // Platform Settings Card
-                Card {
-                    width: 100%;
-                    padding: 8dp;
-                    gap: 4dp;
-
-                    ListTile {
-                        title: "Admin Privileges";
-                        subtitle: "Elevated platform settings";
-                        leading: "lock";
-                        trailing: "Open";
-                        on_tap => { on_open_admin(); }
-                    }
-                    ListTile {
-                        title: "Accessibility Settings";
-                        subtitle: "System access & screen reader";
-                        leading: "shield";
-                        trailing: "Open";
-                        on_tap => { on_open_accessibility(); }
-                    }
-                    ListTile {
-                        title: "System App Settings";
-                        subtitle: "Manage permissions";
-                        leading: "settings";
-                        trailing: "Open";
-                        on_tap => { on_open_settings(); }
-                    }
-                }
-
-                Button {
-                    text: "Close Menu";
-                    background: Theme.surface_variant;
-                    foreground: Theme.text_primary;
-                    border_radius: 8dp;
-                    on_tap => { drawer_open = false; }
                 }
             }
         }
