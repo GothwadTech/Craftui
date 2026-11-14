@@ -1,16 +1,20 @@
-# Mobile & Web Permissions Guide
+# Permissions
 
-CraftUI features a unified permission system spanning 35 standard permissions across Android, iOS, and Web.
+CraftUI has one list of permission names that it maps to each platform. You
+declare what the app needs in `craftui.toml` and request it at run time from
+Rust.
 
 ---
 
-## 1. The 35 Standard Permissions
+## 1. The permission names
 
-Inspect all available permissions at any time with the CLI:
+Print the full list with the CLI:
 
 ```bash
 craftui permissions list
 ```
+
+A selection:
 
 | Permission Key | Description | Android Mapping | iOS Usage Description |
 |---|---|---|---|
@@ -42,7 +46,7 @@ photos = "Allows you to choose photos from your gallery."
 vibrate = "Provides haptic feedback when taking pictures."
 ```
 
-Audit your manifest against OS store policies:
+Check the manifest for unknown names and missing descriptions:
 ```bash
 craftui permissions check
 ```

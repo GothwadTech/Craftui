@@ -364,6 +364,11 @@ fn find_prop<'a>(el: &'a ElementNode, names: &[&str]) -> Option<&'a PropBinding>
 /// for `flex_grow: 1.0` or `height: 100%` would have nothing to grow into.
 /// The first branch that sets a literal `width`, `height` or `flex_grow`
 /// decides the wrapper's value for it.
+///
+/// When one of the branches scrolls, a wrapper that grows takes exactly the
+/// space its parent has left. Otherwise the wrapper could never be smaller than
+/// the full scrolled content, and a long list would run off the screen instead
+/// of scrolling.
 fn slot_sizing_from_branches(branches: &[&ElementNode]) -> String {
     fn literal_len(expr: &Expr) -> Option<String> {
         match expr {
@@ -398,7 +403,17 @@ fn slot_sizing_from_branches(branches: &[&ElementNode]) -> String {
         let _ = write!(out, ".with_height({height})");
     }
     if let Some(grow) = first("flex_grow", literal_number) {
-        let _ = write!(out, ".with_flex_grow({grow})");
+        let scrolls = branches.iter().any(|el| {
+            matches!(
+                el.kind.as_str(),
+                "ScrollView" | "VirtualList" | "VirtualGrid"
+            )
+        });
+        if scrolls {
+            let _ = write!(out, ".fill_remaining({grow})");
+        } else {
+            let _ = write!(out, ".with_flex_grow({grow})");
+        }
     }
     out
 }

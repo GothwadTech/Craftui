@@ -588,9 +588,26 @@ fn the_if_else_wrapper_takes_its_size_from_the_branches() {
         .find(|line| line.contains(".dynamic_slot("))
         .expect("an if/else slot");
     assert!(line.contains(".with_width(Length::Pct(100.00))"), "{line}");
-    assert!(line.contains(".with_flex_grow(1.00)"), "{line}");
+    // One branch scrolls, so the wrapper takes the space that is left instead
+    // of growing from the full height of the scrolled content.
+    assert!(line.contains(".fill_remaining(1.00)"), "{line}");
+    assert!(!line.contains(".with_flex_grow("), "{line}");
     // Taken from the second branch, because the first does not set a height.
     assert!(line.contains(".with_height(Length::Dp(320.00))"), "{line}");
+
+    // Without a scrolling branch the wrapper grows in the ordinary way.
+    let growing = compile(&in_component(
+        r#"
+        if flag : Column { flex_grow: 2.0; }
+        else : Column { flex_grow: 2.0; }
+"#,
+    ));
+    let line = growing
+        .lines()
+        .find(|line| line.contains(".dynamic_slot("))
+        .expect("an if/else slot");
+    assert!(line.contains(".with_flex_grow(2.00)"), "{line}");
+    assert!(!line.contains(".fill_remaining("), "{line}");
 
     // Branches without explicit sizing leave the wrapper alone.
     let plain = compile(&in_component(

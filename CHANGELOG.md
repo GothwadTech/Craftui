@@ -15,6 +15,9 @@ Notable changes to CraftUI. The format follows
   end-to-end jobs that build the notes app as a web bundle (tested in headless
   Chrome) and as an Android APK.
 - `WidgetTree::is_visible` to ask whether a node is currently shown.
+- `LayoutStyle::flex_basis`, `LayoutStyle::fill_remaining` and
+  `LayoutStyle::with_min_size`.
+- Tests for the reactive engine, the layout engine and the app manifest.
 - Tests for the `.cui` language (`crates/craftui-dsl/tests/language.rs`) and a
   test that compiles every `cui` example in the documentation.
 - `CONTRIBUTING.md`, this changelog, a README for the notes example, and a
@@ -30,6 +33,9 @@ Notable changes to CraftUI. The format follows
   percentage sizes had no effect, because the wrapper around the branch was
   sized to its content. The wrapper now takes `width`, `height` and `flex_grow`
   from the branches.
+- A scrolling list in an `if ... else` branch was laid out at the full height
+  of its content, so a long list ran off the screen and could not be scrolled.
+  The wrapper now takes exactly the space its parent has left.
 - Text fields had no accessible name. They now use their placeholder, so screen
   readers and the web accessibility layer can identify them.
 - Code generated from `.cui` files no longer produces clippy warnings in

@@ -70,7 +70,6 @@ artifacts `craftui-notes-android-debug-apk` and `craftui-notes-web`.
 | `src/lib.rs` | `NotesController` connects model, storage and screen. Also the Web and Android entry points, and the UI tests. |
 | `src/main.rs` | Desktop entry point. |
 | `craftui.toml` | App name, id (`dev.craftui.notes`) and Android SDK levels, used for packaging. |
-| `index.html` | The page that hosts the web build. |
 
 The model is the single source of truth. The controller publishes what the
 screen should show (a list of cards, a few labels and flags) into the

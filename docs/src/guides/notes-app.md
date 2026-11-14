@@ -14,7 +14,6 @@ examples/notes/
 ├── Cargo.toml       one library (used by Android and the Web) plus a desktop binary
 ├── craftui.toml     app name, id, Android SDK levels
 ├── build.rs         compiles ui/*.cui to Rust
-├── index.html       hosts the web build
 ├── ui/notes.cui     the screen
 └── src/
     ├── model.rs     notes and their rules
