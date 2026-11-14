@@ -1036,15 +1036,45 @@ fn run_app_target(
                 Some(&out_dir),
                 skip_cargo,
             )?;
-            let gradlew = out_dir.join(if cfg!(windows) {
+            let abs_out_dir = std::fs::canonicalize(&out_dir).unwrap_or_else(|_| out_dir.clone());
+            let gradlew = abs_out_dir.join(if cfg!(windows) {
                 "gradlew.bat"
             } else {
                 "gradlew"
             });
             let gradle_bin = if gradlew.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(&gradlew) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&gradlew, perms);
+                    }
+                }
                 Some(gradlew)
+            } else if let Some(sys_gradle) = find_in_path("gradle") {
+                // Generate gradle wrapper if not present
+                let _ = Command::new(&sys_gradle)
+                    .arg("wrapper")
+                    .current_dir(&abs_out_dir)
+                    .status();
+                if gradlew.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(meta) = std::fs::metadata(&gradlew) {
+                            let mut perms = meta.permissions();
+                            perms.set_mode(0o755);
+                            let _ = std::fs::set_permissions(&gradlew, perms);
+                        }
+                    }
+                    Some(gradlew)
+                } else {
+                    Some(sys_gradle)
+                }
             } else {
-                find_in_path("gradle")
+                None
             };
 
             if let Some(gbin) = gradle_bin {
@@ -1053,6 +1083,7 @@ fn run_app_target(
                 } else {
                     "assembleDebug"
                 };
+                println!("Running gradle {task} in {}...", out_dir.display());
                 let status = Command::new(&gbin)
                     .arg(task)
                     .current_dir(&out_dir)
@@ -1063,36 +1094,96 @@ fn run_app_target(
                         "gradle {task} exited with {status}"
                     )));
                 }
-                let apk = out_dir.join(if release {
+
+                // Locate generated APK
+                let default_apk = out_dir.join(if release {
                     "app/build/outputs/apk/release/app-release-unsigned.apk"
                 } else {
                     "app/build/outputs/apk/debug/app-debug.apk"
                 });
-                if apk.is_file()
-                    && let Some(adb) = discover_adb()
-                {
-                    println!("Installing {} via {}...", apk.display(), adb.display());
-                    let install = Command::new(&adb)
-                        .args(["install", "-r"])
-                        .arg(&apk)
-                        .status()
-                        .map_err(|e| CraftError::Platform(format!("adb install failed: {e}")))?;
-                    if !install.success() {
-                        return Err(CraftError::Platform(format!(
-                            "adb install exited with {install}"
-                        )));
+                let apk = if default_apk.is_file() {
+                    Some(default_apk)
+                } else {
+                    let apk_search_dir = out_dir.join("app/build/outputs/apk");
+                    let mut found: Option<PathBuf> = None;
+                    if let Ok(entries) = std::fs::read_dir(&apk_search_dir) {
+                        for sub in entries.flatten() {
+                            if sub.path().is_dir() {
+                                if let Ok(files) = std::fs::read_dir(sub.path()) {
+                                    for f in files.flatten() {
+                                        if f.path().extension().and_then(|e| e.to_str()) == Some("apk") {
+                                            found = Some(f.path());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    let app_id = load_active_manifest(Path::new("."))?
-                        .map_or_else(|| "dev.craftui.app".to_string(), |m| m.app.id);
-                    let _ = Command::new(&adb)
-                        .args([
-                            "shell",
-                            "am",
-                            "start",
-                            "-n",
-                            &format!("{app_id}/dev.craftui.app.MainActivity"),
-                        ])
-                        .status();
+                    found
+                };
+
+                if let Some(apk_path) = apk {
+                    println!("Built Android APK at: {}", apk_path.display());
+                    if let Some(adb) = discover_adb() {
+                        let has_devices = Command::new(&adb)
+                            .arg("devices")
+                            .output()
+                            .ok()
+                            .map(|out| {
+                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                stdout.lines().skip(1).any(|l| l.contains("\tdevice"))
+                            })
+                            .unwrap_or(false);
+
+                        if has_devices {
+                            println!("Installing APK on device via {}...", adb.display());
+                            let install = Command::new(&adb)
+                                .args(["install", "-r"])
+                                .arg(&apk_path)
+                                .status()
+                                .map_err(|e| CraftError::Platform(format!("adb install failed: {e}")))?;
+                            if !install.success() {
+                                return Err(CraftError::Platform(format!(
+                                    "adb install exited with {install}"
+                                )));
+                            }
+                            let app_id = std::fs::read_to_string(out_dir.join("app/build.gradle.kts"))
+                                .ok()
+                                .and_then(|content| {
+                                    content.lines().find_map(|line| {
+                                        let trimmed = line.trim();
+                                        if trimmed.starts_with("applicationId =") {
+                                            trimmed.split('"').nth(1).map(str::to_string)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .unwrap_or_else(|| {
+                                    load_active_manifest(Path::new("."))
+                                        .ok()
+                                        .flatten()
+                                        .map_or_else(|| "dev.craftui.app".to_string(), |m| m.app.id)
+                                });
+
+                            println!("Starting Android app: {app_id}/dev.craftui.app.MainActivity...");
+                            let _ = Command::new(&adb)
+                                .args([
+                                    "shell",
+                                    "am",
+                                    "start",
+                                    "-n",
+                                    &format!("{app_id}/dev.craftui.app.MainActivity"),
+                                ])
+                                .status();
+                            println!("\x1b[32m[craftui]\x1b[0m App successfully deployed and launched on Android!");
+                        } else {
+                            println!("\x1b[33m[craftui]\x1b[0m No Android device or emulator currently connected. Connect a device with USB debugging or launch an emulator, then run `adb install -r {}`.", apk_path.display());
+                        }
+                    } else {
+                        println!("`adb` not found on PATH. Install Android platform-tools or run `adb install -r {}` manually.", apk_path.display());
+                    }
                 }
             } else {
                 println!(
@@ -1717,12 +1808,15 @@ fn configure_android_ndk_env(cmd: &mut Command, ndk_root: &Path) -> Option<(Path
     let ar = bin.join("llvm-ar");
     if std::env::var_os("CC_aarch64_linux_android").is_none() {
         cmd.env("CC_aarch64_linux_android", &cc);
+        cmd.env("CC_aarch64-linux-android", &cc);
     }
     if std::env::var_os("CXX_aarch64_linux_android").is_none() {
         cmd.env("CXX_aarch64_linux_android", &cxx);
+        cmd.env("CXX_aarch64-linux-android", &cxx);
     }
     if ar.is_file() && std::env::var_os("AR_aarch64_linux_android").is_none() {
         cmd.env("AR_aarch64_linux_android", &ar);
+        cmd.env("AR_aarch64-linux-android", &ar);
     }
     if std::env::var_os("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER").is_none() {
         cmd.env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", &cc);
@@ -3178,21 +3272,22 @@ fn run_build(
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("dist").join(default_sub))
     };
-    let mut manifest_opt = load_active_manifest(Path::new("."))?;
-    if manifest_opt.is_none() {
-        if let Some(pkg) = package {
-            let candidate1 = Path::new("examples").join(pkg).join("craftui.toml");
-            let candidate2 = Path::new("examples")
-                .join(pkg.trim_start_matches("craftui-example-"))
-                .join("craftui.toml");
-            let candidate3 = Path::new("packages").join(pkg).join("craftui.toml");
-            for cand in [candidate1, candidate2, candidate3] {
-                if cand.is_file() {
-                    manifest_opt = Some(AppManifest::load_file(&cand)?);
-                    break;
-                }
+    let mut manifest_opt = None;
+    if let Some(pkg) = package {
+        let candidate1 = Path::new("examples").join(pkg).join("craftui.toml");
+        let candidate2 = Path::new("examples")
+            .join(pkg.trim_start_matches("craftui-example-"))
+            .join("craftui.toml");
+        let candidate3 = Path::new("packages").join(pkg).join("craftui.toml");
+        for cand in [candidate1, candidate2, candidate3] {
+            if cand.is_file() {
+                manifest_opt = Some(AppManifest::load_file(&cand)?);
+                break;
             }
         }
+    }
+    if manifest_opt.is_none() {
+        manifest_opt = load_active_manifest(Path::new("."))?;
     }
     let app_display = manifest_opt
         .as_ref()
@@ -3229,6 +3324,9 @@ fn run_build(
                 cmd.args(["build", "--target", "wasm32-unknown-unknown", "-p", pkg]);
                 if release {
                     cmd.arg("--release");
+                }
+                if pkg != "craftui-platform-web" {
+                    cmd.arg("--no-default-features");
                 }
                 let status = cmd
                     .status()

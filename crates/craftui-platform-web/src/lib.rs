@@ -1296,13 +1296,14 @@ pub fn dom_input_to_events(
     events
 }
 
-pub fn dom_button_to_craft(button: i16) -> PointerButton {
+pub fn dom_button_to_craft(button: i16) -> Option<PointerButton> {
     match button {
-        2 => PointerButton::Secondary,
-        1 => PointerButton::Middle,
-        3 => PointerButton::Back,
-        4 => PointerButton::Forward,
-        _ => PointerButton::Primary,
+        0 => Some(PointerButton::Primary),
+        1 => Some(PointerButton::Middle),
+        2 => Some(PointerButton::Secondary),
+        3 => Some(PointerButton::Back),
+        4 => Some(PointerButton::Forward),
+        _ => None,
     }
 }
 
@@ -1323,7 +1324,7 @@ pub fn dom_pointer_event(
         id: PointerId(pointer_id as u64),
         phase,
         position: Point::new(client_x - rect_left, client_y - rect_top),
-        button: Some(dom_button_to_craft(button)),
+        button: dom_button_to_craft(button),
         modifiers,
         is_touch,
         timestamp_ms,
@@ -2071,6 +2072,22 @@ pub mod wasm_runner {
                     alt: e.alt_key(),
                     super_key: e.meta_key(),
                 };
+                let raw_button = if phase == PointerPhase::Move {
+                    let b = e.buttons();
+                    if b == 0 {
+                        -1
+                    } else if (b & 1) != 0 {
+                        0
+                    } else if (b & 2) != 0 {
+                        2
+                    } else if (b & 4) != 0 {
+                        1
+                    } else {
+                        0
+                    }
+                } else {
+                    e.button()
+                };
                 let ev = dom_pointer_event(
                     e.pointer_id(),
                     phase,
@@ -2078,7 +2095,7 @@ pub mod wasm_runner {
                     e.client_y() as f32,
                     bcr.left() as f32,
                     bcr.top() as f32,
-                    e.button(),
+                    raw_button,
                     e.pointer_type() == "touch",
                     mods,
                     e.time_stamp() as u64,
@@ -2267,6 +2284,9 @@ pub mod wasm_runner {
         Ok(out)
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm_runner::{mount_web_app, start_web_app, WebRunnerHandle};
 
 #[cfg(test)]
 mod tests {

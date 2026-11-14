@@ -1409,6 +1409,82 @@ fn emit_cui_node(el: &CuiElement, counter: &mut usize, stmts: &mut TokenStream2)
                 let #var = __tree.html_view(__cx, #src, #html, None);
             }
         }
+        "Card" => {
+            let variant = find_arg(&["variant"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(::craftui::widgets::CardVariant::Elevated));
+            quote! {
+                let #var = __tree.card(__cx, #variant);
+            }
+        }
+        "ListTile" => {
+            let title = find_arg(&["title"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(""));
+            let subtitle = find_arg(&["subtitle"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<&str>));
+            let leading = find_arg(&["leading"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<&str>));
+            let trailing = find_arg(&["trailing"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<&str>));
+            let on_tap = find_arg(&["on_tap", "on_click"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<fn()>));
+            quote! {
+                let #var = __tree.list_tile(__cx, #title, #subtitle, #leading, #trailing, #on_tap);
+            }
+        }
+        "Chip" => {
+            let label = find_arg(&["label"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(""));
+            let selected = find_arg(&["selected"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(__cx.signal(false)));
+            let icon = find_arg(&["icon"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<&str>));
+            let on_tap = find_arg(&["on_tap", "on_click"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<fn()>));
+            quote! {
+                let #var = __tree.chip(__cx, #label, #selected, #icon, #on_tap);
+            }
+        }
+        "AppBar" => {
+            let title = find_arg(&["title"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(""));
+            let leading = find_arg(&["leading", "leading_icon"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<&str>));
+            let elevation = find_arg(&["elevation"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(4.0f32));
+            let on_leading_tap = find_arg(&["on_leading_tap", "on_menu_tap"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<fn()>));
+            quote! {
+                let #var = __tree.app_bar(__cx, #title, #leading, #elevation, #on_leading_tap);
+            }
+        }
+        "Drawer" => {
+            let open = find_arg(&["open"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(__cx.signal(false)));
+            let width = find_arg(&["width"])
+                .map(|e| quote!(#e))
+                .unwrap_or_else(|| quote!(304.0f32));
+            let on_close = find_arg(&["on_close"])
+                .map(|e| quote!(Some(#e)))
+                .unwrap_or_else(|| quote!(None::<fn()>));
+            quote! {
+                let #var = __tree.drawer(__cx, #open, #width, #on_close);
+            }
+        }
         "Custom" => {
             let widget = find_arg(&["widget", "impl", "custom"])
                 .expect("Custom requires `widget: MyCustomWidget::new(...)`");

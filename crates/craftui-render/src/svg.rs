@@ -1,6 +1,6 @@
 use crate::PaintScene;
 use craftui_core::{Brush, Color, Rect};
-use kurbo::{Affine, BezPath, Circle, Line, RoundedRect, Shape};
+use kurbo::{Affine, BezPath, Circle, Ellipse, Line, RoundedRect, Shape};
 
 /// Parsed SVG path primitive ready to transform and emit into a [`PaintScene`].
 #[derive(Debug, Clone)]
@@ -110,6 +110,21 @@ impl ParsedSvgIcon {
                     extract_attr(tag_trimmed, "r")
                         .and_then(|s| s.parse::<f64>().ok())
                         .map(|r| Circle::new((cx, cy), r).to_path(0.1))
+                }
+                "ellipse" => {
+                    let cx = extract_attr(tag_trimmed, "cx")
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let cy = extract_attr(tag_trimmed, "cy")
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let rx = extract_attr(tag_trimmed, "rx")
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    let ry = extract_attr(tag_trimmed, "ry")
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    Some(Ellipse::new((cx, cy), (rx, ry), 0.0).to_path(0.1))
                 }
                 "rect" => {
                     let x = extract_attr(tag_trimmed, "x")
@@ -340,6 +355,66 @@ pub fn builtin_icon_svg(name: &str) -> Option<&'static str> {
         }
         "copy_pages" | "pages" => {
             r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V4a2 2 0 0 1 2-2h12"/></svg>"#
+        }
+        "lock" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>"#
+        }
+        "unlock" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>"#
+        }
+        "hand" | "pan" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M18 11V6a2 2 0 0 0-4 0v4M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8c0 4.4 3.6 8 8 8h1a8 8 0 0 0 8-8v-3a2 2 0 0 0-4 0v2"/></svg>"#
+        }
+        "select" | "cursor" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M4 4l7 17 2.5-6.5L20 12 4 4z"/></svg>"#
+        }
+        "rectangle" | "rect" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="4" y="5" width="16" height="14" rx="2"/></svg>"#
+        }
+        "diamond" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><polygon points="12 3 21 12 12 21 3 12"/></svg>"#
+        }
+        "ellipse" | "circle" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><circle cx="12" cy="12" r="8"/></svg>"#
+        }
+        "arrow" | "arrow_right" | "arrow_tool" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><line x1="4" y1="12" x2="20" y2="12"/><polyline points="14 6 20 12 14 18"/></svg>"#
+        }
+        "line" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><line x1="4" y1="19" x2="20" y2="5"/></svg>"#
+        }
+        "pen" | "pencil" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>"#
+        }
+        "text" | "type" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><polyline points="4 7 4 4 20 4 20 7"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="9" y1="20" x2="15" y2="20"/></svg>"#
+        }
+        "card" | "note" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="9" x2="17" y2="9"/><line x1="7" y1="13" x2="13" y2="13"/></svg>"#
+        }
+        "eraser" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M19 14l-6.5 6.5a2 2 0 0 1-2.8 0L2.5 13.3a2 2 0 0 1 0-2.8l9.2-9.2a2 2 0 0 1 2.8 0L20.2 7a2 2 0 0 1 0 2.8L19 14z"/><line x1="18" y1="20" x2="6" y2="20"/></svg>"#
+        }
+        "undo" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>"#
+        }
+        "redo" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>"#
+        }
+        "shield" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>"#
+        }
+        "help" | "question" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="0.8" fill="currentColor"/></svg>"#
+        }
+        "map" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><polygon points="1 6 8 2 16 6 23 2 23 18 16 22 8 18 1 22 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>"#
+        }
+        "gift" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>"#
+        }
+        "sidebar" => {
+            r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.0"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>"#
         }
         _ => return None,
     })

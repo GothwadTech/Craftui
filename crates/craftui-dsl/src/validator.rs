@@ -47,6 +47,38 @@ pub const BUILTIN_WIDGETS: &[&str] = &[
     "BottomSheet",
     "PlatformView",
     "HtmlView",
+    "Card",
+    "ElevatedCard",
+    "FilledCard",
+    "OutlinedCard",
+    "ListTile",
+    "Chip",
+    "FilterChip",
+    "ActionChip",
+    "ChoiceChip",
+    "InputChip",
+    "FilledButton",
+    "ElevatedButton",
+    "TonalButton",
+    "FilledTonalButton",
+    "OutlinedButton",
+    "TextButton",
+    "IconButton",
+    "FilledIconButton",
+    "TonalIconButton",
+    "OutlinedIconButton",
+    "SegmentedButton",
+    "CircularProgressIndicator",
+    "LinearProgressIndicator",
+    "HorizontalDivider",
+    "VerticalDivider",
+    "CheckBoxTile",
+    "RadioButtonTile",
+    "SnackBar",
+    "Dialog",
+    "AppBar",
+    "Drawer",
+    "Scaffold",
     "div",
     "span",
     "p",
@@ -78,6 +110,11 @@ pub const COMMON_PROPS: &[&str] = &[
     "padding_x",
     "padding_y",
     "margin",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "absolute",
     "safe_area",
     "visible",
     "background",
@@ -132,6 +169,11 @@ pub const BUILTIN_PROPS: &[&str] = &[
     "padding_x",
     "padding_y",
     "margin",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "absolute",
     "gap",
     "align",
     "justify",
@@ -247,6 +289,17 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "SplitPane"
             | "Accordion"
             | "Button"
+            | "FilledButton"
+            | "ElevatedButton"
+            | "TonalButton"
+            | "FilledTonalButton"
+            | "OutlinedButton"
+            | "TextButton"
+            | "IconButton"
+            | "FilledIconButton"
+            | "TonalIconButton"
+            | "OutlinedIconButton"
+            | "FloatingActionButton"
             | "div"
             | "section"
             | "nav"
@@ -257,6 +310,13 @@ pub fn widget_allows_children(kind: &str) -> bool {
             | "aside"
             | "span"
             | "button"
+            | "Card"
+            | "ElevatedCard"
+            | "FilledCard"
+            | "OutlinedCard"
+            | "Dialog"
+            | "Drawer"
+            | "Scaffold"
     )
 }
 
@@ -288,7 +348,8 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
                 "items",
             ]);
         }
-        "Button" => {
+        "Button" | "button" | "FilledButton" | "ElevatedButton" | "TonalButton"
+        | "FilledTonalButton" | "OutlinedButton" | "TextButton" => {
             out.extend_from_slice(CONTAINER_PROPS);
             out.extend_from_slice(&[
                 "text",
@@ -301,12 +362,28 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
                 "disabled",
             ]);
         }
+        "IconButton" | "FilledIconButton" | "TonalIconButton" | "OutlinedIconButton" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&[
+                "icon",
+                "name",
+                "svg",
+                "text",
+                "title",
+                "label",
+                "size",
+                "font_size",
+                "color",
+                "foreground",
+                "disabled",
+            ]);
+        }
         "Modal" | "BottomSheet" => {
             out.extend_from_slice(CONTAINER_PROPS);
             out.push("open");
         }
         "Spacer" => {}
-        "Divider" => {
+        "Divider" | "HorizontalDivider" | "VerticalDivider" => {
             out.extend_from_slice(&["direction", "thickness", "color", "foreground"]);
         }
         "Text" => {
@@ -406,10 +483,10 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "Tooltip" => {
             out.extend_from_slice(&["text", "label", "content"]);
         }
-        "ProgressIndicator" => {
-            out.extend_from_slice(&["progress", "value"]);
+        "ProgressIndicator" | "LinearProgressIndicator" => {
+            out.extend_from_slice(&["progress", "value", "color", "foreground"]);
         }
-        "Spinner" => {
+        "Spinner" | "CircularProgressIndicator" => {
             out.extend_from_slice(&["size", "thickness", "color", "foreground"]);
         }
         "Badge" => {
@@ -434,14 +511,34 @@ pub fn props_for_widget(kind: &str) -> Vec<&'static str> {
         "HtmlView" => {
             out.extend_from_slice(&["src", "html", "url"]);
         }
+        "Card" | "ElevatedCard" | "FilledCard" | "OutlinedCard" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.push("variant");
+        }
+        "ListTile" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["title", "subtitle", "leading", "trailing", "selected"]);
+        }
+        "Chip" | "FilterChip" | "ActionChip" | "ChoiceChip" | "InputChip" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["label", "text", "selected", "value", "icon", "leading_icon", "disabled"]);
+        }
+        "AppBar" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["title", "leading", "leading_icon", "elevation"]);
+        }
+        "Drawer" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+            out.extend_from_slice(&["open", "width"]);
+        }
+        "Scaffold" => {
+            out.extend_from_slice(CONTAINER_PROPS);
+        }
         "div" | "section" | "nav" | "header" | "footer" | "main" | "article" | "aside" => {
             out.extend_from_slice(CONTAINER_PROPS);
         }
         "span" | "p" | "h1" | "h2" | "h3" => {
             out.extend_from_slice(&["text", "content", "color", "font_size", "font_weight"]);
-        }
-        "button" => {
-            out.extend_from_slice(&["text", "label", "disabled", "foreground", "color"]);
         }
         "input" => {
             out.extend_from_slice(&["text", "value", "placeholder"]);
@@ -464,7 +561,8 @@ pub fn events_for_widget(kind: &str) -> Vec<&'static str> {
         "DataTable" => out.extend_from_slice(&["on_select", "on_change", "on_sort"]),
         "PopupMenu" => out.extend_from_slice(&["on_select", "on_change", "on_close"]),
         "ToastHost" => out.push("on_dismiss"),
-        "Modal" | "BottomSheet" => out.push("on_close"),
+        "Modal" | "BottomSheet" | "Drawer" => out.push("on_close"),
+        "AppBar" => out.push("on_leading_tap"),
         _ => {}
     }
     out
@@ -482,7 +580,10 @@ fn widget_supports_two_way(kind: &str, prop: &str) -> bool {
         "Accordion" => matches!(prop, "expanded" | "open"),
         "DataTable" => prop == "selected",
         "Select" | "Dropdown" | "RadioGroup" => matches!(prop, "selected" | "value"),
-        "Modal" | "BottomSheet" | "PopupMenu" => matches!(prop, "open" | "visible"),
+        "Modal" | "BottomSheet" | "PopupMenu" | "Drawer" => matches!(prop, "open" | "visible"),
+        "Chip" | "FilterChip" | "ActionChip" | "ChoiceChip" | "InputChip" => {
+            matches!(prop, "selected" | "value")
+        }
         _ => false,
     }
 }

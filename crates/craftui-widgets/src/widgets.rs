@@ -390,5 +390,50 @@ pub enum WidgetKind {
         html: ReactiveValue<String>,
         router: Option<Rc<RefCell<craftui_core::IpcRouter>>>,
     },
+    /// Material 3 Card panel container matching Flutter's `Card` (`Elevated`, `Filled`, `Outlined`).
+    Card {
+        variant: CardVariant,
+    },
+    /// Standard Material 3 item row matching Flutter's `ListTile`.
+    ListTile {
+        leading: Option<ReactiveValue<String>>,
+        title: ReactiveValue<String>,
+        subtitle: Option<ReactiveValue<String>>,
+        trailing: Option<ReactiveValue<String>>,
+        on_tap: Option<TapHandler>,
+        hovered: bool,
+        pressed: bool,
+        selected: ReactiveValue<bool>,
+    },
+    /// Material 3 selectable or action chip matching Flutter's `Chip` / `FilterChip`.
+    Chip {
+        label: ReactiveValue<String>,
+        icon: Option<ReactiveValue<String>>,
+        selected: Signal<bool>,
+        on_tap: Option<TapHandler>,
+        hovered: bool,
+    },
+    /// Material 3 Top App Bar header matching Flutter's `AppBar`.
+    AppBar {
+        title: ReactiveValue<String>,
+        leading_icon: Option<ReactiveValue<String>>,
+        elevation: f32,
+        on_leading_tap: Option<TapHandler>,
+    },
+    /// Slide-out navigation drawer panel matching Flutter's `Drawer`.
+    Drawer {
+        open: Signal<bool>,
+        width: f32,
+        on_close: Option<TapHandler>,
+    },
     Custom(Rc<RefCell<dyn CustomWidget>>),
+}
+
+/// Material 3 Card visual style variants matching Flutter's `Card.elevated`, `Card.filled`, `Card.outlined`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CardVariant {
+    #[default]
+    Elevated,
+    Filled,
+    Outlined,
 }

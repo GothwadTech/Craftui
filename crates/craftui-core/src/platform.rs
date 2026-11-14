@@ -188,6 +188,14 @@ pub enum Permission {
     BackgroundRefresh,
     MediaProjection,
     ClipboardRead,
+    DeviceAdmin,
+    AccessibilityService,
+    WriteSettings,
+    PackageUsageStats,
+    IgnoreBatteryOptimizations,
+    NotificationListener,
+    VpnService,
+    AdminPrivileges,
     Custom(String),
 }
 
@@ -227,6 +235,14 @@ const STANDARD_PERMISSIONS: &[Permission] = &[
     Permission::BackgroundRefresh,
     Permission::MediaProjection,
     Permission::ClipboardRead,
+    Permission::DeviceAdmin,
+    Permission::AccessibilityService,
+    Permission::WriteSettings,
+    Permission::PackageUsageStats,
+    Permission::IgnoreBatteryOptimizations,
+    Permission::NotificationListener,
+    Permission::VpnService,
+    Permission::AdminPrivileges,
 ];
 
 /// Android `<uses-permission>` manifest declaration specification with optional SDK version bounds.
@@ -301,6 +317,14 @@ impl Permission {
             Self::BackgroundRefresh => Cow::Borrowed("background_refresh"),
             Self::MediaProjection => Cow::Borrowed("media_projection"),
             Self::ClipboardRead => Cow::Borrowed("clipboard_read"),
+            Self::DeviceAdmin => Cow::Borrowed("device_admin"),
+            Self::AccessibilityService => Cow::Borrowed("accessibility_service"),
+            Self::WriteSettings => Cow::Borrowed("write_settings"),
+            Self::PackageUsageStats => Cow::Borrowed("package_usage_stats"),
+            Self::IgnoreBatteryOptimizations => Cow::Borrowed("ignore_battery_optimizations"),
+            Self::NotificationListener => Cow::Borrowed("notification_listener"),
+            Self::VpnService => Cow::Borrowed("vpn_service"),
+            Self::AdminPrivileges => Cow::Borrowed("admin_privileges"),
             Self::Custom(name) => Cow::Borrowed(name.as_str()),
         }
     }
@@ -352,6 +376,14 @@ impl Permission {
             "background_refresh" | "background_fetch" => Self::BackgroundRefresh,
             "media_projection" | "screen_capture" | "screen_record" => Self::MediaProjection,
             "clipboard_read" | "clipboard" | "pasteboard" => Self::ClipboardRead,
+            "device_admin" | "admin" | "device_policy" | "device_policy_manager" => Self::DeviceAdmin,
+            "accessibility_service" | "accessibility" | "a11y_service" | "a11y" => Self::AccessibilityService,
+            "write_settings" | "modify_system_settings" => Self::WriteSettings,
+            "package_usage_stats" | "usage_stats" | "app_usage" => Self::PackageUsageStats,
+            "ignore_battery_optimizations" | "battery_optimization" | "battery_saver" => Self::IgnoreBatteryOptimizations,
+            "notification_listener" | "notification_access" => Self::NotificationListener,
+            "vpn_service" | "vpn" => Self::VpnService,
+            "admin_privileges" | "root" | "sudo" | "uac" | "elevated" => Self::AdminPrivileges,
             _ => Self::Custom(trimmed.to_string()),
         }
     }
@@ -494,6 +526,28 @@ impl Permission {
                 .with_min_sdk(34),
             ],
             Self::ClipboardRead => Vec::new(),
+            Self::DeviceAdmin => vec![AndroidPermissionSpec::new(
+                "android.permission.BIND_DEVICE_ADMIN",
+            )],
+            Self::AccessibilityService => vec![AndroidPermissionSpec::new(
+                "android.permission.BIND_ACCESSIBILITY_SERVICE",
+            )],
+            Self::WriteSettings => vec![AndroidPermissionSpec::new(
+                "android.permission.WRITE_SETTINGS",
+            )],
+            Self::PackageUsageStats => vec![AndroidPermissionSpec::new(
+                "android.permission.PACKAGE_USAGE_STATS",
+            )],
+            Self::IgnoreBatteryOptimizations => vec![AndroidPermissionSpec::new(
+                "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+            )],
+            Self::NotificationListener => vec![AndroidPermissionSpec::new(
+                "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
+            )],
+            Self::VpnService => vec![AndroidPermissionSpec::new(
+                "android.permission.BIND_VPN_SERVICE",
+            )],
+            Self::AdminPrivileges => Vec::new(),
             Self::Custom(name) => vec![AndroidPermissionSpec {
                 name: Cow::Owned(name.clone()),
                 max_sdk: None,
@@ -544,6 +598,14 @@ impl Permission {
             | Self::BackgroundRefresh
             | Self::MediaProjection
             | Self::ClipboardRead
+            | Self::DeviceAdmin
+            | Self::AccessibilityService
+            | Self::WriteSettings
+            | Self::PackageUsageStats
+            | Self::IgnoreBatteryOptimizations
+            | Self::NotificationListener
+            | Self::VpnService
+            | Self::AdminPrivileges
             | Self::Custom(_) => &[],
         }
     }
@@ -620,6 +682,31 @@ pub trait PermissionBackend: Send + Sync {
     fn open_app_settings(&self) -> bool {
         false
     }
+
+    /// Open OS Accessibility Settings screen (e.g. `Settings.ACTION_ACCESSIBILITY_SETTINGS` on Android, TCC prompt on macOS).
+    fn open_accessibility_settings(&self) -> bool {
+        false
+    }
+
+    /// Open OS Device Administrator Settings (e.g. `DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN` on Android).
+    fn open_admin_settings(&self) -> bool {
+        false
+    }
+
+    /// Query whether an Accessibility Service is actively enabled by the user in system settings.
+    fn is_accessibility_enabled(&self) -> bool {
+        false
+    }
+
+    /// Query whether Device Admin or elevated administrator/root privileges are active.
+    fn is_admin_active(&self) -> bool {
+        false
+    }
+
+    /// Request elevated administrator / root execution privileges (e.g. UAC `runas`, Linux `pkexec`/Polkit, macOS Authorization).
+    fn request_admin_privileges(&self) -> bool {
+        false
+    }
 }
 
 /// Headless/fallback permission backend reporting `Unsupported` and declining settings prompts.
@@ -643,6 +730,10 @@ pub struct MockPermissionBackend {
     pub rationales: Mutex<HashSet<Permission>>,
     pub auto_grant_on_request: bool,
     pub settings_opened: AtomicUsize,
+    pub accessibility_settings_opened: AtomicUsize,
+    pub admin_settings_opened: AtomicUsize,
+    pub accessibility_enabled: std::sync::atomic::AtomicBool,
+    pub admin_active: std::sync::atomic::AtomicBool,
     request_log: Mutex<Vec<Permission>>,
 }
 
@@ -659,6 +750,10 @@ impl MockPermissionBackend {
             rationales: Mutex::new(HashSet::new()),
             auto_grant_on_request: true,
             settings_opened: AtomicUsize::new(0),
+            accessibility_settings_opened: AtomicUsize::new(0),
+            admin_settings_opened: AtomicUsize::new(0),
+            accessibility_enabled: std::sync::atomic::AtomicBool::new(false),
+            admin_active: std::sync::atomic::AtomicBool::new(false),
             request_log: Mutex::new(Vec::new()),
         }
     }
@@ -694,8 +789,24 @@ impl MockPermissionBackend {
         }
     }
 
+    pub fn set_accessibility_enabled(&self, enabled: bool) {
+        self.accessibility_enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    pub fn set_admin_active(&self, active: bool) {
+        self.admin_active.store(active, Ordering::SeqCst);
+    }
+
     pub fn settings_open_count(&self) -> usize {
         self.settings_opened.load(Ordering::SeqCst)
+    }
+
+    pub fn accessibility_settings_open_count(&self) -> usize {
+        self.accessibility_settings_opened.load(Ordering::SeqCst)
+    }
+
+    pub fn admin_settings_open_count(&self) -> usize {
+        self.admin_settings_opened.load(Ordering::SeqCst)
     }
 
     pub fn requested_permissions(&self) -> Vec<Permission> {
@@ -751,6 +862,29 @@ impl PermissionBackend for MockPermissionBackend {
 
     fn open_app_settings(&self) -> bool {
         self.settings_opened.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn open_accessibility_settings(&self) -> bool {
+        self.accessibility_settings_opened.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn open_admin_settings(&self) -> bool {
+        self.admin_settings_opened.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn is_accessibility_enabled(&self) -> bool {
+        self.accessibility_enabled.load(Ordering::SeqCst)
+    }
+
+    fn is_admin_active(&self) -> bool {
+        self.admin_active.load(Ordering::SeqCst)
+    }
+
+    fn request_admin_privileges(&self) -> bool {
+        self.admin_active.store(true, Ordering::SeqCst);
         true
     }
 }
@@ -1115,6 +1249,26 @@ impl<T: PermissionBackend + ?Sized> PermissionBackend for Arc<T> {
     fn open_app_settings(&self) -> bool {
         (**self).open_app_settings()
     }
+
+    fn open_accessibility_settings(&self) -> bool {
+        (**self).open_accessibility_settings()
+    }
+
+    fn open_admin_settings(&self) -> bool {
+        (**self).open_admin_settings()
+    }
+
+    fn is_accessibility_enabled(&self) -> bool {
+        (**self).is_accessibility_enabled()
+    }
+
+    fn is_admin_active(&self) -> bool {
+        (**self).is_admin_active()
+    }
+
+    fn request_admin_privileges(&self) -> bool {
+        (**self).request_admin_privileges()
+    }
 }
 
 impl<T: HapticsBackend + ?Sized> HapticsBackend for Arc<T> {
@@ -1355,6 +1509,31 @@ impl PlatformServices {
         self.permissions.open_app_settings()
     }
 
+    /// Open OS Accessibility Settings screen (e.g. `Settings.ACTION_ACCESSIBILITY_SETTINGS` on Android).
+    pub fn open_accessibility_settings(&self) -> bool {
+        self.permissions.open_accessibility_settings()
+    }
+
+    /// Open OS Device Administrator Settings (e.g. `DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN` on Android).
+    pub fn open_admin_settings(&self) -> bool {
+        self.permissions.open_admin_settings()
+    }
+
+    /// Query whether an Accessibility Service is actively enabled by the user in system settings.
+    pub fn is_accessibility_enabled(&self) -> bool {
+        self.permissions.is_accessibility_enabled()
+    }
+
+    /// Query whether Device Admin or elevated administrator/root privileges are active.
+    pub fn is_admin_active(&self) -> bool {
+        self.permissions.is_admin_active()
+    }
+
+    /// Request elevated administrator / root execution privileges (e.g. UAC `runas`, Linux `pkexec`/Polkit, macOS Authorization).
+    pub fn request_admin_privileges(&self) -> bool {
+        self.permissions.request_admin_privileges()
+    }
+
     /// Non-blocking single-permission request executed off the UI thread (native) and delivered onto `dispatcher`.
     pub fn request_permission_async<F>(
         &self,
@@ -1503,7 +1682,7 @@ mod tests {
     #[test]
     fn permission_keys_aliases_and_roundtrips() {
         let standard = Permission::all_standard();
-        assert_eq!(standard.len(), 35);
+        assert_eq!(standard.len(), 43);
 
         let mut seen_keys = HashSet::new();
         for perm in standard {
@@ -1527,6 +1706,12 @@ mod tests {
         assert_eq!(Permission::from_key("push"), Permission::Notifications);
         assert_eq!(Permission::from_key("face_id"), Permission::Biometrics);
         assert_eq!(Permission::from_key("biometric"), Permission::Biometrics);
+        assert_eq!(Permission::from_key("admin"), Permission::DeviceAdmin);
+        assert_eq!(Permission::from_key("a11y"), Permission::AccessibilityService);
+        assert_eq!(Permission::from_key("accessibility"), Permission::AccessibilityService);
+        assert_eq!(Permission::from_key("root"), Permission::AdminPrivileges);
+        assert_eq!(Permission::from_key("sudo"), Permission::AdminPrivileges);
+        assert_eq!(Permission::from_key("uac"), Permission::AdminPrivileges);
         assert_eq!(
             Permission::from_key("  Location-Always "),
             Permission::LocationAlways

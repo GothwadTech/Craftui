@@ -17,7 +17,7 @@ pub use router::{Router, RouterTransition};
 pub use toast::{ToastItem, ToastManager, ToastSeverity};
 pub use tree::{TreeUiSnapshot, VirtualItemFactory, WidgetNode, WidgetTree};
 pub use widgets::{
-    BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CustomWidget, FloatCallback,
+    BoolCallback, BoxStyle, CanvasPaintFn, CanvasPointerFn, CardVariant, CustomWidget, FloatCallback,
     HoverCallback, IndexCallback, PinchRotateCallback, ReactiveValue, TapHandler, TextCallback,
     ToastDismissCallback, WidgetKind,
 };
@@ -2009,5 +2009,148 @@ mod tests {
         assert!(truncated.ends_with('…'));
         let measured = te.measure(&truncated, &st, None);
         assert!(measured.width <= 80.0);
+    }
+
+    #[test]
+    fn flutter_design_widgets_card_list_tile_chip_app_bar_drawer_and_scaffold() {
+        reset_runtime();
+        let cx = Scope::root();
+        let drawer_open = cx.signal(false);
+        let chip_selected = cx.signal(false);
+        let list_tapped = Rc::new(Cell::new(false));
+        let lt = list_tapped.clone();
+        let menu_tapped = Rc::new(Cell::new(false));
+        let mt = menu_tapped.clone();
+
+        let mut tree = WidgetTree::new(cx);
+
+        let app_bar = tree.app_bar(
+            cx,
+            "CraftUI Flutter Hybrid",
+            Some("☰"),
+            4.0,
+            Some(move || mt.set(true)),
+        );
+
+        let body = tree.column(cx);
+        let card = tree.card(cx, CardVariant::Elevated);
+        let tile = tree.list_tile(
+            cx,
+            "System Admin",
+            Some("Device Policy & Root Privileges"),
+            Some("🔒"),
+            Some("›"),
+            Some(move || lt.set(true)),
+        );
+        let chip = tree.chip(cx, "Security Mode", chip_selected, Some("🛡️"), None::<fn()>);
+        tree.append_child(card, tile);
+        tree.append_child(card, chip);
+        tree.append_child(body, card);
+
+        let drawer = tree.drawer(cx, drawer_open, 304.0, None::<fn()>);
+        let fab = tree.floating_action_button(cx, "+", Some("Add"));
+
+        let root = tree.scaffold(
+            cx,
+            Some(app_bar),
+            body,
+            None,
+            Some(fab),
+            Some(drawer),
+        );
+        tree.set_root(root);
+
+        tree.layout(WindowMetrics {
+            logical_size: Size::new(360.0, 640.0),
+            ..Default::default()
+        });
+
+        // 1. Verify layout sizes
+        let ab_rect = tree.rect(app_bar);
+        assert_eq!(ab_rect.height, 64.0);
+        assert_eq!(ab_rect.width, 360.0);
+
+        let tile_rect = tree.rect(tile);
+        assert_eq!(tile_rect.height, 72.0); // subtitle present -> 72dp
+
+        let chip_rect = tree.rect(chip);
+        assert_eq!(chip_rect.height, 32.0);
+
+        // 2. Interaction: Tap ListTile
+        let tile_pt = Point::new(tile_rect.x + 40.0, tile_rect.y + 20.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Down,
+            position: tile_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 10,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(1),
+            phase: PointerPhase::Up,
+            position: tile_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 20,
+        }));
+        assert!(list_tapped.get());
+
+        // 3. Interaction: Tap Chip -> toggles selected
+        assert!(!chip_selected.get());
+        let chip_pt = Point::new(chip_rect.x + 15.0, chip_rect.y + 15.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Down,
+            position: chip_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 30,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(2),
+            phase: PointerPhase::Up,
+            position: chip_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 40,
+        }));
+        assert!(chip_selected.get());
+
+        // 4. Interaction: Tap AppBar leading menu icon
+        let menu_pt = Point::new(ab_rect.x + 20.0, ab_rect.y + 30.0);
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(3),
+            phase: PointerPhase::Down,
+            position: menu_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 50,
+        }));
+        tree.handle_event(&UiEvent::Pointer(PointerEvent {
+            id: PointerId(3),
+            phase: PointerPhase::Up,
+            position: menu_pt,
+            button: Some(PointerButton::Primary),
+            modifiers: Modifiers::default(),
+            is_touch: true,
+            timestamp_ms: 60,
+        }));
+        assert!(menu_tapped.get());
+
+        // 5. Open Drawer & Paint Scene
+        drawer_open.set(true);
+        let mut scene = PaintScene::new();
+        tree.paint(&mut scene);
+        let has_drop_shadow = scene
+            .commands
+            .iter()
+            .any(|c| matches!(c, PaintCommand::DropShadow { .. }));
+        assert!(has_drop_shadow);
     }
 }

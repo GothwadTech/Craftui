@@ -3461,7 +3461,7 @@ mod tests {
         let mut session = HotReloadSession::new(cx);
 
         let src_v1 = r#"
-component Chip {
+component TagChip {
     in property <string> title: "Chip";
     Button { text: title; }
 }
@@ -3471,7 +3471,7 @@ export component Demo {
         width: 100%;
         height: 100%;
         padding: 16dp;
-        for name, i in ["A", "B"] : Chip { title: name; }
+        for name, i in ["A", "B"] : TagChip { title: name; }
         Button { text: "Save"; }
     }
 }

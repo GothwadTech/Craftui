@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn lsp_diagnostics_color_provider_completions_and_hover() {
-        let src = r#"export component Card {
+        let src = r#"export component CustomCard {
     Column {
         background: #1A2B3C;
         Text { text: "Hello"; }

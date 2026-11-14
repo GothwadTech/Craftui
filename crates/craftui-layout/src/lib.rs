@@ -45,6 +45,10 @@ pub struct LayoutStyle {
     pub absolute: bool,
     pub inset: Insets,
     pub use_inset: bool,
+    pub inset_top: Option<f32>,
+    pub inset_right: Option<f32>,
+    pub inset_bottom: Option<f32>,
+    pub inset_left: Option<f32>,
     pub safe_area: bool,
     pub clip_overflow: bool,
     #[serde(default)]
@@ -78,6 +82,10 @@ impl Default for LayoutStyle {
             absolute: false,
             inset: Insets::ZERO,
             use_inset: false,
+            inset_top: None,
+            inset_right: None,
+            inset_bottom: None,
+            inset_left: None,
             safe_area: false,
             clip_overflow: false,
             header_top_inset: 0.0,
@@ -160,6 +168,30 @@ impl LayoutStyle {
 
     pub fn with_justify(mut self, justify: Justify) -> Self {
         self.justify_content = justify;
+        self
+    }
+
+    pub fn with_inset_top(mut self, v: f32) -> Self {
+        self.absolute = true;
+        self.inset_top = Some(v);
+        self
+    }
+
+    pub fn with_inset_right(mut self, v: f32) -> Self {
+        self.absolute = true;
+        self.inset_right = Some(v);
+        self
+    }
+
+    pub fn with_inset_bottom(mut self, v: f32) -> Self {
+        self.absolute = true;
+        self.inset_bottom = Some(v);
+        self
+    }
+
+    pub fn with_inset_left(mut self, v: f32) -> Self {
+        self.absolute = true;
+        self.inset_left = Some(v);
         self
     }
 
@@ -282,7 +314,19 @@ impl LayoutStyle {
 
         if self.absolute || force_absolute {
             style.position = taffy::Position::Absolute;
-            if self.use_inset {
+            let has_individual_insets = self.inset_top.is_some()
+                || self.inset_right.is_some()
+                || self.inset_bottom.is_some()
+                || self.inset_left.is_some();
+
+            if has_individual_insets {
+                style.inset = taffy::Rect {
+                    top: self.inset_top.map(tp::length).unwrap_or_else(tp::auto),
+                    right: self.inset_right.map(tp::length).unwrap_or_else(tp::auto),
+                    bottom: self.inset_bottom.map(tp::length).unwrap_or_else(tp::auto),
+                    left: self.inset_left.map(tp::length).unwrap_or_else(tp::auto),
+                };
+            } else if self.use_inset {
                 style.inset = taffy::Rect {
                     top: tp::length(self.inset.top),
                     right: tp::length(self.inset.right),

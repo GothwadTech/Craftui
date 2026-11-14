@@ -1,0 +1,574 @@
+export component WhiteboardScreen {
+    in-out property <string> active_tool: "Select";
+    in-out property <string> zoom_level: "100%";
+    in-out property <string> status_text: "Ready";
+    in-out property <string> mode_name: "Native CUI";
+    in-out property <bool> is_hybrid: false;
+    in-out property <bool> drawer_open: false;
+    in-out property <bool> can_undo: true;
+    in-out property <bool> can_redo: false;
+    in-out property <bool> is_dark: false;
+    in-out property <bool> tool_locked: false;
+
+    callback on_select_tool(string);
+    callback on_pick_color(string);
+    callback on_zoom_in();
+    callback on_zoom_out();
+    callback on_zoom_reset();
+    callback on_undo();
+    callback on_redo();
+    callback on_toggle_mode();
+    callback on_toggle_theme();
+    callback on_share();
+    callback on_toggle_lock();
+    callback on_new_canvas();
+    callback on_export_svg();
+    callback on_export_json();
+    callback on_import_json();
+    callback on_open_admin();
+    callback on_open_accessibility();
+    callback on_open_settings();
+    callback on_toggle_drawer();
+
+    Stack {
+        width: 100%;
+        height: 100%;
+
+        // 1. Fullscreen Infinite Whiteboard Canvas (Edge-to-Edge)
+        Canvas {
+            id: "whiteboard_canvas";
+            width: 100%;
+            height: 100%;
+        }
+
+        // 2. Top Navigation Bar (Floating header spanning top)
+        Row {
+            top: 14dp;
+            left: 14dp;
+            right: 14dp;
+            justify: SpaceBetween;
+            align: Start;
+
+            // 2.1 Top-Left Floating Hamburger Menu Button
+            Button {
+                text: "menu";
+                font_size: 18;
+                background: Theme.surface;
+                foreground: Theme.text_primary;
+                border_radius: 8dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding_x: 11dp;
+                padding_y: 8dp;
+                on_tap => { on_toggle_drawer(); }
+            }
+
+            // 2.2 Centered Tool Ribbon & Hint Banner
+            Column {
+                align: Center;
+                gap: 6dp;
+
+                // Floating Tool Island
+                Row {
+                    background: Theme.surface;
+                    border_radius: 10dp;
+                    border_width: 1;
+                    border_color: Theme.border;
+                    padding_x: 6dp;
+                    padding_y: 4dp;
+                    gap: 2dp;
+                    align: Center;
+
+                    // Lock tool
+                    Button {
+                        text: tool_locked ? "lock" : "unlock";
+                        font_size: 14;
+                        background: tool_locked ? #ede9fe : Theme.surface;
+                        foreground: tool_locked ? #4f46e5 : Theme.text_secondary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_toggle_lock(); }
+                    }
+
+                    // Hand (Pan)
+                    Button {
+                        text: "hand";
+                        font_size: 15;
+                        background: active_tool == "Hand" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Hand" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Hand"); }
+                    }
+
+                    // Selection tool (Active with soft lavender highlight)
+                    Button {
+                        text: "select";
+                        font_size: 15;
+                        background: active_tool == "Select" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Select" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Select"); }
+                    }
+
+                    // Rectangle
+                    Button {
+                        text: "rectangle";
+                        font_size: 15;
+                        background: active_tool == "Rectangle" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Rectangle" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Rectangle"); }
+                    }
+
+                    // Diamond
+                    Button {
+                        text: "diamond";
+                        font_size: 15;
+                        background: active_tool == "Diamond" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Diamond" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Diamond"); }
+                    }
+
+                    // Ellipse
+                    Button {
+                        text: "circle";
+                        font_size: 15;
+                        background: active_tool == "Ellipse" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Ellipse" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Ellipse"); }
+                    }
+
+                    // Arrow
+                    Button {
+                        text: "arrow";
+                        font_size: 15;
+                        background: active_tool == "Arrow" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Arrow" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Arrow"); }
+                    }
+
+                    // Line
+                    Button {
+                        text: "line";
+                        font_size: 15;
+                        background: active_tool == "Line" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Line" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Line"); }
+                    }
+
+                    // Pen (Draw)
+                    Button {
+                        text: "pen";
+                        font_size: 15;
+                        background: active_tool == "Pen" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Pen" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Pen"); }
+                    }
+
+                    // Text
+                    Button {
+                        text: "text";
+                        font_size: 15;
+                        background: active_tool == "Text" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Text" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Text"); }
+                    }
+
+                    // Note / Card
+                    Button {
+                        text: "card";
+                        font_size: 15;
+                        background: active_tool == "Card" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Card" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Card"); }
+                    }
+
+                    // Eraser
+                    Button {
+                        text: "eraser";
+                        font_size: 15;
+                        background: active_tool == "Eraser" ? #e0dfff : Theme.surface;
+                        foreground: active_tool == "Eraser" ? #4338ca : Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 8dp;
+                        padding_y: 6dp;
+                        on_tap => { on_select_tool("Eraser"); }
+                    }
+
+                    Text {
+                        text: "|";
+                        color: Theme.border;
+                        font_size: 14;
+                    }
+
+                    // More tools menu
+                    Button {
+                        text: "more_vert";
+                        font_size: 16;
+                        background: Theme.surface;
+                        foreground: Theme.text_primary;
+                        border_radius: 6dp;
+                        padding_x: 6dp;
+                        padding_y: 6dp;
+                    }
+                }
+
+                // Helper Hint Banner
+                Row {
+                    align: Center;
+                    gap: 4dp;
+
+                    Text {
+                        text: "To move canvas, hold ";
+                        font_size: 12;
+                        color: #868e96;
+                    }
+
+                    // Scroll wheel badge
+                    Row {
+                        background: Theme.surface;
+                        border_width: 1;
+                        border_color: #ced4da;
+                        border_radius: 4dp;
+                        padding_x: 5dp;
+                        padding_y: 1dp;
+
+                        Text {
+                            text: "Scroll wheel";
+                            font_size: 11;
+                            color: #495057;
+                        }
+                    }
+
+                    Text {
+                        text: " or ";
+                        font_size: 12;
+                        color: #868e96;
+                    }
+
+                    // Space badge
+                    Row {
+                        background: Theme.surface;
+                        border_width: 1;
+                        border_color: #ced4da;
+                        border_radius: 4dp;
+                        padding_x: 5dp;
+                        padding_y: 1dp;
+
+                        Text {
+                            text: "Space";
+                            font_size: 11;
+                            color: #495057;
+                        }
+                    }
+
+                    Text {
+                        text: " while dragging, or use the hand tool";
+                        font_size: 12;
+                        color: #868e96;
+                    }
+                }
+            }
+
+            // 2.3 Top-Right Action Controls
+            Row {
+                gap: 8dp;
+                align: Center;
+
+                // "Try Whiteboard+ 14-day free trial" pill button
+                Button {
+                    background: #f5f3ff;
+                    border_radius: 8dp;
+                    border_width: 1;
+                    border_color: #c7d2fe;
+                    padding_x: 10dp;
+                    padding_y: 8dp;
+                    on_tap => { on_toggle_mode(); }
+
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+
+                        Icon {
+                            svg: "gift";
+                            size: 15;
+                            color: #4f46e5;
+                        }
+
+                        Text {
+                            text: "Try Whiteboard+";
+                            font_size: 12;
+                            color: #4f46e5;
+                        }
+                    }
+                }
+
+                // Share button
+                Button {
+                    background: #4f46e5;
+                    border_radius: 8dp;
+                    padding_x: 13dp;
+                    padding_y: 8dp;
+                    on_tap => { on_share(); }
+
+                    Row {
+                        gap: 6dp;
+                        align: Center;
+
+                        Icon {
+                            svg: "share";
+                            size: 14;
+                            color: #ffffff;
+                        }
+
+                        Text {
+                            text: "Share";
+                            font_size: 13;
+                            color: #ffffff;
+                        }
+                    }
+                }
+
+                // Theme toggle button
+                Button {
+                    text: is_dark ? "sun" : "moon";
+                    font_size: 16;
+                    background: Theme.surface;
+                    foreground: Theme.text_primary;
+                    border_radius: 8dp;
+                    border_width: 1;
+                    border_color: Theme.border;
+                    padding_x: 10dp;
+                    padding_y: 6dp;
+                    on_tap => { on_toggle_theme(); }
+                }
+            }
+        }
+
+        // 6. Bottom-Left Floating Zoom & History Island (Matching screenshot)
+        Row {
+            bottom: 16dp;
+            left: 16dp;
+            gap: 8dp;
+            align: Center;
+
+            // Zoom pill
+            Row {
+                background: Theme.surface;
+                border_radius: 8dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding_x: 6dp;
+                padding_y: 4dp;
+                gap: 4dp;
+                align: Center;
+
+                Button {
+                    text: zoom_level;
+                    font_size: 12;
+                    background: Theme.surface;
+                    foreground: Theme.text_primary;
+                    padding_x: 6dp;
+                    on_tap => { on_zoom_reset(); }
+                }
+
+                Button {
+                    text: "map";
+                    font_size: 13;
+                    background: Theme.surface;
+                    foreground: Theme.text_secondary;
+                    padding_x: 6dp;
+                    on_tap => { on_zoom_in(); }
+                }
+            }
+
+            // Undo / Redo pill
+            Row {
+                background: Theme.surface;
+                border_radius: 8dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding_x: 6dp;
+                padding_y: 4dp;
+                gap: 4dp;
+                align: Center;
+
+                Button {
+                    text: "undo";
+                    font_size: 15;
+                    background: Theme.surface;
+                    foreground: can_undo ? Theme.text_primary : #ced4da;
+                    padding_x: 8dp;
+                    on_tap => { on_undo(); }
+                }
+
+                Button {
+                    text: "redo";
+                    font_size: 15;
+                    background: Theme.surface;
+                    foreground: can_redo ? Theme.text_primary : #ced4da;
+                    padding_x: 8dp;
+                    on_tap => { on_redo(); }
+                }
+            }
+        }
+
+        // 7. Bottom-Right Floating Action Badges (Matching screenshot)
+        Row {
+            bottom: 16dp;
+            right: 16dp;
+            gap: 10dp;
+            align: Center;
+
+            // Security Shield badge
+            Button {
+                text: "shield";
+                font_size: 16;
+                background: Theme.surface;
+                foreground: #4f46e5;
+                border_radius: 8dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding_x: 8dp;
+                padding_y: 6dp;
+                on_tap => { on_open_admin(); }
+            }
+
+            // Help Question Mark button
+            Button {
+                text: "help";
+                font_size: 14;
+                font_weight: Bold;
+                background: Theme.surface;
+                foreground: Theme.text_secondary;
+                border_radius: 14dp;
+                border_width: 1;
+                border_color: Theme.border;
+                padding_x: 9dp;
+                padding_y: 5dp;
+                on_tap => { on_open_settings(); }
+            }
+        }
+
+        // 8. Flutter-Style Navigation Drawer
+        Drawer {
+            open <=> drawer_open;
+            width: 320dp;
+
+            Column {
+                width: 100%;
+                height: 100%;
+                background: Theme.surface;
+                padding: 16dp;
+                gap: 12dp;
+
+                Text {
+                    text: "CraftUI Whiteboard";
+                    font_size: 20;
+                    font_weight: Bold;
+                    color: Theme.text_primary;
+                }
+                Text {
+                    text: "Hand-Drawn Vector Whiteboard • Multiplatform";
+                    font_size: 12;
+                    color: Theme.text_secondary;
+                }
+
+                Card {
+                    width: 100%;
+                    padding: 8dp;
+                    gap: 4dp;
+
+                    ListTile {
+                        title: "New Canvas";
+                        subtitle: "Start fresh with a clean board";
+                        leading: "file";
+                        on_tap => { on_new_canvas(); }
+                    }
+                    ListTile {
+                        title: "Export as SVG";
+                        subtitle: "Hand-drawn vector graphic to clipboard";
+                        leading: "image";
+                        on_tap => { on_export_svg(); }
+                    }
+                    ListTile {
+                        title: "Export as JSON";
+                        subtitle: "Excalidraw compatible JSON format";
+                        leading: "download";
+                        on_tap => { on_export_json(); }
+                    }
+                    ListTile {
+                        title: "Import from Clipboard";
+                        subtitle: "Load document JSON";
+                        leading: "copy";
+                        on_tap => { on_import_json(); }
+                    }
+                }
+
+                Card {
+                    width: 100%;
+                    padding: 8dp;
+                    gap: 4dp;
+
+                    ListTile {
+                        title: "Admin Privileges";
+                        subtitle: "Elevated platform settings";
+                        leading: "lock";
+                        trailing: "Open";
+                        on_tap => { on_open_admin(); }
+                    }
+                    ListTile {
+                        title: "Accessibility Settings";
+                        subtitle: "System access & screen reader";
+                        leading: "shield";
+                        trailing: "Open";
+                        on_tap => { on_open_accessibility(); }
+                    }
+                    ListTile {
+                        title: "System App Settings";
+                        subtitle: "Manage permissions";
+                        leading: "settings";
+                        trailing: "Open";
+                        on_tap => { on_open_settings(); }
+                    }
+                }
+
+                Button {
+                    text: "Close Menu";
+                    background: Theme.surface_variant;
+                    foreground: Theme.text_primary;
+                    border_radius: 8dp;
+                    on_tap => { drawer_open = false; }
+                }
+            }
+        }
+    }
+}
