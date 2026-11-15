@@ -134,9 +134,11 @@ pub fn mount_whiteboard_app(
     // 6. Theme Toggle (Light <-> Dark)
     let dark_sig = screen.is_dark;
     let theme_sig = tree.theme_signal;
+    let ctrl_theme = ctrl.clone();
     screen.set_on_toggle_theme(move || {
         let is_d = !dark_sig.get();
         dark_sig.set(is_d);
+        ctrl_theme.is_dark.set(is_d);
         if is_d {
             theme_sig.set(ThemeTokens::dark());
         } else {
@@ -441,30 +443,62 @@ mod tests {
             .node_by_id("whiteboard_canvas")
             .expect("canvas must exist");
 
-        // Compute layout at 1200x800 desktop viewport
-        let metrics = WindowMetrics {
+        // 1. Desktop viewport (1200x800, expanded)
+        let desktop_metrics = WindowMetrics {
             logical_size: Size::new(1200.0, 800.0),
             scale_factor: 1.0,
             ..Default::default()
         };
-        tree.layout(metrics);
+        tree.layout(desktop_metrics);
         let canvas_rect = tree.layout_engine.rect(canvas_node);
         assert_eq!(canvas_rect.width, 1200.0);
         assert_eq!(canvas_rect.height, 800.0);
 
         let root_node = tree.nodes.get(root).unwrap();
-        for (i, &c) in root_node.children.iter().enumerate() {
-            let r = tree.layout_engine.rect(c);
-            let name = &tree.nodes.get(c).unwrap().debug_name;
-            println!("Child {i} {name}: rect = {r:?}");
-        }
-
         let top_nav = root_node.children[1];
-        let top_nav_node = tree.nodes.get(top_nav).unwrap();
-        for (i, &c) in top_nav_node.children.iter().enumerate() {
-            let r = tree.layout_engine.rect(c);
-            let name = &tree.nodes.get(c).unwrap().debug_name;
-            println!("  TopNav Child {i} {name}: rect = {r:?}");
+        let top_nav_rect = tree.layout_engine.rect(top_nav);
+        assert!(top_nav_rect.width <= 1200.0);
+
+        // 2. Tablet viewport (768x1024, medium)
+        let tablet_metrics = WindowMetrics {
+            logical_size: Size::new(768.0, 1024.0),
+            scale_factor: 1.0,
+            ..Default::default()
+        };
+        tree.layout(tablet_metrics);
+        let canvas_rect_tab = tree.layout_engine.rect(canvas_node);
+        assert_eq!(canvas_rect_tab.width, 768.0);
+        assert_eq!(canvas_rect_tab.height, 1024.0);
+
+        // 3. Mobile viewport (390x844, compact phone)
+        let mobile_metrics = WindowMetrics {
+            logical_size: Size::new(390.0, 844.0),
+            scale_factor: 1.0,
+            ..Default::default()
+        };
+        tree.layout(mobile_metrics);
+        let canvas_rect_mob = tree.layout_engine.rect(canvas_node);
+        assert_eq!(canvas_rect_mob.width, 390.0);
+        assert_eq!(canvas_rect_mob.height, 844.0);
+
+        let top_nav_rect_mob = tree.layout_engine.rect(top_nav);
+        assert!(top_nav_rect_mob.width <= 390.0, "Top nav must fit within mobile screen width");
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn android_log(msg: &str) {
+    unsafe extern "C" {
+        fn __android_log_write(
+            prio: std::ffi::c_int,
+            tag: *const std::ffi::c_char,
+            text: *const std::ffi::c_char,
+        ) -> std::ffi::c_int;
+    }
+    use std::ffi::CString;
+    if let (Ok(tag), Ok(text)) = (CString::new("CraftUI_Native"), CString::new(msg)) {
+        unsafe {
+            __android_log_write(4, tag.as_ptr(), text.as_ptr());
         }
     }
 }
@@ -472,8 +506,18 @@ mod tests {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub fn android_main(app: craftui::platform_android::android_activity::AndroidApp) {
+    std::panic::set_hook(Box::new(|info| {
+        android_log(&format!("CRITICAL CRAFTUI PANIC: {info}"));
+    }));
+    android_log(">>> STARTING WHITEBOARD ANDROID_MAIN <<<");
     craftui::platform_android::android_runtime::run_android_app(
         app,
-        |cx, tree, _textures, _disp| mount_whiteboard_app(cx, tree, None),
+        |cx, tree, _textures, _disp| {
+            android_log(">>> MOUNTING WHITEBOARD APP <<<");
+            let root = mount_whiteboard_app(cx, tree, None);
+            android_log(">>> MOUNTED WHITEBOARD APP ROOT OK <<<");
+            root
+        },
     );
+    android_log(">>> EXITED WHITEBOARD ANDROID_MAIN <<<");
 }

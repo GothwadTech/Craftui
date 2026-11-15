@@ -338,6 +338,21 @@ struct AtlasEntry {
     offset_y: i32,
 }
 
+#[derive(Debug, Clone)]
+enum PathAtlasTiles {
+    Single(AtlasEntry),
+    Multiple(Vec<AtlasEntry>),
+}
+
+impl PathAtlasTiles {
+    pub fn as_slice(&self) -> &[AtlasEntry] {
+        match self {
+            Self::Single(entry) => std::slice::from_ref(entry),
+            Self::Multiple(vec) => vec.as_slice(),
+        }
+    }
+}
+
 struct CachedGpuTex {
     version: u64,
     width: u32,
@@ -444,8 +459,9 @@ pub struct GpuSdfBackend {
     atlas_tex: wgpu::Texture,
     _atlas_view: wgpu::TextureView,
     atlas_alloc: AtlasAllocator,
+    atlas_generation: u64,
     glyph_cache: HashMap<GlyphAtlasKey, Option<AtlasEntry>>,
-    path_cache: HashMap<u64, Option<AtlasEntry>>,
+    path_cache: HashMap<u64, Option<PathAtlasTiles>>,
     ramp_cache: HashMap<u64, AtlasEntry>,
 
     image_cache: HashMap<TextureId, CachedGpuTex>,
@@ -479,7 +495,7 @@ impl GpuSdfBackend {
         let w = width.max(1);
         let h = height.max(1);
         let surface_is_srgb = surface_format.is_srgb();
-        let atlas_size = device.limits().max_texture_dimension_2d.clamp(512, 2048);
+        let atlas_size = device.limits().max_texture_dimension_2d.clamp(1024, 4096);
 
         let globals_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("craftui-sdf-globals"),
@@ -920,6 +936,7 @@ impl GpuSdfBackend {
             atlas_tex,
             _atlas_view: atlas_view,
             atlas_alloc: AtlasAllocator::new(size2(atlas_size as i32, atlas_size as i32)),
+            atlas_generation: 0,
             glyph_cache: HashMap::new(),
             path_cache: HashMap::new(),
             ramp_cache: HashMap::new(),
@@ -997,8 +1014,11 @@ impl GpuSdfBackend {
         w: u32,
         h: u32,
     ) -> Option<(u32, u32)> {
-        let req_w = (w + 2).min(self.atlas_size);
-        let req_h = (h + 2).min(self.atlas_size);
+        let req_w = w.saturating_add(2);
+        let req_h = h.saturating_add(2);
+        if req_w > self.atlas_size || req_h > self.atlas_size {
+            return None;
+        }
         if let Some(alloc) = self.atlas_alloc.allocate(size2(req_w as i32, req_h as i32)) {
             return Some((
                 alloc.rectangle.min.x as u32 + 1,
@@ -1007,10 +1027,18 @@ impl GpuSdfBackend {
         }
         // Flush queued geometry that still references old atlas UVs before resetting atlas!
         self.flush_pending(device, queue, encoder, inst_cursor, background);
+        let old_cmd = std::mem::replace(
+            encoder,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("craftui-render-encoder-reset"),
+            }),
+        );
+        queue.submit(std::iter::once(old_cmd.finish()));
         self.atlas_alloc.clear();
         self.glyph_cache.clear();
         self.path_cache.clear();
         self.ramp_cache.clear();
+        self.atlas_generation = self.atlas_generation.wrapping_add(1);
         self.atlas_alloc
             .allocate(size2(req_w as i32, req_h as i32))
             .map(|a| (a.rectangle.min.x as u32 + 1, a.rectangle.min.y as u32 + 1))
@@ -1025,6 +1053,9 @@ impl GpuSdfBackend {
         h: u32,
         rgba: &[u8],
     ) {
+        if x + w > self.atlas_size || y + h > self.atlas_size {
+            return;
+        }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas_tex,
@@ -1127,7 +1158,7 @@ impl GpuSdfBackend {
         path: &BezPath,
         stroke_width: Option<f32>,
         scale_factor: f32,
-    ) -> Option<AtlasEntry> {
+    ) -> Option<PathAtlasTiles> {
         let mut hasher = DefaultHasher::new();
         for el in path.elements() {
             match *el {
@@ -1164,7 +1195,7 @@ impl GpuSdfBackend {
         ((scale_factor * 100.0).round() as u32).hash(&mut hasher);
         let key = hasher.finish();
         if let Some(cached) = self.path_cache.get(&key) {
-            return *cached;
+            return cached.clone();
         }
         let expanded = if let Some(sw) = stroke_width {
             kurbo_stroke(
@@ -1181,33 +1212,119 @@ impl GpuSdfBackend {
             self.path_cache.insert(key, None);
             return None;
         };
-        let (ax, ay) = self.alloc_atlas_region(
-            device,
-            queue,
-            encoder,
-            inst_cursor,
-            background,
-            mask.width,
-            mask.height,
-        )?;
-        let mut rgba = vec![255u8; (mask.width * mask.height * 4) as usize];
-        for (i, &cov) in mask.coverage.iter().enumerate() {
-            rgba[i * 4 + 3] = cov;
+        let max_tile = self.atlas_size.saturating_sub(2);
+        if mask.width <= max_tile && mask.height <= max_tile {
+            let (ax, ay) = self.alloc_atlas_region(
+                device,
+                queue,
+                encoder,
+                inst_cursor,
+                background,
+                mask.width,
+                mask.height,
+            )?;
+            let mut rgba = vec![255u8; (mask.width * mask.height * 4) as usize];
+            for (i, &cov) in mask.coverage.iter().enumerate() {
+                rgba[i * 4 + 3] = cov;
+            }
+            self.upload_rgba_to_atlas(queue, ax, ay, mask.width, mask.height, &rgba);
+            let inv = 1.0 / self.atlas_size as f32;
+            let entry = AtlasEntry {
+                u0: ax as f32 * inv,
+                v0: ay as f32 * inv,
+                u1: (ax + mask.width) as f32 * inv,
+                v1: (ay + mask.height) as f32 * inv,
+                width: mask.width,
+                height: mask.height,
+                offset_x: mask.offset_x,
+                offset_y: mask.offset_y,
+            };
+            let tiles = PathAtlasTiles::Single(entry);
+            self.path_cache.insert(key, Some(tiles.clone()));
+            return Some(tiles);
         }
-        self.upload_rgba_to_atlas(queue, ax, ay, mask.width, mask.height, &rgba);
+
+        let tile_dim = max_tile.min(1024).max(64);
+        let mut tiles = Vec::new();
         let inv = 1.0 / self.atlas_size as f32;
-        let entry = AtlasEntry {
-            u0: ax as f32 * inv,
-            v0: ay as f32 * inv,
-            u1: (ax + mask.width) as f32 * inv,
-            v1: (ay + mask.height) as f32 * inv,
-            width: mask.width,
-            height: mask.height,
-            offset_x: mask.offset_x,
-            offset_y: mask.offset_y,
-        };
-        self.path_cache.insert(key, Some(entry));
-        Some(entry)
+
+        let mut start_gen = self.atlas_generation;
+        let mut attempt = 0;
+        'retry: loop {
+            tiles.clear();
+            for tile_y in (0..mask.height).step_by(tile_dim as usize) {
+                let cur_h = (mask.height - tile_y).min(tile_dim);
+                for tile_x in (0..mask.width).step_by(tile_dim as usize) {
+                    let cur_w = (mask.width - tile_x).min(tile_dim);
+
+                    let mut has_coverage = false;
+                    let mut rgba = vec![255u8; (cur_w * cur_h * 4) as usize];
+                    for row in 0..cur_h {
+                        let src_row_start = ((tile_y + row) * mask.width + tile_x) as usize;
+                        let dst_row_start = (row * cur_w) as usize;
+                        for col in 0..cur_w {
+                            let cov = mask.coverage[src_row_start + col as usize];
+                            if cov > 0 {
+                                has_coverage = true;
+                            }
+                            rgba[(dst_row_start + col as usize) * 4 + 3] = cov;
+                        }
+                    }
+
+                    if !has_coverage {
+                        continue;
+                    }
+
+                    let Some((ax, ay)) = self.alloc_atlas_region(
+                        device,
+                        queue,
+                        encoder,
+                        inst_cursor,
+                        background,
+                        cur_w,
+                        cur_h,
+                    ) else {
+                        self.path_cache.insert(key, None);
+                        return None;
+                    };
+
+                    if self.atlas_generation != start_gen {
+                        start_gen = self.atlas_generation;
+                        attempt += 1;
+                        if attempt < 2 {
+                            self.atlas_alloc.clear();
+                            continue 'retry;
+                        } else {
+                            self.path_cache.insert(key, None);
+                            return None;
+                        }
+                    }
+
+                    self.upload_rgba_to_atlas(queue, ax, ay, cur_w, cur_h, &rgba);
+
+                    tiles.push(AtlasEntry {
+                        u0: (ax as f32 + 0.5) * inv,
+                        v0: (ay as f32 + 0.5) * inv,
+                        u1: ((ax + cur_w) as f32 - 0.5).max(ax as f32 + 0.5) * inv,
+                        v1: ((ay + cur_h) as f32 - 0.5).max(ay as f32 + 0.5) * inv,
+                        width: cur_w,
+                        height: cur_h,
+                        offset_x: mask.offset_x + tile_x as i32,
+                        offset_y: mask.offset_y + tile_y as i32,
+                    });
+                }
+            }
+            break;
+        }
+
+        if self.atlas_generation != start_gen || tiles.is_empty() {
+            self.path_cache.insert(key, None);
+            return None;
+        }
+
+        let res = PathAtlasTiles::Multiple(tiles);
+        self.path_cache.insert(key, Some(res.clone()));
+        Some(res)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2185,7 +2302,7 @@ impl GpuSdfBackend {
                     );
                 }
                 PaintCommand::FillPath { path, brush } => {
-                    if let Some(entry) = self.get_or_upload_path(
+                    if let Some(tiles) = self.get_or_upload_path(
                         device,
                         queue,
                         encoder,
@@ -2204,31 +2321,33 @@ impl GpuSdfBackend {
                             brush,
                         );
                         let inv_s = 1.0 / scale_factor.max(1.0);
-                        self.push_quad(
-                            QuadBatchKind::Sdf(None),
-                            SdfQuadInstance {
-                                xform_0: xf0,
-                                xform_1: [xm[4], xm[5], 2.0, 0.0],
-                                rect: [
-                                    entry.offset_x as f32 * inv_s,
-                                    entry.offset_y as f32 * inv_s,
-                                    entry.width as f32 * inv_s,
-                                    entry.height as f32 * inv_s,
-                                ],
-                                radii: [0.0; 4],
-                                color0: c0,
-                                color1: c1,
-                                grad_pts: gpts,
-                                params: [0.0, mode, 0.0, 1.0],
-                                uv_rect: [entry.u0, entry.v0, entry.u1, entry.v1],
-                                clip_rect,
-                                clip_radii,
-                            },
-                        );
+                        for entry in tiles.as_slice() {
+                            self.push_quad(
+                                QuadBatchKind::Sdf(None),
+                                SdfQuadInstance {
+                                    xform_0: xf0,
+                                    xform_1: [xm[4], xm[5], 2.0, 0.0],
+                                    rect: [
+                                        entry.offset_x as f32 * inv_s,
+                                        entry.offset_y as f32 * inv_s,
+                                        entry.width as f32 * inv_s,
+                                        entry.height as f32 * inv_s,
+                                    ],
+                                    radii: [0.0; 4],
+                                    color0: c0,
+                                    color1: c1,
+                                    grad_pts: gpts,
+                                    params: [0.0, mode, 0.0, 1.0],
+                                    uv_rect: [entry.u0, entry.v0, entry.u1, entry.v1],
+                                    clip_rect,
+                                    clip_radii,
+                                },
+                            );
+                        }
                     }
                 }
                 PaintCommand::StrokePath { path, color, width } => {
-                    if let Some(entry) = self.get_or_upload_path(
+                    if let Some(tiles) = self.get_or_upload_path(
                         device,
                         queue,
                         encoder,
@@ -2239,27 +2358,29 @@ impl GpuSdfBackend {
                         scale_factor.max(1.0),
                     ) {
                         let inv_s = 1.0 / scale_factor.max(1.0);
-                        self.push_quad(
-                            QuadBatchKind::Sdf(None),
-                            SdfQuadInstance {
-                                xform_0: xf0,
-                                xform_1: [xm[4], xm[5], 2.0, 0.0],
-                                rect: [
-                                    entry.offset_x as f32 * inv_s,
-                                    entry.offset_y as f32 * inv_s,
-                                    entry.width as f32 * inv_s,
-                                    entry.height as f32 * inv_s,
-                                ],
-                                radii: [0.0; 4],
-                                color0: color.to_rgba_f32(),
-                                color1: [0.0; 4],
-                                grad_pts: [0.0; 4],
-                                params: [0.0, 0.0, 0.0, 1.0],
-                                uv_rect: [entry.u0, entry.v0, entry.u1, entry.v1],
-                                clip_rect,
-                                clip_radii,
-                            },
-                        );
+                        for entry in tiles.as_slice() {
+                            self.push_quad(
+                                QuadBatchKind::Sdf(None),
+                                SdfQuadInstance {
+                                    xform_0: xf0,
+                                    xform_1: [xm[4], xm[5], 2.0, 0.0],
+                                    rect: [
+                                        entry.offset_x as f32 * inv_s,
+                                        entry.offset_y as f32 * inv_s,
+                                        entry.width as f32 * inv_s,
+                                        entry.height as f32 * inv_s,
+                                    ],
+                                    radii: [0.0; 4],
+                                    color0: color.to_rgba_f32(),
+                                    color1: [0.0; 4],
+                                    grad_pts: [0.0; 4],
+                                    params: [0.0, 0.0, 0.0, 1.0],
+                                    uv_rect: [entry.u0, entry.v0, entry.u1, entry.v1],
+                                    clip_rect,
+                                    clip_radii,
+                                },
+                            );
+                        }
                     }
                 }
                 PaintCommand::DrawImage {
