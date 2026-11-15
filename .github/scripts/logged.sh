@@ -13,6 +13,8 @@ fi
 name="$1"
 shift
 log_dir="${CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/ci-logs}"
+# On Windows runners RUNNER_TEMP uses backslashes; bash needs forward slashes.
+log_dir="${log_dir//\\//}"
 mkdir -p "$log_dir"
 log="$log_dir/$name.log"
 

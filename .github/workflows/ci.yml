@@ -1,8 +1,7 @@
 name: CraftUI CI
 
-# Pull requests run the Tier 1 targets (Linux desktop, Web/WASM, Android).
-# The slower and more expensive Windows and macOS runners only run on pushes
-# to `main` and on manual dispatch.
+# Every push to `main` and every pull request runs all jobs: Linux, Windows and
+# macOS desktop, Web/WASM and Android.
 on:
   push:
     branches: [main]
@@ -104,21 +103,41 @@ jobs:
 
   desktop-matrix:
     name: Test & Clippy (${{ matrix.os }})
-    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            label: windows
+          - os: macos-latest
+            label: macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - if: ${{ !cancelled() }}
-        run: cargo test --workspace
+      - name: Clippy report (all warnings, never fails on lints)
+        run: .github/scripts/logged.sh clippy-report cargo clippy --locked --workspace --all-targets
+      - name: Clippy (deny warnings)
+        if: ${{ !cancelled() }}
+        run: .github/scripts/logged.sh clippy cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/logged.sh test cargo test --locked --workspace --no-fail-fast
+      - name: Save machine-applicable fixes as a patch
+        if: ${{ failure() }}
+        run: |
+          cargo clippy --fix --allow-dirty --allow-staged --locked --workspace --all-targets || true
+          cargo fmt --all || true
+          log_dir="${RUNNER_TEMP//\\//}/ci-logs"
+          mkdir -p "$log_dir"
+          git diff >"$log_dir/autofix.patch"
+          git checkout -- .
+      - name: Publish logs
+        if: ${{ always() }}
+        run: .github/scripts/publish-logs.sh ${{ matrix.label }}
 
   wasm:
     name: Web WASM (clippy, minimal check)
