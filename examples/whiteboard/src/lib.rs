@@ -482,7 +482,10 @@ mod tests {
         assert_eq!(canvas_rect_mob.height, 844.0);
 
         let top_nav_rect_mob = tree.layout_engine.rect(top_nav);
-        assert!(top_nav_rect_mob.width <= 390.0, "Top nav must fit within mobile screen width");
+        assert!(
+            top_nav_rect_mob.width <= 390.0,
+            "Top nav must fit within mobile screen width"
+        );
     }
 }
 

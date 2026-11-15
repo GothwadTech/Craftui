@@ -274,7 +274,12 @@ fn paint_dot_grid(bounds: Rect, scene: &mut PaintScene, view: ViewTransform, is_
     }
 }
 
-fn paint_element(scene: &mut PaintScene, elem: &WhiteboardElement, view: ViewTransform, is_dark: bool) {
+fn paint_element(
+    scene: &mut PaintScene,
+    elem: &WhiteboardElement,
+    view: ViewTransform,
+    is_dark: bool,
+) {
     let screen_origin = view.world_to_screen(elem.origin);
     let scaled_width = (elem.stroke_width * view.zoom).clamp(1.0, 20.0);
     let stroke_color = if is_dark && elem.stroke_color == Color::rgb(30, 30, 30) {
