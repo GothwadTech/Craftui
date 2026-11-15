@@ -52,7 +52,7 @@ What the project's CI checks on every change, and what it does not.
 | Framework (Linux) | Formatting, clippy with warnings denied, the whole test suite. UI tests run without a window. | Real windows, GPU output, system dialogs. |
 | Web | The notes app is built to WebAssembly and driven in headless Chrome: it starts, paints, opens the editor, accepts typing, saves, and restores after a reload. | Other browsers; real GPUs; touch input; mobile browsers. |
 | Android | The notes app is built into a debug APK and the package is inspected (id, native library, entry point, SDK level). | **Running on a device or emulator.** Release signing. |
-| macOS, Windows | Tests run after a merge to `main`, not on pull requests. | Real windows. |
+| macOS, Windows | Clippy with warnings denied and the whole test suite, on every change. | Real windows, GPU output, system dialogs. |
 | iOS | Nothing beyond compiling shared code. A platform crate and project templates exist. | Building, linking and running an iOS app. |
 
 Known gaps:
