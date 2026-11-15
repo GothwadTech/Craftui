@@ -15,7 +15,7 @@ sudo apt install -y libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreety
 Clone the repository and build:
 
 ```bash
-git clone https://github.com/GothwadTech/Craftui
+git clone https://github.com/krinry/Craftui
 cd Craftui
 cargo build --workspace
 ```

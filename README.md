@@ -90,7 +90,7 @@ Known gaps:
 ## Start a project
 
 ```bash
-git clone https://github.com/GothwadTech/Craftui
+git clone https://github.com/krinry/Craftui
 cd Craftui
 cargo install --path tools/craftui-cli
 

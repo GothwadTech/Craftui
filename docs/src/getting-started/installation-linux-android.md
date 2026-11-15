@@ -28,7 +28,7 @@ CraftUI is not published on crates.io yet. Clone the repository and install the
 command-line tool from it:
 
 ```bash
-git clone https://github.com/GothwadTech/Craftui
+git clone https://github.com/krinry/Craftui
 cd Craftui
 cargo install --path tools/craftui-cli
 ```
