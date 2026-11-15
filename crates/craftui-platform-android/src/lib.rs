@@ -1474,6 +1474,23 @@ pub mod android_runtime {
     use std::ptr::NonNull;
     use std::time::Instant;
 
+    #[cfg(target_os = "android")]
+    pub fn android_log(msg: &str) {
+        unsafe extern "C" {
+            fn __android_log_write(
+                prio: std::ffi::c_int,
+                tag: *const std::ffi::c_char,
+                text: *const std::ffi::c_char,
+            ) -> std::ffi::c_int;
+        }
+        use std::ffi::CString;
+        if let (Ok(tag), Ok(text)) = (CString::new("CraftUI_Native"), CString::new(msg)) {
+            unsafe {
+                __android_log_write(4, tag.as_ptr(), text.as_ptr());
+            }
+        }
+    }
+
     #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
     struct AndroidSurfaceTarget {
         window: RawWindowHandle,
@@ -1637,9 +1654,11 @@ pub mod android_runtime {
                 }
                 PollEvent::Main(main_ev) => match main_ev {
                     MainEvent::InitWindow { .. } => {
+                        android_log("run_android_app: MainEvent::InitWindow received");
                         if let Some(nw) = app.native_window() {
                             let w = nw.width().max(1) as u32;
                             let h = nw.height().max(1) as u32;
+                            android_log(&format!("run_android_app: native_window dimensions: {w}x{h}"));
                             host.tree.handle_event(&UiEvent::Resize {
                                 width: w as f32 / density,
                                 height: h as f32 / density,
@@ -1653,11 +1672,13 @@ pub mod android_runtime {
                                     raw_display_handle: Some(tgt.display),
                                     raw_window_handle: tgt.window,
                                 };
+                                android_log("run_android_app: calling GpuSurfacePipeline::new_unsafe...");
                                 // SAFETY: `nw` is a live ANativeWindow until `TerminateWindow` drops `gpu`.
                                 match unsafe {
                                     GpuSurfacePipeline::new_unsafe(raw_target, w, h, false)
                                 } {
                                     Ok(pipeline) => {
+                                        android_log("run_android_app: GpuSurfacePipeline created successfully!");
                                         host.clear_error();
                                         gpu = Some(pipeline);
                                     }
@@ -1665,6 +1686,7 @@ pub mod android_runtime {
                                         let msg = format!(
                                             "Android Vulkan/GLES surface init failed: {err}"
                                         );
+                                        android_log(&format!("run_android_app ERROR: {msg}"));
                                         tracing::warn!("{msg}");
                                         host.record_error(msg);
                                         gpu = None;
@@ -1674,6 +1696,7 @@ pub mod android_runtime {
                         }
                     }
                     MainEvent::TerminateWindow { .. } => {
+                        android_log("run_android_app: MainEvent::TerminateWindow received");
                         #[cfg(any(feature = "gpu-sdf", feature = "gpu-vello"))]
                         {
                             gpu = None;
@@ -1774,6 +1797,7 @@ pub mod android_runtime {
                         host.push_lifecycle_event(AppLifecycleEvent::MemoryWarning);
                     }
                     MainEvent::Destroy => {
+                        android_log("run_android_app: MainEvent::Destroy received!");
                         host.push_lifecycle_event(AppLifecycleEvent::Detached);
                         running = false;
                     }
@@ -1828,8 +1852,17 @@ pub mod android_runtime {
                     &mut host.tree.text_engine,
                 ) {
                     let msg = format!("Android GPU render_frame failed: {err}");
+                    android_log(&format!("run_android_app: {msg}"));
                     tracing::warn!("{msg}");
                     host.record_error(msg);
+                } else {
+                    static ONCE: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        android_log(
+                            "run_android_app: first frame rendered successfully to ANativeWindow!",
+                        );
+                    }
                 }
             }
         }

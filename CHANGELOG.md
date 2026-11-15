@@ -45,6 +45,10 @@ Notable changes to CraftUI. The format follows
 
 ### Changed
 
+- Windows and macOS are tested on every pull request, not only after a merge.
+  Clippy findings in the Windows and macOS clipboard code and a keyboard test
+  that assumed Ctrl on every platform were fixed.
+- Merged upstream `krinry/Craftui` main (whiteboard layout and renderer fixes).
 - The book's language guide, reactivity page, quickstart and widget catalog were
   rewritten against the real grammar. The earlier versions described syntax that
   never compiled.

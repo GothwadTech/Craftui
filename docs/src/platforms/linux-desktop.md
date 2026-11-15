@@ -5,10 +5,10 @@ Windows.
 
 ## What is verified
 
-The test suite runs on Linux in CI on every change. It drives interfaces
-without opening a window, including the notes app at a desktop window size.
-Tests on macOS and Windows run only after a merge to `main`. No CI job opens a
-real window, so windowing, GPU rendering and system dialogs are checked by hand.
+The test suite runs on Linux, macOS and Windows in CI on every change. It drives
+interfaces without opening a window, including the notes app at a desktop
+window size. No CI job opens a real window, so windowing, GPU rendering and
+system dialogs are checked by hand.
 
 ## Linux packages
 

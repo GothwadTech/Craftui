@@ -114,11 +114,10 @@ fn read_os_clipboard(
         let pb = NSPasteboard::generalPasteboard();
         // SAFETY: `NSPasteboardTypeString` is a static immutable AppKit UTI constant.
         let pb_type = unsafe { NSPasteboardTypeString };
-        return pb.stringForType(pb_type).map(|ns| ns.to_string());
+        pb.stringForType(pb_type).map(|ns| ns.to_string())
     }
     #[cfg(target_os = "windows")]
     {
-        use std::ffi::c_void;
         use windows_sys::Win32::Foundation::HANDLE;
         use windows_sys::Win32::System::DataExchange::{
             CloseClipboard, GetClipboardData, OpenClipboard,
@@ -155,8 +154,8 @@ fn read_os_clipboard(
             let slice = std::slice::from_raw_parts(ptr, max_u16);
             let nul_pos = slice.iter().position(|&u| u == 0).unwrap_or(slice.len());
             let decoded = String::from_utf16_lossy(&slice[..nul_pos]);
-            GlobalUnlock(handle as *mut c_void);
-            return Some(decoded);
+            GlobalUnlock(handle);
+            Some(decoded)
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -206,11 +205,10 @@ fn write_os_clipboard(
         let ns_text = NSString::from_str(text);
         // SAFETY: `NSPasteboardTypeString` is a static immutable AppKit UTI constant.
         let pb_type = unsafe { NSPasteboardTypeString };
-        return pb.setString_forType(&ns_text, pb_type);
+        pb.setString_forType(&ns_text, pb_type)
     }
     #[cfg(target_os = "windows")]
     {
-        use std::ffi::c_void;
         use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
         use windows_sys::Win32::System::DataExchange::{
             CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -251,12 +249,12 @@ fn write_os_clipboard(
                 return false;
             }
             std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
-            GlobalUnlock(hmem as *mut c_void);
+            GlobalUnlock(hmem);
             if SetClipboardData(CF_UNICODETEXT, hmem as HANDLE).is_null() {
                 GlobalFree(hmem);
                 return false;
             }
-            return true;
+            true
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -591,6 +589,9 @@ impl PermissionBackend for DesktopPermissionBackend {
         self.check(&Permission::AdminPrivileges) == PermissionStatus::Granted
     }
 
+    // On Windows the platform branch below is a constant, which clippy would
+    // ask to fold into the check above; the other platforms need both parts.
+    #[cfg_attr(target_os = "windows", allow(clippy::needless_bool))]
     fn request_admin_privileges(&self) -> bool {
         if self.is_admin_active() {
             return true;

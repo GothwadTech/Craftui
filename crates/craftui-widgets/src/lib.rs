@@ -596,16 +596,25 @@ mod tests {
         assert!(tree.tick_blink_timers(1530));
         assert!(!tree.tick_blink_timers(1600));
 
-        // Word delete backward ("world" -> "hello ")
+        // Word delete backward ("world" -> "hello "). Word editing uses Option
+        // on Apple platforms and Ctrl everywhere else.
+        let word_modifier = if cfg!(any(target_os = "macos", target_os = "ios")) {
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            }
+        } else {
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        };
         tree.handle_event(&UiEvent::Key(KeyEvent {
             code: KeyCode::Backspace,
             text: None,
             pressed: true,
             repeat: false,
-            modifiers: Modifiers {
-                ctrl: true,
-                ..Default::default()
-            },
+            modifiers: word_modifier,
         }));
         assert_eq!(text_sig.get(), "hello ");
 
